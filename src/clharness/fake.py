@@ -155,6 +155,11 @@ def _finished(spec: RunSpec, rng: random.Random) -> ResultRow:
             ppl_ratio=ratios,
             mean_ppl_ratio=mean_ratio,
             general_ppl_ratio=round(math.exp(-4.0 * ret + rng.gauss(0, 0.01)), 4),
+            # The planted acquisition effects are what each domain learned, so they show at its
+            # own boundary. Same values as the final ratio here; no extra random draws, so the
+            # other fake numbers stay unchanged.
+            own_boundary_ppl_ratio=ratios,
+            mean_own_boundary_ppl_ratio=mean_ratio,
         ),
         cost=Cost(
             gradient_tokens=spec.gradient_tokens(),

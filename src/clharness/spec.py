@@ -142,6 +142,12 @@ class Acquisition(_Strict):
     ppl_ratio: dict[str, float]  # per trained domain: held-out perplexity, final / base
     mean_ppl_ratio: float  # geometric mean over the trained domains
     general_ppl_ratio: float | None = None  # untrained general-web slice; above 1 is forgetting
+    # Per trained domain: held-out perplexity at the boundary that ends that domain's own
+    # training, / base. It measures what was learned before later domains could erase it, which
+    # the final ratio mixes with forgetting (analysis/PREREG.md, section 4). Empty in rows
+    # written before this field existed.
+    own_boundary_ppl_ratio: dict[str, float] = Field(default_factory=dict)
+    mean_own_boundary_ppl_ratio: float | None = None  # geometric mean of the above
 
 
 class Cost(_Strict):

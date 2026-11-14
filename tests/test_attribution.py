@@ -122,6 +122,17 @@ def test_decision_rule_needs_all_three_parts(rows):
     assert not d["rule2_large_enough"] and not d["beats_reference"]
 
 
+def test_acquisition_uses_own_boundary_and_falls_back_for_old_rows(rows, screening):
+    """PREREG 4: the gate reads the own-boundary ratio; rows without it (written before the
+    field existed, like the first calibration runs) fall back to the final ratio."""
+    r = next(r for r in rows if r.status == "finished")
+    assert A.acquisition_of(r) == r.acquisition.mean_own_boundary_ppl_ratio
+    old = r.model_copy(update={"acquisition": r.acquisition.model_copy(
+        update={"own_boundary_ppl_ratio": {}, "mean_own_boundary_ppl_ratio": None})})
+    assert A.acquisition_of(old) == r.acquisition.mean_ppl_ratio
+    assert screening["acquisition_measure"] == {"own_boundary": screening["rows"]["finished"], "final_fallback": 0}
+
+
 def test_markdown_renders(confirmatory):
     md = A.to_markdown(confirmatory)
     assert "Confirmatory tests" in md and "Failed and invalid runs" in md

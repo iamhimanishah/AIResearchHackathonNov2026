@@ -85,7 +85,8 @@ Base accuracy per half:
 | Role | Outcome | Row field | Direction |
 |---|---|---|---|
 | **Primary** (decided) | End-of-stream mean change across ARC-Easy, HellaSwag, PIQA and PubMedQA, on the report half | `retention.report.mean_delta` | higher is better |
-| **Co-primary gate** (decided) | Acquisition: geometric-mean held-out perplexity ratio on the trained domains | `acquisition.mean_ppl_ratio` | lower is better |
+| **Co-primary gate** (decided) | Acquisition, measured at each domain's own boundary: the geometric mean over trained domains of held-out perplexity right after that domain's training, divided by base. Rows written before this field existed fall back to `mean_ppl_ratio`, and the analysis reports how many rows did | `acquisition.mean_own_boundary_ppl_ratio` | lower is better |
+| Secondary | Acquisition kept at the end of the stream: perplexity on the trained domains at the end, divided by base. This mixes learning with forgetting | `acquisition.mean_ppl_ratio` | lower |
 | Secondary | Per-task end-of-stream change, report half | `retention.report.per_task[*].delta` | higher |
 | Secondary | MBPP pass@1 change at the end of the stream (provisional: secondary only) | per-item file | higher |
 | Secondary | Persistent losses: items right at base and wrong at each of the last 3 checkpoints | per-item file | lower |
@@ -103,7 +104,8 @@ half, over the paired replication seeds:
 2. **Large enough to matter:** the point estimate Δ is above **2 × σ_noise**. σ_noise is the SD
    of the primary outcome across the 5 no-mitigation noise-floor seeds (section 6.1).
    **σ_noise = TBD** (filled in from C3 before the freeze).
-3. **Learns enough:** acquisition(X) ≤ **1.05 × acquisition(R)**.
+3. **Learns enough:** acquisition(X) ≤ **1.05 × acquisition(R)**, using the own-boundary
+   measure from section 4.
 
 The retention–acquisition **Pareto frontier** is always shown next to these results. A
 configuration that is on the frontier but fails rule 3 is reported as a trade-off, not a win.
@@ -284,6 +286,24 @@ reasoning intact. Changing one after the freeze is an amendment (section 11).
 | Within 5% only | Blocks "won by not learning"; LoRA and freezing can still compete | Why 5%? |
 | Within 2% only | Strictest | Likely rules out LoRA and freezing by design |
 | Pareto frontier only | No arbitrary threshold | No single winner; "improved on results" is harder to claim |
+
+### A2b. What "acquisition" measures: **decided**, perplexity at each domain's own boundary
+Decided on 2026-11-14, before the freeze, after the first fast-bench run (`no-mitigation-s0`,
+`results/rows.calibration.jsonl`). On that run the end-of-stream ratio barely showed any
+learning:
+- biomedical was 1.00 (no change);
+- code was 1.81, worse than base, because the biomedical domain undid it.
+
+The end-of-stream number mixes learning with forgetting, so a gate on it can't tell "learned
+less" from "forgot more". The gate now reads the ratio at each domain's own boundary. The
+end-of-stream ratio stays as a secondary outcome.
+
+| Option | Pros | Cons |
+|---|---|---|
+| **Measure at own boundary (chosen)** | Separates learning from forgetting. No bench change and no reruns: the boundary checkpoints already record it | A small addition to the row format and the executor. Biomedical learning may still be small |
+| Lower the LR to 3e-5 | The September 3e-5 run learned more | It forgets far less (−3.4 vs −11.9 points), so effects are smaller with less power, and calibration must be redone |
+| Pareto frontier only (drop the gate) | No code or bench change | A technique that learns nothing could "win"; weak for rigour |
+| More tokens per domain (e.g. 30M) | More learning | About 3× the cost and time (about 55 minutes per run); may not fit the overnight grid |
 
 ### A3. Win rule: **decided**, paired CI and more than 2 × σ_noise
 | Option | Pros | Cons |

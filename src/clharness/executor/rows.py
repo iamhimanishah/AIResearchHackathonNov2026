@@ -106,16 +106,23 @@ def measure_run(run_dir: str | Path, trained_domains: list[str]) -> dict[str, An
         if meta["is_domain_boundary"]
     ]
 
-    def ratio(domain: str) -> float | None:
+    def ratio(domain: str, metrics: dict[str, Any] = final_metrics) -> float | None:
         key = f"eval/ppl_doc/{domain}"
-        if key not in base_metrics or key not in final_metrics:
+        if key not in base_metrics or key not in metrics:
             return None
-        return float(final_metrics[key]) / float(base_metrics[key])
+        return float(metrics[key]) / float(base_metrics[key])
+
+    def geomean(values: dict[str, float]) -> float | None:
+        return math.exp(sum(math.log(v) for v in values.values()) / len(values)) if values else None
 
     ratios = {d: r for d in trained_domains if (r := ratio(d)) is not None}
     if not ratios:
         raise ValueError(f"{run_dir}: no held-out perplexity for the trained domains {trained_domains}")
-    mean_ratio = math.exp(sum(math.log(v) for v in ratios.values()) / len(ratios))
+    mean_ratio = geomean(ratios)
+
+    # Acquisition at each domain's own boundary: the last boundary checkpoint of that domain.
+    own_metrics = {meta["domain"]: m for meta, m, _ in ckpts[1:] if meta["is_domain_boundary"]}
+    own = {d: r for d in trained_domains if d in own_metrics and (r := ratio(d, own_metrics[d])) is not None}
 
     # Answer collapse (share > COLLAPSE_SHARE) is recorded in `answer_share` and flagged by the
     # analysis, but it does not invalidate the run: collapse is itself forgetting (PREREG A9).
@@ -127,7 +134,8 @@ def measure_run(run_dir: str | Path, trained_domains: list[str]) -> dict[str, An
     return {
         "retention": Retention(selection=selection, report=report, boundaries=boundaries),
         "acquisition": Acquisition(ppl_ratio=ratios, mean_ppl_ratio=mean_ratio,
-                                   general_ppl_ratio=ratio("general")),
+                                   general_ppl_ratio=ratio("general"),
+                                   own_boundary_ppl_ratio=own, mean_own_boundary_ppl_ratio=geomean(own)),
         "answer_share": shares,
         "gradient_tokens": int(final_meta["gradient_tokens"]),
         "invalid_reason": "; ".join(reasons) or None,

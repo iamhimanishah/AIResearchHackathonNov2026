@@ -15,9 +15,28 @@
           "default": null,
           "title": "General Ppl Ratio"
         },
+        "mean_own_boundary_ppl_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Own Boundary Ppl Ratio"
+        },
         "mean_ppl_ratio": {
           "title": "Mean Ppl Ratio",
           "type": "number"
+        },
+        "own_boundary_ppl_ratio": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Own Boundary Ppl Ratio",
+          "type": "object"
         },
         "ppl_ratio": {
           "additionalProperties": {

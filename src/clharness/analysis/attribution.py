@@ -78,7 +78,15 @@ class Config:
         return np.array([_half(r, half).mean_delta for r in self.rows])
 
     def acquisition(self) -> np.ndarray:
-        return np.array([r.acquisition.mean_ppl_ratio for r in self.rows])
+        return np.array([acquisition_of(r) for r in self.rows])
+
+
+def acquisition_of(row: ResultRow) -> float:
+    """PREREG 4: acquisition is the perplexity ratio at each domain's own boundary (what was
+    learned before later domains could erase it). Rows written before that field existed fall
+    back to the final ratio; `analyze` reports how many rows did."""
+    a = row.acquisition
+    return a.mean_own_boundary_ppl_ratio if a.mean_own_boundary_ppl_ratio is not None else a.mean_ppl_ratio
 
 
 def _half(row: ResultRow, half: Half):
@@ -404,8 +412,12 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         "reference": ref.label if ref else None,
         "effects_retention_selection": fit_effects(
             finished, lambda r: r.retention.selection.mean_delta, sigma=sigma_sel),
+        "acquisition_measure": {
+            "own_boundary": sum(r.acquisition.mean_own_boundary_ppl_ratio is not None for r in finished),
+            "final_fallback": sum(r.acquisition.mean_own_boundary_ppl_ratio is None for r in finished),
+        },
         "effects_log_acquisition": fit_effects(
-            finished, lambda r: math.log(r.acquisition.mean_ppl_ratio), sigma=None),
+            finished, lambda r: math.log(acquisition_of(r)), sigma=None),
         "promotion": promote(configs, ref),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),

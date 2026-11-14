@@ -191,8 +191,22 @@ Facts every card relies on (from `docs/baselines.md` and the code):
     base model's after the biomedical domain. A technique cannot visibly "learn less" on a
     bench that learns almost nothing, so the acquisition floor in the pre-registration needs
     thought, or the bench needs a lower learning rate.
+    - **Answer (Member C, PREREG A2b):** keep LR 1e-4, so the bench can freeze.
+      - Acquisition is now measured at each domain's own boundary: code right after code,
+        biomedical right after biomedical. That separates learning from forgetting.
+      - The executor writes it as `acquisition.own_boundary_ppl_ratio` and
+        `mean_own_boundary_ppl_ratio`.
+      - The end-of-stream ratio stays as a secondary outcome.
+      - Rows from before this change (the calibration runs) lack the field. They can be
+        re-measured from their checkpoints with no retraining.
   - The two halves of the protected set differ by 4.5 points on the same run. The noise floor
     (C3) has to be measured on each half.
+    - **Answer (Member C):** both are handled.
+      - σ_noise is computed on each half (`grid-analysis`).
+      - That run used the executor's old plain-random split. The pinned split is stratified by
+        base correctness, so the halves have equal headroom, and the executor now reads it.
+      - Re-measuring `no-mitigation-s0` with the pinned split shows how much of the 4.5-point
+        gap was the split.
   - A run costs about $1.20, not the $2.50 planned for.
 - **Open questions:**
   - Is 10M tokens per domain enough to forget at 1e-4? The 50M run lost 11.9 points, most of
