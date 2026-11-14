@@ -399,6 +399,15 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 ### C1 · `analysis/PREREG.md`
 - **Goal:** commit to the decision rules *before* seeing results, for rigour and for Q&A.
 - **Where:** `analysis/PREREG.md`, committed with a timestamp before sync point 2.
+- **Status:** drafted in [`analysis/PREREG.md`](../analysis/PREREG.md).
+  - The split is built: `manifests/eval-protected-v1-split.json`, from
+    `scripts/make_item_split.py`, stratified by base correctness.
+  - Still open before the freeze:
+    - σ_noise, from C3;
+    - the bench numbers, from A5;
+    - the reference-arm and technique parameters, from B;
+    - four provisional items (answer collapse, invalid-run rules, MBPP, matched compute).
+  - Every option considered is kept in the PREREG's Appendix A.
 - **Steps:** write down each of the following.
   1. **The split:** which items are in the selection half and which in the report half. Make
      it a seeded split of each task's 500 items into 250/250, stored in `manifests/`
@@ -424,6 +433,18 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
   and a ranking per unit of cost.
 - **Where:** `src/clharness/analysis/attribution.py`. Reuse `analyze.py` and `findings.py`
   where possible.
+- **Status:** drafted. Run it with
+  `clh grid-analysis results/fake/rows.jsonl --planted results/fake/planted_effects.json`.
+  Add `--confirmatory` only after replication is finished. Tests are in
+  `tests/test_attribution.py`.
+  - On the fake rows, 19 of 21 planted effects fall inside their 95% interval: all 7 retention
+    main effects and both planted pairs. The 2 misses are acquisition effects, about what
+    chance predicts.
+  - When per-item files are missing, the item level of the bootstrap falls back to parametric
+    noise. That gives wider, conservative intervals. On real rows it resamples items from
+    `items_path`.
+  - ~~**Open:** collapse rule~~ Decided (PREREG A9): flag the run and keep it. The executor
+    and the fake rows now leave collapsed runs `finished`.
 - **Steps:**
   1. Fit retention ~ techniques + pairwise interactions (OLS over the on/off grid), with
      cluster-bootstrap CIs over seeds and items.
@@ -444,7 +465,16 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 
 ### C3 · Noise floor
 - **Goal:** know how big a difference has to be before it means anything.
-- **Where:** specs in `configs/bench/noise/`, launched through A6.
+- **Where:** specs `configs/bench/specs/no-mitigation-s0.json` to `-s4.json`, launched
+  through A6.
+- **Status:** the specs are ready and identical except for the seed.
+  - Not yet run. GPU access is confirmed on Member C's Modal workspace (an H100 80GB was
+    granted on 2026-11-14).
+  - Still needed before launch:
+    - the `huggingface` Modal secret (`HF_TOKEN` with Gemma access);
+    - the `clh-data` volume, built once with
+      `modal run src/clharness/executor/modal_app.py::data`.
+  - Alternatively, launch from the team workspace that A6 uses.
 - **Steps:**
   1. Run no-mitigation on the fast bench at 5 seeds. The seed changes the data order: the
      stream seed is `train.seed + domain_index`.
