@@ -175,15 +175,17 @@ Facts every card relies on (from `docs/baselines.md` and the code):
 - **Done when:** one run finishes in ≤ 35 minutes on an H100, and its MC-mean drop is at least
   4 points (2× the per-task standard error).
 - **Status:** met by one run each, seed 0, on a Modal H100 (rows in
-  `results/rows.calibration.jsonl`). Waiting for the team to agree before it is frozen.
+  `results/rows.calibration.jsonl`). Batch size is settled at 64 sequences per step. The
+  learning rate stays open until Member C answers the acquisition problem below; after that
+  the bench is frozen.
 
   | Spec | Seqs/step | Wall | MC mean, selection half | MC mean, report half | Code ppl ratio | Biomedical ppl ratio | General ppl ratio |
   |---|---|---|---|---|---|---|---|
   | `no-mitigation-s0` | 64 | 18.1 min | −10.7 | −6.2 | 1.81 | 1.00 | 1.45 |
   | `calibration-b16-s0` | 16 | 19.2 min | −16.2 | −12.9 | 2.02 | 1.16 | 2.79 |
 
-  - Recommended: keep 64 sequences per step (the config as committed). It forgets clearly and
-    damages the model less than 16.
+  - Decided: 64 sequences per step (the config as committed). It forgets clearly and damages
+    the model less than 16.
   - Problem for the design (Member C): acquisition is close to zero. Held-out biomedical
     perplexity is unchanged after 10M biomedical tokens, and code perplexity is worse than the
     base model's after the biomedical domain. A technique cannot visibly "learn less" on a

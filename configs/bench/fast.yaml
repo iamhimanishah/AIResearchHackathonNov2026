@@ -4,8 +4,9 @@
 #
 # Confirmed by one no-mitigation run on 2026-11-14 (results/rows.calibration.jsonl): 18 minutes
 # on an H100, multiple-choice mean down 10.7 points on the selection half and 6.2 on the report
-# half. Not frozen until the team agrees (docs/TASKS.md, A5). After the grid starts, do not
-# change this file: runs would stop being comparable.
+# half. Batch size settled at 64 sequences per step on 2026-11-14 after comparing it with 16
+# (docs/TASKS.md, A5). After the grid starts, do not change this file: runs would stop being
+# comparable.
 #
 # What is switched off against configs/pilot/base.yaml, and what it cost per checkpoint there:
 #   SAEs, CKA, mutual-kNN and readout probes (about 85 s)   -> no capture layers, no SAEs
