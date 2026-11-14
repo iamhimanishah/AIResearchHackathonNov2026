@@ -12,8 +12,26 @@ Parameters
                training the domains after it".
   buffer_seqs  None: walk the source stream, fresh sequences each time (new permutation when it
                runs out). N: a fixed buffer of N sequences, sampled with replacement.
+  select       how the replayed rows are chosen. "random" (the default, and the control): take
+               the next rows of the source. "loss" or "act_nov": draw a pool of `pool` candidates
+               per replayed row, score each with a forward-only pass of the current model, and
+               keep the best-scoring ones (see `selection.py` for the scores). "loss" is the
+               candidate's mean token loss; "act_nov" is how far its mean-pooled residual at
+               `layer` lies from running statistics of the sequences the model has trained on.
+  pool         candidates drawn per replayed row (ignored for random). From a buffer, the pool is
+               sampled without replacement unless the buffer is smaller than the pool.
+  keep         "high": keep the highest-scoring candidates; "low": the lowest.
+  layer        residual layer for act_nov. Its statistics are updated from the non-replayed
+               rows of every training forward (captured by the loop); until 2 sequences have
+               been seen there are none, and that call falls back to random (`fallback_rows`).
 
-Cost: no extra forward passes and no extra gradient tokens; the source stream is held in memory.
+Cost: no extra gradient tokens, and the source stream is held in memory. random: no extra
+forward passes. loss/act_nov: forward-only passes over share x pool of the training tokens
+(e.g. 20% at share 0.05 and pool 4), counted in `ctx.state["extra_forward_tokens"]`; without a
+buffer the source is walked `pool` times faster.
+
+Logged: `share`, `rows`; with a scored selection also `scored_rows`, `fallback_rows` (cumulative)
+and the running means `score_pool` (all scored candidates) and `score_kept` (the kept ones).
 
 The replayed rows are the last k rows of a micro-batch. The returned batch carries `.chunk_ids`
 with -1 at replayed rows (so per-example signals do not log them as new-domain chunks) and
@@ -23,6 +41,7 @@ with -1 at replayed rows (so per-example signals do not log them as new-domain c
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import numpy as np
 import torch
@@ -30,6 +49,7 @@ from pydantic import Field
 
 from clharness.data.loader import PackedStream, load_tokens
 from clharness.techniques import TechniqueParams, register
+from clharness.techniques.selection import ActNovStats, candidate_forward, pick, pool_residual
 from clharness.train.hooks import BaseHook, RunContext, StepStats
 
 SEED_OFFSET = 10_007  # training streams use seed + domain_index; keep the replay order distinct
@@ -43,6 +63,10 @@ class Replay(BaseHook):
         share: float = Field(0.05, gt=0, lt=1)
         source: str = "general"
         buffer_seqs: int | None = Field(None, gt=0)
+        select: Literal["random", "loss", "act_nov"] = "random"  # how replay rows are chosen from the candidate pool
+        pool: int = Field(4, ge=1)  # candidates drawn per replayed row (ignored for random)
+        keep: Literal["high", "low"] = "high"  # keep the highest- or the lowest-scoring candidates
+        layer: int = Field(13, ge=0)  # residual layer for act_nov
 
     def __init__(self, params: Params):
         self.p = params
@@ -50,6 +74,16 @@ class Replay(BaseHook):
         self.rows_seen = 0
         self.rows_replayed = 0
         self.source_epochs = 0
+        self._reset_selection()
+
+    def _reset_selection(self):
+        self.stats = ActNovStats() if self.p.select == "act_nov" else None
+        self.last_pool: torch.Tensor | None = None  # candidate rows of the latest selection
+        self.last_scores: torch.Tensor | None = None  # their scores [pool size]; None on a fallback
+        self.last_chosen: torch.Tensor | None = None  # indices into last_pool that were kept
+        self.scored_rows = self.fallback_rows = 0
+        self._sum_pool = self._sum_kept = 0.0
+        self._n_kept = 0
 
     # -- source stream ----------------------------------------------------------------------
     def on_run_start(self, ctx: RunContext):
@@ -71,6 +105,10 @@ class Replay(BaseHook):
         self.active = False
         self.rows_seen = self.rows_replayed = 0
         self.source_epochs = 1  # passes over the source stream started
+        self._reset_selection()
+        self.bos = getattr(ctx.tokenizer, "bos_token_id", None)
+        if self.p.select != "random":
+            ctx.state.setdefault("extra_forward_tokens", 0)
 
     def _next_chunks(self, k: int) -> np.ndarray:
         if self.buffer is not None:
@@ -86,6 +124,13 @@ class Replay(BaseHook):
             out.append(self.order[self.pos])
             self.pos += 1
         return np.asarray(out, dtype=np.int64)
+
+    def _pool_chunks(self, n: int) -> np.ndarray:
+        """Chunk ids of n candidates: the next n of the stream, or n buffer entries (without
+        replacement unless the buffer is smaller than the pool)."""
+        if self.buffer is not None and n <= len(self.buffer):
+            return self.buffer[self.rng.choice(len(self.buffer), size=n, replace=False)]
+        return self._next_chunks(n)
 
     def _rows(self, chunk_ids: np.ndarray) -> torch.Tensor:
         c, toks = self.stream.chunk, self.stream.tokens
@@ -109,7 +154,8 @@ class Replay(BaseHook):
         mask = torch.zeros(b, dtype=torch.bool)
         out = batch.clone()
         if k:
-            out[b - k :] = self._rows(self._next_chunks(k)).to(out.device, out.dtype)
+            rows = self._rows(self._next_chunks(k)) if self.p.select == "random" else self._select(ctx, k, b)
+            out[b - k :] = rows.to(out.device, out.dtype)
             chunk_ids[b - k :] = -1
             mask[b - k :] = True
             self.rows_replayed += k
@@ -118,10 +164,54 @@ class Replay(BaseHook):
         out.replay_mask = mask
         return out
 
+    # -- selection (loss / act_nov) ---------------------------------------------------------
+    def _select(self, ctx: RunContext, k: int, chunk: int) -> torch.Tensor:
+        """Draw k * pool candidates, score them with a forward-only pass (`chunk` rows at a
+        time, no more than the training micro-batch), return the k rows `keep` asks for."""
+        cand = self._rows(self._pool_chunks(k * self.p.pool))
+        self.last_pool = cand
+        if self.stats is not None and not self.stats.ready:  # act_nov before any statistics
+            self.last_scores, self.last_chosen = None, torch.arange(k)
+            self.fallback_rows += k
+            return cand[:k]  # the pool is a random draw, so its first k rows are a random pick
+        layer = self.p.layer if self.stats is not None else None
+        loss, pooled = candidate_forward(ctx.model, cand, chunk, ctx.device, ctx.ac, layer, self.bos)
+        ctx.state["extra_forward_tokens"] = ctx.state.get("extra_forward_tokens", 0) + cand[:, :-1].numel()
+        scores = loss if self.stats is None else self.stats.score(pooled)
+        chosen = pick(scores, k, self.p.keep)
+        self.last_scores, self.last_chosen = scores, chosen
+        self.scored_rows += cand.shape[0]
+        self._sum_pool += float(scores.sum())
+        self._sum_kept += float(scores[chosen].sum())
+        self._n_kept += k
+        return cand[chosen]
+
+    def wants_activations(self) -> list[int]:
+        return [self.p.layer] if self.p.select == "act_nov" else []
+
+    @torch.no_grad()
+    def on_micro_batch(self, ctx: RunContext, step: int, domain_index: int, chunk_ids, batch, logits, seq_loss, acts):
+        """act_nov: add this forward's trained, non-replayed rows to the running statistics
+        (after the rows were used, so no candidate is ever scored against itself)."""
+        if self.stats is None:
+            return
+        replayed = getattr(batch, "replay_mask", None)
+        trained = torch.ones(batch.shape[0], dtype=torch.bool) if replayed is None else ~replayed.cpu()
+        if trained.any():
+            a = acts[self.p.layer]
+            self.stats.update(pool_residual(a[trained.to(a.device)], batch[trained, :-1], self.bos))
+
     # -- logging ----------------------------------------------------------------------------
     def _stats(self) -> dict[str, float]:
         share = self.rows_replayed / self.rows_seen if self.rows_seen else 0.0
-        return {"share": share, "rows": float(self.rows_replayed)}
+        out = {"share": share, "rows": float(self.rows_replayed)}
+        if self.p.select != "random":
+            out["scored_rows"] = float(self.scored_rows)
+            out["fallback_rows"] = float(self.fallback_rows)
+            if self.scored_rows:
+                out["score_pool"] = self._sum_pool / self.scored_rows
+                out["score_kept"] = self._sum_kept / self._n_kept
+        return out
 
     def on_step_end(self, ctx: RunContext, stats: StepStats):
         return self._stats()

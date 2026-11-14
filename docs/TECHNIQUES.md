@@ -46,14 +46,27 @@ agent can read what it may set without importing torch code by hand.
 | Technique | Module | Hook point | Extra cost to report |
 |---|---|---|---|
 | `replay` | `replay.py` | `select_batch`: swap a share of rows for replay rows | none (rows are replaced, not added) |
+| `replay` with `select: loss` or `act_nov` | `replay.py`, `selection.py` | as above, plus a forward-only pass that scores a pool of candidates | forward-only tokens: share x pool of the training tokens (20% at share 0.05, pool 4) |
 | `wavg` | `wavg.py` | `on_domain_end`: pull weights toward base; EMA in `on_step_end` | none |
-| `select` | `select.py` | `select_batch`: score a candidate pool, keep the best | forward-only tokens for scoring |
 | `lora` | `lora.py` | `configure_model`: add adapters in place; `config_overrides`: learning rate | fewer trainable parameters, smaller update |
 | `freeze` | `freeze.py` | `configure_model`: set `requires_grad=False` | fewer trainable parameters |
 | `distill` | `distill.py` | `extra_loss`: KL to a frozen base copy | forward-only tokens for the teacher |
 | `lr_rewarm` | `lr_rewarm.py` | `config_overrides`: switches on A4's per-domain schedule in `optim` | none |
 
-The reference arm is `replay` plus `lr_rewarm`.
+The reference arm is `replay` plus `lr_rewarm`: `configs/bench/specs/reference-s0.json`, with
+`replay-only-s0.json` and `rewarm-only-s0.json` to split the recipe into its two halves.
+
+**Selection** is a parameter of `replay`, not a technique of its own. When replay needs k rows it
+draws k x `pool` candidates from the source, scores them under the current model, and keeps k:
+
+- `select: random` is plain replay and the control. No pool, no scoring, no extra cost.
+- `select: loss` keeps by mean token loss.
+- `select: act_nov` keeps by activation novelty at `layer`: how far the candidate's mean
+  residual is from the running statistics of the sequences the model has been training on.
+- `keep: high | low` chooses which end of the ranking is kept, so the grid can test both.
+
+The SAE-feature signal (`sae_rare`) is not built: it needs SAE weights on the GPU, and
+activation-based selection is fourth in the cut order.
 
 ## Rules every technique follows
 
@@ -77,17 +90,18 @@ The reference arm is `replay` plus `lr_rewarm`.
 |---|---|
 | Registry, `RunConfig.techniques`, config overrides, `clh train` wiring | done, with tests |
 | `replay` (B2), `wavg` (B6), `lr_rewarm` | done, with tiny-model tests; no real-model run yet |
-| `select` (B3) | next: a `select` and `pool` parameter on `replay` (decision 2) |
+| Selection (B3): `random`, `loss`, `act_nov` on `replay` | done, with tiny-model tests; `sae_rare` not built |
 | `lora`, `freeze` (B4), `distill` (B5) | done, with tiny-model tests; no real-model run yet |
-| Reference arm (B1) | `replay` plus `lr_rewarm` both exist; needs a spec file and a fast-bench run |
-| Sanity runs on smoke and the fast bench | need the Modal executor (A6); no GPU on this machine |
+| Reference arm (B1) | specs written and checked through `config_from_spec`; needs a fast-bench run |
+| Sanity runs on a GPU | specs written (`configs/bench/specs/sanity/`, four steps per domain, one technique each); not yet run |
 
 Sanity results will be added to this file from result rows only, never typed in.
 
 ## Decisions that cross workstreams
 
-peter agreed to the proposal in each of these on November 14. Each still needs a yes from the
-other owners named, and the code on their side.
+peter agreed to the proposal in each of these on November 14. Decisions 1, 3 and 4 are now in
+the code on both sides (executor commit 0f0c85f). Decision 2 is built as proposed; Member C has
+not yet confirmed it as the hypothesis for the main grid.
 
 **1. How `lr_rewarm` is switched on (peter, Member A, Member C).** A4 made re-warm three
 `optim` fields (`schedule_scope`, `rewarm_steps`, `min_lr_ratio`). The fake rows, the grid and
@@ -129,7 +143,7 @@ tokens than planned.
 list order, and the order is part of the spec hash. `[replay, select]` and `[select, replay]`
 would be two experiments. Proposed: the spec validator sorts techniques by name, so the order in
 a spec carries no meaning and cannot create duplicate runs. `build_hooks` already applies
-them in name order; the sort in the spec is still to do.
+them in name order; `RunSpec` now sorts them too.
 
 ## Known limits
 

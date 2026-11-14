@@ -1,0 +1,33 @@
+{
+  "name": "reference-s0",
+  "seed": 0,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 10000000
+    },
+    {
+      "name": "biomedical",
+      "tokens": 10000000
+    }
+  ],
+  "techniques": [
+    {
+      "name": "lr_rewarm",
+      "params": {
+        "rewarm_steps": 8,
+        "min_lr_ratio": 0.1,
+        "schedule": "cosine"
+      }
+    },
+    {
+      "name": "replay",
+      "params": {
+        "share": 0.05,
+        "source": "general"
+      }
+    }
+  ],
+  "notes": "The reference arm (Ibrahim et al. 2024): 5% replay of general text plus per-domain LR re-warm and re-decay. Every claimed improvement must beat this by more than the noise floor."
+}

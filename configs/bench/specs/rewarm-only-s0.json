@@ -1,0 +1,26 @@
+{
+  "name": "rewarm-only-s0",
+  "seed": 0,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 10000000
+    },
+    {
+      "name": "biomedical",
+      "tokens": 10000000
+    }
+  ],
+  "techniques": [
+    {
+      "name": "lr_rewarm",
+      "params": {
+        "rewarm_steps": 8,
+        "min_lr_ratio": 0.1,
+        "schedule": "cosine"
+      }
+    }
+  ],
+  "notes": "Half of the reference arm: per-domain LR re-warm and re-decay, no replay. Splits the recipe's effect in two."
+}

@@ -1,0 +1,28 @@
+{
+  "name": "sanity-replay-select-actnov",
+  "seed": 0,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 262144
+    },
+    {
+      "name": "biomedical",
+      "tokens": 262144
+    }
+  ],
+  "techniques": [
+    {
+      "name": "replay",
+      "params": {
+        "share": 0.05,
+        "source": "general",
+        "select": "act_nov",
+        "pool": 4,
+        "layer": 13
+      }
+    }
+  ],
+  "notes": "Four optimizer steps per domain with one technique on. Checks that the technique runs on the real model and a GPU; its numbers mean nothing."
+}
