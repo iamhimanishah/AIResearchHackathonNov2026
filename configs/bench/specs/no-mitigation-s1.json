@@ -1,0 +1,17 @@
+{
+  "name": "no-mitigation-s1",
+  "seed": 1,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 10000000
+    },
+    {
+      "name": "biomedical",
+      "tokens": 10000000
+    }
+  ],
+  "techniques": [],
+  "notes": "Noise floor (analysis/PREREG.md section 6.1), seed 1 of 0-4. Identical to no-mitigation-s0 except the seed, which changes only the data order. The SD of the primary outcome over seeds 0-4 is sigma_noise."
+}

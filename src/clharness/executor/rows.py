@@ -6,6 +6,7 @@ meta.json, metrics.json and items_<task>.npy (per-item correctness, in manifest 
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import random
@@ -17,14 +18,26 @@ import numpy as np
 from clharness.spec import Acquisition, BoundaryRetention, HalfRetention, Retention, TaskRetention
 
 # The protected items of each task are split in two: decisions use the selection half, reported
-# numbers use the report half. The split is a fixed shuffle of item positions, seeded per task.
-# If analysis/PREREG.md (task C1) pins a different split, change `half_indices` to read it.
+# numbers use the report half. analysis/PREREG.md (section 3) pins the split for the protected
+# set in manifests/eval-protected-v1-split.json (stratified by base-model correctness). Any other
+# task or item count (smoke sets, tests) falls back to a fixed shuffle seeded per task.
 SPLIT_SEED = 20261114
-COLLAPSE_SHARE = 0.9  # most-common-answer share above this marks a run invalid
+SPLIT_MANIFEST = Path(__file__).resolve().parents[3] / "manifests" / "eval-protected-v1-split.json"
+COLLAPSE_SHARE = 0.9  # most-common-answer share above this flags a task as collapsed (not invalid)
+
+
+@functools.lru_cache(maxsize=1)
+def _pinned_split() -> dict[str, Any]:
+    if not SPLIT_MANIFEST.exists():
+        return {}
+    return json.loads(SPLIT_MANIFEST.read_text())["tasks"]
 
 
 def half_indices(task: str, n_items: int) -> tuple[np.ndarray, np.ndarray]:
     """(selection, report) item positions for a task. Deterministic; the halves are disjoint."""
+    pinned = _pinned_split().get(task)
+    if pinned is not None and pinned["n_items"] == n_items:
+        return np.array(pinned["selection_positions"]), np.array(pinned["report_positions"])
     order = list(range(n_items))
     random.Random(f"{SPLIT_SEED}:{task}").shuffle(order)
     half = n_items // 2
@@ -104,9 +117,10 @@ def measure_run(run_dir: str | Path, trained_domains: list[str]) -> dict[str, An
         raise ValueError(f"{run_dir}: no held-out perplexity for the trained domains {trained_domains}")
     mean_ratio = math.exp(sum(math.log(v) for v in ratios.values()) / len(ratios))
 
+    # Answer collapse (share > COLLAPSE_SHARE) is recorded in `answer_share` and flagged by the
+    # analysis, but it does not invalidate the run: collapse is itself forgetting (PREREG A9).
     shares = {t: s for t in tasks if (s := _answer_share(final_metrics, final_dir, t)) is not None}
-    reasons = [f"answer collapse on {t}: most common answer share {s:.2f} > {COLLAPSE_SHARE:.2f}"
-               for t, s in shares.items() if s > COLLAPSE_SHARE]
+    reasons = []
     if not all(math.isfinite(v) for v in [*ratios.values(), selection.mean_delta, report.mean_delta]):
         reasons.append("non-finite score or perplexity")
 
