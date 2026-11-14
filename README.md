@@ -12,6 +12,8 @@ techniques against a no-mitigation baseline.
 - **Science:** improve on existing forgetting-reduction results.
 - **Product:** a framework that makes continual-learning experiments easier to run.
 
+The plan, priorities and division of work are in [`docs/DIRECTION.md`](docs/DIRECTION.md).
+
 ## What is in this repository
 
 | Path | Contents |
@@ -23,6 +25,7 @@ techniques against a no-mitigation baseline.
 | `scripts/` | GPU-box setup and sync helpers, throughput probe |
 | `results/baselines/` | Base-model scores on the protected eval suite |
 | `results/runs/` | Four no-mitigation runs: scores, per-question outcomes and configs at every checkpoint |
+| `docs/DIRECTION.md` | Goal, priorities, workstreams and the rules for reported experiments |
 | `docs/harness.md` | Harness reference: setup, CLI, config format, layout, caveats |
 | `docs/baselines.md` | The numbers to beat, with where each comes from |
 | `docs/background/` | Literature review, field overview and pretraining overview |
