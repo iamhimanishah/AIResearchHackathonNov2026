@@ -228,9 +228,13 @@ Facts every card relies on (from `docs/baselines.md` and the code):
       `RestClient.get_external_weights_urls`, to download adapters for merging on Modal.
     - `ServiceClient.get_server_capabilities()` is deprecated. Use
       `tinker.RestClient().get_server_capabilities().result()`.
-  - **Blocker:** the team's Tinker organization returned `402: access is blocked due to
-    billing status` on 2026-11-14. The hackathon credit must be applied to the org before any
-    call works.
+  - ~~**Blocker:** the team's Tinker org returned `402` (billing)~~ Resolved on 2026-11-14
+    once the hackathon credit was applied.
+    - The account lists 38 models, including `Qwen/Qwen3-8B`.
+    - A rank-8 LoRA training client for Qwen3-8B was created successfully, and its tokenizer
+      is `Qwen2Tokenizer`.
+    - No training tokens have been spent yet.
+    - If the 402 comes back, check the org's credit balance in the Tinker console.
   - Tinker's concurrency limit.
 - **Options to try:** if Tinker can't export weights, skip merging techniques on this track.
 
