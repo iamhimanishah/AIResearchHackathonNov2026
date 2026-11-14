@@ -1,0 +1,41 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# data: nothing under data/ is tracked. Both sets are rebuilt from public Hugging Face sources:
+#   clh build-data --set smoke                    (tiny fixture, also built by `make smoke`)
+#   clh build-data --set real --seq-len 1024      (~6.7 GB, verified against manifests/real.json)
+# manifests/smoke.json is generated next to the smoke fixture, so it is not tracked either.
+data/
+manifests/smoke.json
+
+# run outputs: scores, per-item files, configs and analysis ARE tracked so results survive the
+# machine that produced them. Excluded: weights, wandb dirs, and bulky per-checkpoint feature files.
+results/runs/**/wandb/
+results/runs/*/base_probe_acts.pt
+results/runs/**/features_*.npz
+results/runs/*/signals.npz
+results/runs/*/feature_contexts_*.json
+wandb/
+*.safetensors
+*.pt
+*.log
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/
+
+# claude code local settings
+.claude/settings.local.json
+
+# dry-run artifacts
+results/baselines/*_dryrun.json
+manifests/eval-*-dryrun.json

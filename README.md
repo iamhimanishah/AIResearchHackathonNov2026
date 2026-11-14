@@ -1,0 +1,105 @@
+# Continual-learning test bench
+
+Built at the SF AI Research Hackathon, November 14–15, 2026.
+
+A framework for running continual-learning experiments on small open language models, and for
+measuring what each forgetting-reduction technique buys: train a model on a stream of new
+domains, score a fixed set of protected capabilities at every checkpoint, and compare
+techniques against a no-mitigation baseline.
+
+## Objectives
+
+- **Science:** improve on existing forgetting-reduction results.
+- **Product:** a framework that makes continual-learning experiments easier to run.
+
+## What is in this repository
+
+| Path | Contents |
+|---|---|
+| `src/clharness/` | The harness: training loop over an ordered domain stream, hook interface, evals, activation and SAE instruments, analysis and report commands |
+| `configs/` | Model, eval-suite and run configs. Every result-affecting field is required |
+| `manifests/` | Frozen eval item lists and sha256 manifests for the training data |
+| `tests/` | Fast unit tests, plus an end-to-end smoke test that downloads the model |
+| `scripts/` | GPU-box setup and sync helpers, throughput probe |
+| `results/baselines/` | Base-model scores on the protected eval suite |
+| `results/runs/` | Four no-mitigation runs: scores, per-question outcomes and configs at every checkpoint |
+| `docs/harness.md` | Harness reference: setup, CLI, config format, layout, caveats |
+| `docs/baselines.md` | The numbers to beat, with where each comes from |
+| `docs/background/` | Literature review, field overview and pretraining overview |
+
+## Prior work and hackathon work
+
+The first commit of this repository imports work that existed before the event. Everything
+after that commit was built during the hackathon.
+
+Imported, built September 5–12, 2026:
+
+- the harness (`src/`, `tests/`, `configs/`, `scripts/`, `manifests/`)
+- the base-model baselines and the four no-mitigation runs under `results/`
+- the background documents under `docs/background/`
+
+## The baseline to beat
+
+Gemma 3 1B (pretrained), trained in sequence on code, biomedical, legal and math text with no
+mitigation. Scores are on a frozen protected set: ARC-Easy, HellaSwag, PIQA and PubMedQA
+(500 questions each), and MBPP (200 problems).
+
+| Run | Learning rate | Tokens per domain | Multiple-choice mean, base → end | Change (points) | MBPP, base → end |
+|---|---|---|---|---|---|
+| `pilot-lr1e-5-50M` | 1e-5 | 50M | 0.683 → 0.673 | −1.0 | 0.110 → 0.095 |
+| `pilot-lr3e-5-50M` | 3e-5 | 50M | 0.683 → 0.649 | −3.4 | 0.110 → 0.055 |
+| `pilot-lr1e-4-50M` | 1e-4 | 50M | 0.683 → 0.564 | −11.9 | 0.110 → 0.040 |
+| `pilot-chosen-200M` | 3e-5 | 195M | 0.683 → 0.609 | −7.4 | 0.110 → 0.065 |
+
+Details, per-task numbers and caveats are in [`docs/baselines.md`](docs/baselines.md).
+
+## Quick start
+
+Requirements: [uv](https://docs.astral.sh/uv/), and for anything beyond the unit tests a
+Hugging Face token with access to `google/gemma-3-1b-pt` and a GPU or Apple silicon.
+
+```bash
+cp .env.example .env      # put HF_TOKEN in it
+make setup                # create the environment from the lockfile
+make test                 # fast unit tests, no downloads
+make smoke                # end-to-end run on a tiny data set (downloads model + SAEs)
+```
+
+Real data and a baseline run:
+
+```bash
+uv run clh build-data --set real --seq-len 1024      # ~6.7 GB, rebuilt from pinned Hugging Face revisions
+uv run clh verify configs/pilot/base.yaml            # hash every file against manifests/real.json
+uv run clh train configs/pilot/sweep/lr1e-4-50M.yaml
+uv run clh analyze results/runs/<run>                # analysis.json + text summary
+uv run clh items results/runs/<run>                  # which protected questions were lost, and when
+```
+
+The full command list and config format are in [`docs/harness.md`](docs/harness.md).
+
+## Adding a technique
+
+Techniques plug into the training loop as hooks (`src/clharness/train/hooks.py`). A hook can:
+
+- replace, filter or skip each micro-batch (`select_batch`), which covers replay and example selection
+- read logits, per-sequence losses and captured activations after each forward pass (`on_micro_batch`)
+- act after every optimizer step (`on_step_end`), which covers weight averaging
+- measure at every checkpoint and domain boundary (`on_checkpoint`, `on_domain_start`, `on_domain_end`)
+
+Three things the loop cannot do yet, each needed by a common technique:
+
+- **Change the model before the optimizer is built.** The optimizer is created before
+  `on_run_start`, so adapters (LoRA) and layer freezing cannot be applied from a hook.
+- **Add a term to the loss.** The loss is fixed to next-token cross-entropy, so distillation and
+  weight penalties have nowhere to attach.
+- **Re-warm the learning rate per domain.** The schedule is global over the whole run.
+
+## Data and licences
+
+No third-party text is stored here. Training corpora are rebuilt from their public Hugging
+Face sources by `clh build-data`, and `data/` is ignored by git. The corpora are FineWeb,
+StarCoder data (Python), PubMed abstracts, Pile of Law court opinions and OpenWebMath. Each has
+its own licence and terms; StarCoder data and Gemma require accepting terms on Hugging Face.
+
+`results/runs/pilot-chosen-200M/items.json` contains the text of protected-set questions from
+the public evals listed above.
