@@ -71,7 +71,10 @@ def decoder_layers(model: PreTrainedModel) -> torch.nn.ModuleList:
     """The list of decoder blocks, independent of the wrapping class.
 
     Gemma3ForCausalLM -> .model (Gemma3TextModel) -> .layers
+    A PEFT wrapper (LoRA) is unwrapped first: PeftModel -> .base_model.model -> the above.
     """
+    if hasattr(model, "get_base_model"):
+        model = model.get_base_model()
     inner = getattr(model, "model", model)
     layers = getattr(inner, "layers", None)
     if layers is None:

@@ -31,17 +31,28 @@ from clharness.train.hooks import BaseHook, CheckpointInfo, Hook, RunContext, St
 from clharness.wandb_log import RunLogger
 
 
-def lr_at(step: int, total_steps: int, cfg) -> float:
-    if step < cfg.warmup_steps:
-        return cfg.lr * (step + 1) / cfg.warmup_steps
+def lr_at(step: int, total_steps: int, cfg, domain_step: int | None = None, domain_steps: int | None = None) -> float:
+    """Learning rate for the optimizer step about to be taken (0-based `step`).
+
+    With `schedule_scope: per_domain` the warmup and decay restart in every domain: pass the
+    step index within the domain and the domain's step count. The decay ends at
+    lr * min_lr_ratio."""
+    warmup = cfg.warmup_steps
+    if getattr(cfg, "schedule_scope", "global") == "per_domain":
+        if domain_step is None or domain_steps is None:
+            raise ValueError("per_domain schedule needs domain_step and domain_steps")
+        step, total_steps, warmup = domain_step, domain_steps, cfg.rewarm_steps
+    if step < warmup:
+        return cfg.lr * (step + 1) / warmup
     if cfg.schedule == "constant":
         return cfg.lr
-    frac = (step - cfg.warmup_steps) / max(1, total_steps - cfg.warmup_steps)
+    frac = (step - warmup) / max(1, total_steps - warmup)
     frac = min(1.0, frac)
+    floor = cfg.lr * getattr(cfg, "min_lr_ratio", 0.0)
     if cfg.schedule == "linear":
-        return cfg.lr * (1.0 - frac)
+        return floor + (cfg.lr - floor) * (1.0 - frac)
     if cfg.schedule == "cosine":
-        return cfg.lr * 0.5 * (1.0 + math.cos(math.pi * frac))
+        return floor + (cfg.lr - floor) * 0.5 * (1.0 + math.cos(math.pi * frac))
     raise ValueError(cfg.schedule)
 
 
@@ -126,6 +137,20 @@ class Trainer:
         )
         self.model = self.lm.model
         self.autocast = autocast_ctx(self.device, cfg.train.precision)
+        self.ctx = RunContext(
+            cfg=cfg, model=self.model, tokenizer=self.lm.tokenizer, device=self.device,
+            data_manifest=self.data_manifest, eval_manifest=eval_manifest, output_dir=str(self.out_dir),
+            autocast=self.autocast,
+        )
+        # Techniques that change the model (LoRA wrap, layer freezing) do it here, before
+        # torch.compile and before the optimizer picks up the trainable parameters.
+        for h in self.hooks:
+            configure = getattr(h, "configure_model", None)
+            new_model = configure(self.ctx) if configure else None
+            if new_model is not None:
+                self.model = self.ctx.model = new_model
+        self.ctx.state["trainable_params"] = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.ctx.state["total_params"] = sum(p.numel() for p in self.model.parameters())
         if cfg.train.compile:
             # compile the decoder forward only; ResidualCapture hooks still attach to the eager
             # submodules because torch.compile keeps module identity
@@ -133,11 +158,6 @@ class Trainer:
         if cfg.train.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
-        self.ctx = RunContext(
-            cfg=cfg, model=self.model, tokenizer=self.lm.tokenizer, device=self.device,
-            data_manifest=self.data_manifest, eval_manifest=eval_manifest, output_dir=str(self.out_dir),
-            autocast=self.autocast,
-        )
         self.logger = RunLogger(cfg.dump(), cfg.wandb.run_name or cfg.name, cfg.wandb.project, cfg.wandb.tags, self.out_dir)
         self.logger.attach_file(REPO_ROOT / cfg.data.manifest, "data-manifest")
         self.logger.attach_file(self.out_dir / "config.resolved.json", "config")
@@ -147,6 +167,7 @@ class Trainer:
         self.ckpt_index = 0
         self.anomalous_grad_steps = 0
         self._gnorm_ref = 1.0
+        self._extra_loss: dict[str, float] = {}  # per hook, summed over the current step's micro-batches
         self.total_steps = self._planned_steps()
 
     # -- planning ---------------------------------------------------------------------------
@@ -167,9 +188,11 @@ class Trainer:
             lr=o.lr, betas=o.betas,
         )
 
-    def _loss_and_count(self, batch: torch.Tensor, domain_index: int) -> tuple[torch.Tensor, int]:
-        """batch: [b, seq_len+1] int64. Returns (mean token loss, #gradient tokens). Dispatches
-        on_micro_batch to hooks with detached logits / per-sequence losses / captured residuals."""
+    def _loss_and_count(self, batch: torch.Tensor, domain_index: int) -> tuple[torch.Tensor, int, float]:
+        """batch: [b, seq_len+1] int64. Returns (loss to backpropagate, #gradient tokens, LM loss).
+        The first is the mean token loss plus any hook's extra_loss term; the last is the mean
+        token loss alone. Dispatches on_micro_batch to hooks with detached logits / per-sequence
+        losses / captured residuals."""
         ids = batch[:, :-1].to(self.device)
         labels = batch[:, 1:].to(self.device)
         layers = sorted({L for h in self.hooks for L in h.wants_activations()})
@@ -179,12 +202,20 @@ class Trainer:
             logits = self.model(input_ids=ids, use_cache=False).logits
         mask = labels != -100
         loss = chunked_cross_entropy(logits, labels, int(mask.sum()))
+        lm_loss = float(loss)
+        for h in self.hooks:
+            extra = getattr(h, "extra_loss", None)
+            term = extra(self.ctx, batch, logits, labels) if extra else None
+            if term is not None:
+                term = term.float()  # keep the added term in fp32
+                loss = loss + term
+                self._extra_loss[h.name] = self._extra_loss.get(h.name, 0.0) + float(term.detach())
         if layers or any(type(h).on_micro_batch is not BaseHook.on_micro_batch for h in self.hooks):
             seq_loss = per_sequence_token_loss(logits.detach(), labels)
             chunk_ids = getattr(batch, "chunk_ids", torch.arange(batch.shape[0]))
             for h in self.hooks:
                 h.on_micro_batch(self.ctx, self.step + 1, domain_index, chunk_ids, batch, logits.detach(), seq_loss, cap.acts)
-        return loss, int(mask.sum())
+        return loss, int(mask.sum()), lm_loss
 
     # -- checkpoint + hook dispatch -----------------------------------------------------------
     def _checkpoint(self, domain: str, domain_index: int, boundary: bool, optimizer) -> None:
@@ -227,7 +258,10 @@ class Trainer:
         logs: dict[str, Any] = {}
         for h in self.hooks:
             _merge_logs(logs, h.name, h.on_run_start(self.ctx))
+        logs["train/trainable_params"] = self.ctx.state["trainable_params"]
+        logs["train/total_params"] = self.ctx.state["total_params"]
         self.logger.log(logs, step=0)
+        toks_per_step = o.batch_size * cfg.data.seq_len
 
         # fail on an over-budget domain before spending 10 minutes on the base checkpoint's evals
         for di, dom in enumerate(cfg.data.domains):
@@ -254,11 +288,14 @@ class Trainer:
             self.logger.log({**logs, "domain/index": di}, step=self.step)
 
             tokens_in_domain = 0
+            domain_start_step = self.step
+            domain_steps = math.ceil(dom.tokens / toks_per_step)
             batches = stream.batches(o.micro_batch_size)
             done = False
             while not done:
                 optimizer.zero_grad(set_to_none=True)
                 step_loss, step_tokens, step_seqs = 0.0, 0, 0
+                self._extra_loss = {}
                 for _ in range(accum):
                     try:
                         batch = next(batches)
@@ -271,14 +308,14 @@ class Trainer:
                             break
                     if batch is None or batch.shape[0] == 0:
                         continue
-                    loss, n_tok = self._loss_and_count(batch, di)
+                    loss, n_tok, lm_loss = self._loss_and_count(batch, di)
                     (loss / accum).backward()
-                    step_loss += float(loss) / accum
+                    step_loss += lm_loss / accum
                     step_tokens += n_tok
                     step_seqs += batch.shape[0]
                 if step_tokens == 0:
                     break
-                lr = lr_at(self.step, self.total_steps, o)
+                lr = lr_at(self.step, self.total_steps, o, self.step - domain_start_step, domain_steps)
                 for g in optimizer.param_groups:
                     g["lr"] = lr
                 gnorm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), o.grad_clip)
@@ -303,6 +340,8 @@ class Trainer:
                     "train/gradient_tokens": self.gradient_tokens, "train/tokens_in_domain": tokens_in_domain,
                     "train/anomalous_grad_steps": self.anomalous_grad_steps,
                 }
+                for hook_name, total in self._extra_loss.items():
+                    logs[f"train/extra_loss/{hook_name}"] = total / accum
                 for h in self.hooks:
                     _merge_logs(logs, h.name, h.on_step_end(self.ctx, stats))
                 self.logger.log(logs, step=self.step)

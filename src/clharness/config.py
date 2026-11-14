@@ -97,6 +97,13 @@ class OptimCfg(Strict):
     grad_clip: float
     batch_size: int  # sequences per optimizer step (after grad accumulation)
     micro_batch_size: int
+    # Per-domain re-warm (Ibrahim et al. 2024). The defaults keep the single global schedule.
+    #   global:     warmup_steps at the start of the stream, `schedule` over the whole stream
+    #   per_domain: rewarm_steps of linear warmup at the start of every domain, then `schedule`
+    #               over the rest of that domain
+    schedule_scope: Literal["global", "per_domain"] = "global"
+    rewarm_steps: int = 0  # per_domain only
+    min_lr_ratio: float = 0.0  # floor of the linear / cosine decay, as a fraction of lr
 
 
 class TrainCfg(Strict):

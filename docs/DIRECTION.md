@@ -265,11 +265,15 @@ Schemas in `configs/schema/`. Fake rows with planted effects are in `results/fak
 ## Harness changes needed
 
 The harness in `src/clharness/` runs a domain stream and measures at every checkpoint.
-Techniques attach as hooks (`src/clharness/train/hooks.py`). Three things it cannot do yet:
+Techniques attach as hooks (`src/clharness/train/hooks.py`). Three things it could not do at
+the start, all added on Saturday (tests in `tests/test_loop_hooks.py`):
 
 - **Change the model before the optimizer is built.** Needed for LoRA and layer freezing.
+  Done: `configure_model(ctx)` on a hook; return a wrapped model, or freeze in place.
 - **Add a term to the loss.** Needed for distillation and weight penalties.
-- **Re-warm the learning rate per domain.** The schedule is global today.
+  Done: `extra_loss(ctx, batch, logits, labels)` on a hook; logged as `train/extra_loss/<name>`.
+- **Re-warm the learning rate per domain.** The schedule was global.
+  Done: `optim.schedule_scope: per_domain` with `optim.rewarm_steps` and `optim.min_lr_ratio`.
 
 Also missing: a cloud executor, any comparison across runs, and a short bench config. The
 existing configs are multi-hour runs.

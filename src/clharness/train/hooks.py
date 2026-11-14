@@ -6,12 +6,21 @@ capture, SAE statistics, CKA) and everything that will later *intervene* (Phase 
 replay / protection policies) is a hook. Keep the loop unchanged; add hooks.
 
 Lifecycle:
+  configure_model(ctx) -> model|None   once, right after the model is loaded and BEFORE the
+                                   optimizer is built (and before torch.compile). Wrap the
+                                   model (LoRA) and return the new one, or freeze parameters in
+                                   place and return None. Hooks run in order; each sees the
+                                   model the previous one returned.
   on_run_start(ctx)                once, after model/data are loaded, before step 0
   on_domain_start(ctx, domain)     when the stream switches to a new domain
   select_batch(ctx, batch) -> batch|None   (policy hook) may filter/reweight/replace a
                                    micro-batch; return None to skip it. Default: identity.
   wants_activations() -> [layers]  layers whose residuals the loop should capture during the
                                    training forward (detached) for on_micro_batch
+  extra_loss(ctx, batch, logits, labels) -> Tensor|None   a scalar added to the language-model
+                                   loss before backward (distillation, weight penalties).
+                                   `logits` carry gradient. Logged per hook as
+                                   train/extra_loss/<name>; train/loss stays the LM loss.
   on_micro_batch(ctx, step, domain_index, chunk_ids, batch, logits, seq_loss, acts)
                                    after each training forward, before backward: detached logits
                                    [B,T,V], per-sequence token-sum losses [B], captured residuals
@@ -91,6 +100,12 @@ class BaseHook:
     """No-op defaults; subclass and override what you need."""
 
     name = "base"
+
+    def configure_model(self, ctx: RunContext):
+        return None
+
+    def extra_loss(self, ctx: RunContext, batch: torch.Tensor, logits: torch.Tensor, labels: torch.Tensor):
+        return None
 
     def on_run_start(self, ctx: RunContext):
         return None

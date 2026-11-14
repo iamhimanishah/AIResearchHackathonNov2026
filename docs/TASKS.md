@@ -104,6 +104,10 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   4. Test with the tiny model in `tests/test_loop_tiny.py`: freeze everything except one layer,
      then check that the other weights are unchanged after a step.
 - **Done when:** a test proves frozen weights stay identical, and a LoRA-wrapped model trains.
+- **Status:** done. `configure_model` runs in `Trainer.__init__` before `torch.compile` and the
+  optimizer. The counts are in `ctx.state["trainable_params"]` and `["total_params"]`.
+  `decoder_layers` unwraps a PEFT model, so activation capture still finds the layers. Eval
+  hooks see the wrapped model (`ctx.model`), not a merged one.
 - **Open questions:**
   - Does the activation capture (`ResidualCapture`) still find the decoder layers after a PEFT
     wrap? The module paths change to `base_model.model...`.
@@ -122,6 +126,9 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   3. Test that a zero term gives bit-identical training, and that a constant-gradient term
      changes it.
 - **Done when:** the tiny-model test passes, and the per-term logs appear in `metrics.json`.
+- **Status:** done. `train/loss` stays the language-model loss; each term is logged as
+  `train/extra_loss/<hook name>`. The term is cast to fp32. Chunking a KL over the 262k
+  vocabulary is left to the technique. Extra terms do not count as gradient tokens.
 - **Open questions:**
   - Memory: the vocabulary is 262k, so a full teacher-logit tensor at micro-batch 4×1024 is
     about 2 GB in bf16. Is a chunked KL needed? Probably yes; reuse the chunking pattern from
@@ -141,6 +148,9 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   3. Plot it once to confirm.
 - **Done when:** the logged `train/lr` shows a re-warm at each boundary, and the global-scope
   default is unchanged (the existing tests pass).
+- **Status:** done. Set `optim.schedule_scope: per_domain`, `optim.rewarm_steps` and
+  `optim.min_lr_ratio`, with `optim.schedule: cosine` (or `linear`) for the decay. A run spec
+  can set all of these under `optim`. The values to use are still the open questions below.
 - **Open questions:**
   - Re-warm length: 1% or 5% of the domain's steps?
   - Peak LR: the same 1e-4, or lower?
