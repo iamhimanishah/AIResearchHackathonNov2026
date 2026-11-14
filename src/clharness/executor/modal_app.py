@@ -7,6 +7,12 @@ Setup, once per Modal workspace (see README, "Running on Modal"):
 Run specs (normally through `clh run --modal SPEC...`):
     modal run src/clharness/executor/modal_app.py::main --specs a.json,b.json
 
+Deploy, so the agent can start runs by name and they keep going with no terminal attached
+(`modal.Function.from_name("clharness", "run").spawn(...)`, see agent/modal_executor.py):
+    modal deploy src/clharness/executor/modal_app.py
+A deployment holds the code as it was when deployed. Each row records that commit, and a caller
+at a different commit gets a `failed` row telling it to redeploy, instead of a run of stale code.
+
 Where things live on Modal:
     volume clh-data  -> <repo>/data    the tokenized corpora, checked against manifests/real.json
     volume clh-work  -> /vol           hf/ model and dataset cache, runs/ run directories,
@@ -39,6 +45,20 @@ data_vol = modal.Volume.from_name("clh-data", create_if_missing=True)
 work_vol = modal.Volume.from_name("clh-work", create_if_missing=True)
 hf_secret = modal.Secret.from_name("huggingface")  # must define HF_TOKEN
 
+
+
+def _local_code_version(repo: Path) -> str:
+    """The commit the image is built from, with "-dirty" if tracked code differs from it."""
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=repo).strip()
+        dirty = subprocess.check_output(
+            ["git", "status", "--porcelain", "--", "src", "configs", "manifests"], text=True, cwd=repo
+        ).strip()
+        return f"{sha}-dirty" if dirty else sha
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 if modal.is_local():
     _repo = Path(__file__).resolve().parents[3]
     image = (
@@ -51,6 +71,7 @@ if modal.is_local():
             "WANDB_MODE": "offline",
             "TOKENIZERS_PARALLELISM": "false",
         })
+        .env({"CLH_CODE_VERSION": _local_code_version(_repo)})  # last, so it rebuilds nothing heavy
         .add_local_dir(_repo / "src", f"{REMOTE_REPO}/src", ignore=["**/__pycache__"])
         .add_local_dir(_repo / "configs", f"{REMOTE_REPO}/configs")
         .add_local_dir(_repo / "manifests", f"{REMOTE_REPO}/manifests")
@@ -123,24 +144,22 @@ def warm_cache() -> str:
 def run(spec_json: str, git_sha: str, gpu_type: str = DEFAULT_GPU) -> str:
     """Run one spec. Returns the result row as a JSON line and saves it on the work volume."""
     from clharness.executor.run import run_spec
-    from clharness.spec import RunSpec, row_to_line
+    from clharness.spec import ResultRow, RunSpec, row_to_line
 
     spec = RunSpec.model_validate_json(spec_json)
-    row = run_spec(spec, backend="modal", gpu_type=gpu_type, git_sha=git_sha, output_dir=f"{WORK}/runs")
+    code = os.environ.get("CLH_CODE_VERSION", "unknown")
+    if code != git_sha:  # the image holds other code than the caller thinks it is running
+        why = (f"stale deployment: the Modal app holds code at {code[:18]}, the caller is at "
+               f"{git_sha[:12]}. Commit your changes and run: modal deploy src/clharness/executor/modal_app.py")
+        return row_to_line(ResultRow(spec=spec, spec_hash=spec.spec_hash(), git_sha=code,
+                                     status="failed", reason=why, backend="modal"))
+    row = run_spec(spec, backend="modal", gpu_type=gpu_type, git_sha=code, output_dir=f"{WORK}/runs")
     line = row_to_line(row)
     rows_dir = Path(WORK) / "rows"
     rows_dir.mkdir(parents=True, exist_ok=True)
     (rows_dir / f"{row.spec_hash}.json").write_text(line)
     work_vol.commit()
     return line
-
-
-def _git_sha() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True,
-                                       cwd=Path(__file__).parent).strip()
-    except Exception:  # noqa: BLE001
-        return "unknown"
 
 
 @app.local_entrypoint()
@@ -153,7 +172,7 @@ def data(force: bool = False):
 def main(specs: str, out: str = "results/rows.jsonl", gpu: str = DEFAULT_GPU):
     """Run comma-separated spec files in parallel and append their rows to `out`."""
     texts = [Path(p).read_text() for p in specs.split(",") if p]
-    sha = _git_sha()
+    sha = _local_code_version(Path(__file__).resolve().parents[3])
     fn = run if gpu == DEFAULT_GPU else run.with_options(gpu=gpu)
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
