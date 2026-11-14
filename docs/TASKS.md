@@ -194,6 +194,22 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   - The two halves of the protected set differ by 4.5 points on the same run. The noise floor
     (C3) has to be measured on each half.
   - A run costs about $1.20, not the $2.50 planned for.
+
+  Second calibration, same day: code then legal, 64 sequences per step, seed 0, one run each.
+
+  | Spec | LR | MC mean, selection half | MC mean, report half | Legal ppl ratio | Code ppl ratio | General ppl ratio |
+  |---|---|---|---|---|---|---|
+  | `calibration-code-legal-lr1e-4-s0` | 1e-4 | −7.5 | −4.9 | 0.78 | 1.79 | 1.38 |
+  | `calibration-code-legal-lr5e-5-s0` | 5e-5 | −3.1 | −2.0 | 0.76 | 1.37 | 1.13 |
+  | `calibration-code-legal-lr3e-5-s0` | 3e-5 | −0.7 | −1.2 | 0.75 | 1.23 | 1.06 |
+
+  - Legal text gives real acquisition (held-out perplexity about 24% below base), so a stream
+    ending in legal fixes the "bench learns nothing" problem.
+  - Acquisition is the same at all three learning rates, while forgetting falls from about 6
+    points to about 1. On this bench, lowering the learning rate is a strong mitigation by
+    itself. The grid therefore needs no-mitigation arms at lower learning rates as controls:
+    a technique has to beat "just lower the LR" at matched acquisition, not only the 1e-4 run.
+  - Proposed bench: code then legal at 1e-4. Not adopted until Member C agrees.
 - **Open questions:**
   - Is 10M tokens per domain enough to forget at 1e-4? The 50M run lost 11.9 points, most of
     it early, so probably yes. Check it.
