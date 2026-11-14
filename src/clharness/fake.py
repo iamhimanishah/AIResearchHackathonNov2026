@@ -16,10 +16,12 @@ from typing import Any
 
 from clharness.analysis.design import (
     HALVES,
+    LR_CONTROLS,
     NO_MITIGATION,
     REFERENCE,
     SELECTION,
     factorial,
+    lr_of,
     selection_of,
 )
 from clharness.analysis.design import PARAMS as DESIGN_PARAMS
@@ -71,6 +73,12 @@ PLANTED: dict[str, Any] = {
         "wavg": 0.030,
     },
     # replay's `select` signal, against random selection (plain replay); (signal, keep) keys
+    # no-mitigation at a lower learning rate (PREREG A13): forgets less, learns code a little less.
+    # 3e-5 learns too little to pass the 5% acquisition gate; 5e-5 passes and is the chosen control.
+    "lr_control_effects": {
+        "5e-05": {"retention": 0.025, "log_acquisition": 0.020},
+        "3e-05": {"retention": 0.045, "log_acquisition": 0.060},
+    },
     "retention_selection_effects": {
         "loss/high": 0.004,
         "loss/low": -0.002,
@@ -105,9 +113,13 @@ def _spec(techniques: tuple[str, ...], seed: int, **param_overrides: dict[str, A
     )
 
 
-def _effects(techniques: tuple[str, ...], selection: tuple[str, str] | None = None) -> tuple[float, float]:
+def _effects(techniques: tuple[str, ...], selection: tuple[str, str] | None = None,
+             lr: float | None = None) -> tuple[float, float]:
     """Planted (retention mean delta, log perplexity ratio) for a set of techniques, no noise."""
     ret = PLANTED["baseline_retention_mean_delta"]
+    if lr is not None:
+        e = PLANTED["lr_control_effects"][f"{lr:g}"]
+        return ret + e["retention"], PLANTED["baseline_log_ppl_ratio"] + e["log_acquisition"]
     if selection:
         ret += PLANTED["retention_selection_effects"][f"{selection[0]}/{selection[1]}"]
     acq = PLANTED["baseline_log_ppl_ratio"]
@@ -135,7 +147,7 @@ def _half(rng: random.Random, mean_delta: float) -> HalfRetention:
 def _finished(spec: RunSpec, rng: random.Random) -> ResultRow:
     techs = tuple(spec.technique_names())
     selection = selection_of(spec)
-    ret, acq = _effects(techs, selection)
+    ret, acq = _effects(techs, selection, lr_of(spec))
     ret += rng.gauss(0, PLANTED["seed_noise_sd"])  # shared by both halves: it is run-level noise
     selection, report = _half(rng, ret), _half(rng, ret)
     # In the pilot runs most of the forgetting happened in the first domain.
@@ -238,6 +250,8 @@ def fake_rows(seed: int = 0) -> list[ResultRow]:
         add(t, range(1, 3))  # replication of the promoted configurations
     for sel in (("loss", "high"), ("act_nov", "high")):  # the selection family, replicated
         add(REFERENCE, range(1, 3), sel)
+    for lr in LR_CONTROLS:  # the lower-LR no-mitigation controls (PREREG A13)
+        rows.extend(_finished(design_spec(NO_MITIGATION, s, lr=lr), rng) for s in range(3))
 
     rows.append(_failed(design_spec(failed_screen, 0), "infrastructure: GPU preempted 3 times"))
     rows.append(_failed(_spec(("distill", "freeze"), 0), "out of memory in the teacher forward"))

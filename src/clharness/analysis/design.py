@@ -44,6 +44,10 @@ SELECTION_PARAMS: dict[str, dict[str, Any]] = {
 STREAM = (("code", 10_000_000), ("legal", 10_000_000))  # configs/bench/fast.yaml, frozen 2026-11-14
 NO_MITIGATION: frozenset[str] = frozenset()
 REFERENCE = frozenset({"replay", "lr_rewarm"})
+BENCH_LR = 1e-4  # configs/bench/fast.yaml
+# PREREG A13: no-mitigation at lower learning rates, the "just lower the LR" controls. Run at the
+# replication seeds (0, 1, 2); seed 0 is A5's calibration run at that rate (same spec hash).
+LR_CONTROLS = (5e-5, 3e-5)
 
 
 def factorial() -> list[frozenset[str]]:
@@ -70,21 +74,37 @@ def label(techniques: frozenset[str], selection: tuple[str, str] | None = None) 
 
 
 def spec(techniques: frozenset[str], seed: int, selection: tuple[str, str] | None = None,
-         stream: tuple[tuple[str, int], ...] = STREAM) -> RunSpec:
-    """One run spec. `selection=(signal, keep)` sets replay's selection (needs replay on)."""
+         stream: tuple[tuple[str, int], ...] = STREAM, lr: float | None = None) -> RunSpec:
+    """One run spec. `selection=(signal, keep)` sets replay's selection (needs replay on).
+    `lr` overrides the bench learning rate; it is only for the lower-LR controls (A13)."""
     if selection and "replay" not in techniques:
         raise ValueError("selection is a parameter of replay; switch replay on")
+    if lr is not None and techniques:
+        raise ValueError("a learning-rate override is only for the no-mitigation LR controls")
     techs = []
     for name in sorted(techniques):
         params = dict(PARAMS[name])
         if name == "replay" and selection:
             params.update(SELECTION_PARAMS[selection[0]], keep=selection[1])
         techs.append(TechniqueSpec(name=name, params=params))
+    name = f"{label(techniques, selection)}-lr{lr:g}" if lr is not None else label(techniques, selection)
     return RunSpec(
-        name=f"{label(techniques, selection)}-s{seed}", seed=seed,
+        name=f"{name}-s{seed}", seed=seed,
         stream=[StreamDomain(name=n, tokens=t) for n, t in stream],
-        techniques=techs, notes="screen (analysis/PREREG.md 6.2)",
+        optim={"lr": lr} if lr is not None else {},
+        techniques=techs, notes="screen (analysis/PREREG.md 6.2)" if lr is None else "LR control (PREREG A13)",
     )
+
+
+def lr_controls(seeds: range = range(3)) -> list[RunSpec]:
+    """No-mitigation at each lower learning rate, at the replication seeds (PREREG A13)."""
+    return [spec(NO_MITIGATION, s, lr=lr) for lr in LR_CONTROLS for s in seeds]
+
+
+def lr_of(row_spec: RunSpec) -> float | None:
+    """The overridden learning rate of a lower-LR control, else None."""
+    lr = row_spec.optim.get("lr")
+    return float(lr) if lr is not None and not row_spec.techniques and float(lr) != BENCH_LR else None
 
 
 def screen(seed: int = 0) -> list[RunSpec]:
@@ -107,7 +127,9 @@ def is_design_spec(row_spec: RunSpec) -> bool:
     """True when every technique uses the frozen design parameters (selection aside) and the
     stream is the bench's. Off-design rows (parameter variants, sanity runs) stay out of the
     effects fit and of promotion; they are still counted and flagged."""
-    if tuple((d.name, d.tokens) for d in row_spec.stream) != STREAM or row_spec.optim:
+    if tuple((d.name, d.tokens) for d in row_spec.stream) != STREAM:
+        return False
+    if row_spec.optim and not (lr_of(row_spec) in LR_CONTROLS and set(row_spec.optim) == {"lr"}):
         return False
     for t in row_spec.techniques:
         params = {k: v for k, v in t.params.items() if not (t.name == "replay" and k in ("select", "pool", "keep", "layer"))}

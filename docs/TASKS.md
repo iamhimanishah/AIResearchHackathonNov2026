@@ -436,12 +436,14 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 - **Status:** drafted in [`analysis/PREREG.md`](../analysis/PREREG.md).
   - The split is built: `manifests/eval-protected-v1-split.json`, from
     `scripts/make_item_split.py`, stratified by base correctness.
-  - Settled: the bench (code then legal, frozen by A5), the technique parameters
-    (`analysis/design.py`, copied from B's specs), answer collapse (A9) and the acquisition
-    measure (A2b).
+  - Settled:
+    - the bench: code then legal, frozen by A5;
+    - the technique parameters: `analysis/design.py`, copied from B's specs;
+    - answer collapse (A9) and the acquisition measure (A2b);
+    - the lower-LR controls (A13): rule 4 of the win rule, with no-mitigation at 5e-5 and 3e-5
+      at seeds 0–2. Seed 0 is A5's calibration run, so 4 runs are new.
   - Still open before the freeze:
     - σ_noise, from C3;
-    - the lower-learning-rate controls (A13);
     - three provisional items (invalid-run rules, MBPP, matched compute).
   - Every option considered is kept in the PREREG's Appendix A.
 - **Steps:** write down each of the following.

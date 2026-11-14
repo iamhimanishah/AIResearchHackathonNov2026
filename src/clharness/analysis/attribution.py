@@ -41,6 +41,7 @@ from clharness.analysis.design import (
     alias_chains,
     factorial,
     is_design_spec,
+    lr_of,
     selection_of,
 )
 from clharness.spec import ResultRow, canonical_json
@@ -91,6 +92,11 @@ class Config:
         """(signal, keep) when replay selects by a signal; None for plain replay or no replay."""
         return selection_of(self.rows[0].spec)
 
+    @property
+    def lr(self) -> float | None:
+        """The learning rate of a lower-LR no-mitigation control (PREREG A13), else None."""
+        return lr_of(self.rows[0].spec)
+
 
 def acquisition_of(row: ResultRow) -> float:
     """PREREG 4: acquisition is the perplexity ratio at each domain's own boundary (what was
@@ -121,13 +127,15 @@ def group(rows: Iterable[ResultRow]) -> dict[str, Config]:
         key = config_key(row)
         cfg = configs.setdefault(key, Config(key=key, techniques=frozenset(row.spec.technique_names())))
         cfg.rows.append(row)
-    names: dict[tuple[frozenset[str], tuple[str, str] | None], list[Config]] = {}
+    names: dict[tuple[frozenset[str], tuple[str, str] | None, float | None], list[Config]] = {}
     for cfg in configs.values():
-        names.setdefault((cfg.techniques, cfg.selection), []).append(cfg)
-    for (techs, sel), same in names.items():
+        names.setdefault((cfg.techniques, cfg.selection, cfg.lr), []).append(cfg)
+    for (techs, sel, lr), same in names.items():
         base = "+".join(sorted(techs)) or "no-mitigation"
         if sel:
             base += f"+select-{sel[0]}-{sel[1]}"
+        if lr is not None:
+            base += f"-lr{lr:g}"
         if len(same) == 1:
             same[0].label = base
             continue
@@ -144,7 +152,7 @@ def group(rows: Iterable[ResultRow]) -> dict[str, Config]:
 def find(configs: dict[str, Config], techniques: frozenset[str]) -> Config | None:
     """The configuration with exactly these techniques and plain (random) replay. With several
     (different parameters), the one with the most seeds, which is the replicated one."""
-    hits = [c for c in configs.values() if c.techniques == techniques and c.selection is None]
+    hits = [c for c in configs.values() if c.techniques == techniques and c.selection is None and c.lr is None]
     return max(hits, key=lambda c: len(c.rows)) if hits else None
 
 
@@ -330,13 +338,25 @@ def holm(pvalues: dict[str, float]) -> dict[str, float]:
     return out
 
 
-def decide(x: Config, ref: Config, boot: dict[str, Any], p_adj: float, sigma: float | None) -> dict[str, Any]:
-    """The three-part rule of PREREG 5. `sigma` is sigma_noise on the same half."""
+def decide(x: Config, ref: Config, boot: dict[str, Any], p_adj: float, sigma: float | None,
+           lr_control: Config | None = None, lr_boot: dict[str, Any] | None = None,
+           lr_p_adj: float | None = None) -> dict[str, Any]:
+    """The rule of PREREG 5. `sigma` is sigma_noise on the same half. Rules 1-3 compare x with
+    the reference arm; rule 4 (A13) asks the same significance and size of x against the chosen
+    lower-LR control, and holds trivially when no lower-LR arm passes the acquisition gate."""
     acq_x, acq_r = float(x.acquisition().mean()), float(ref.acquisition().mean())
     rule1 = p_adj < ALPHA and (boot["lo"] > 0 or boot["hi"] < 0)
     rule2 = sigma is not None and boot["delta"] > SIZE_GATE_SIGMAS * sigma
     rule3 = acq_x <= ACQ_GATE * acq_r
     enough = boot["n_pairs"] >= MIN_PAIRS
+    if lr_control is None or lr_boot is None:
+        rule4, lr_info = True, None
+    else:
+        rule4 = (lr_p_adj is not None and lr_p_adj < ALPHA and lr_boot["lo"] > 0
+                 and sigma is not None and lr_boot["delta"] > SIZE_GATE_SIGMAS * sigma
+                 and lr_boot["n_pairs"] >= MIN_PAIRS)
+        lr_info = {"config": lr_control.label, "delta": lr_boot["delta"], "ci": [lr_boot["lo"], lr_boot["hi"]],
+                   "p": lr_boot["p"], "p_holm": lr_p_adj, "n_pairs": lr_boot["n_pairs"]}
     return {
         "config": x.label, "delta": boot["delta"], "ci": [boot["lo"], boot["hi"]],
         "p": boot["p"], "p_holm": p_adj, "bootstrap_mode": boot["mode"], "n_pairs": boot["n_pairs"],
@@ -344,8 +364,9 @@ def decide(x: Config, ref: Config, boot: dict[str, Any], p_adj: float, sigma: fl
         "acquisition": acq_x, "acquisition_limit": ACQ_GATE * acq_r,
         "enough_seeds": enough,
         "rule1_significant": bool(rule1), "rule2_large_enough": bool(rule2), "rule3_learns_enough": bool(rule3),
+        "rule4_beats_lr_control": bool(rule4), "vs_lr_control": lr_info,
         # Fewer than MIN_PAIRS paired seeds: not a confirmatory test yet, whatever the numbers say.
-        "beats_reference": bool(enough and rule1 and rule2 and rule3 and boot["delta"] > 0),
+        "beats_reference": bool(enough and rule1 and rule2 and rule3 and rule4 and boot["delta"] > 0),
     }
 
 
@@ -374,6 +395,24 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3) -> list[
         d["rank"] = i + 1
         d["promoted"] = d["passes_acquisition_gate"] and i < k
     return ranked
+
+
+def choose_lr_control(configs: dict[str, Config], ref: Config | None) -> dict[str, Any]:
+    """PREREG A13: the lower-LR no-mitigation arm with the best selection-half outcome among
+    those whose acquisition passes the 5% gate against the reference arm. Selection half only."""
+    limit = ACQ_GATE * float(ref.acquisition().mean()) if ref is not None else math.inf
+    arms = []
+    for cfg in configs.values():
+        if cfg.lr is None:
+            continue
+        acq = float(cfg.acquisition().mean())
+        arms.append({"config": cfg.label, "key": cfg.key, "lr": cfg.lr, "n_seeds": len(cfg.rows),
+                     "selection_primary": float(cfg.primary("selection").mean()),
+                     "acquisition": acq, "passes_acquisition_gate": acq <= limit})
+    eligible = [a for a in arms if a["passes_acquisition_gate"]]
+    chosen = max(eligible, key=lambda a: a["selection_primary"], default=None)
+    return {"arms": sorted(arms, key=lambda a: -a["lr"]), "chosen": chosen["key"] if chosen else None,
+            "chosen_label": chosen["config"] if chosen else None}
 
 
 def promote_selection(configs: dict[str, Config], ref: Config | None) -> list[dict[str, Any]]:
@@ -450,7 +489,8 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     statuses = {s: sum(r.status == s for r in rows) for s in ("finished", "failed", "invalid")}
     finished = [r for r in rows if r.status == "finished"]
     # selection variants are their own family (PREREG 6.3b), not a seventh factor of the fit
-    design_rows = [r for r in finished if selection_of(r.spec) is None and is_design_spec(r.spec)]
+    design_rows = [r for r in finished
+                   if selection_of(r.spec) is None and lr_of(r.spec) is None and is_design_spec(r.spec)]
     in_factorial = set(factorial())
     factorial_rows = [r for r in design_rows if frozenset(r.spec.technique_names()) in in_factorial]
     configs = group(finished)
@@ -483,6 +523,7 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
             design_rows, lambda r: math.log(acquisition_of(r)), sigma=None),
         "promotion": promote(configs, ref),
         "selection_screen": promote_selection(configs, ref),
+        "lr_control": choose_lr_control(configs, ref),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),
     }
@@ -494,8 +535,14 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     promoted = [d["key"] for d in out["promotion"] if d["promoted"]]
     boots = {configs[k].label: paired_bootstrap(configs[k], ref, "report", n_boot, seed, items) for k in promoted}
     adj = holm({name: b["p"] for name, b in boots.items()})
-    out["confirmatory"] = [decide(configs[k], ref, boots[configs[k].label], adj[configs[k].label], sigma_rep)
-                           for k in promoted]
+    lr_ctrl = configs.get(out["lr_control"]["chosen"]) if out["lr_control"]["chosen"] else None
+    lr_boots = {configs[k].label: paired_bootstrap(configs[k], lr_ctrl, "report", n_boot, seed, items)
+                for k in promoted} if lr_ctrl is not None else {}
+    lr_adj = holm({name: b["p"] for name, b in lr_boots.items()}) if lr_boots else {}
+    out["confirmatory"] = [
+        decide(configs[k], ref, boots[configs[k].label], adj[configs[k].label], sigma_rep,
+               lr_ctrl, lr_boots.get(configs[k].label), lr_adj.get(configs[k].label))
+        for k in promoted]
     sel_promoted = [d["key"] for d in out["selection_screen"] if d.get("promoted")]
     sel_boots = {configs[k].label: paired_bootstrap(configs[k], ref, "report", n_boot, seed, items)
                  for k in sel_promoted}
@@ -591,13 +638,18 @@ def to_markdown(report: dict[str, Any]) -> str:
                          f"{'pass' if d['passes_acquisition_gate'] else 'fail'} | {'yes' if d.get('promoted') else ''} |")
     if "confirmatory" in report:
         lines.append("\n## Confirmatory tests vs the reference arm (report half)\n")
-        lines.append("| Config | Seeds | Δ | 95% CI | p (Holm) | > 2σ | Acq. gate | Beats reference |\n"
-                     "|---|---|---|---|---|---|---|---|")
+        lc = report.get("lr_control", {})
+        lines.append(f"Lower-LR control (A13): `{lc.get('chosen_label') or 'none passes the acquisition gate'}`\n")
+        lines.append("| Config | Seeds | Δ | 95% CI | p (Holm) | > 2σ | Acq. gate | Δ vs LR control | Beats LR control | Wins |\n"
+                     "|---|---|---|---|---|---|---|---|---|---|")
         for d in report["confirmatory"]:
             seeds = f"{d['n_pairs']}" + ("" if d["enough_seeds"] else " (too few)")
+            vs = d.get("vs_lr_control")
+            lr_cell = f"{pct(vs['delta'])} ({pct(vs['ci'][0])} to {pct(vs['ci'][1])})" if vs else "n/a"
             lines.append(f"| {d['config']} | {seeds} | {pct(d['delta'])} | {pct(d['ci'][0])} to {pct(d['ci'][1])} | "
                          f"{d['p_holm']:.3f} | {'yes' if d['rule2_large_enough'] else 'no'} | "
-                         f"{'pass' if d['rule3_learns_enough'] else 'fail'} | **{'yes' if d['beats_reference'] else 'no'}** |")
+                         f"{'pass' if d['rule3_learns_enough'] else 'fail'} | {lr_cell} | "
+                         f"{'yes' if d['rule4_beats_lr_control'] else 'no'} | **{'yes' if d['beats_reference'] else 'no'}** |")
         if report.get("confirmatory_selection"):
             lines.append("\n### Selection family (Holm across signals)\n")
             lines.append("| Config | Seeds | Δ | 95% CI | p (Holm) | > 2σ | Beats reference |\n|---|---|---|---|---|---|---|")

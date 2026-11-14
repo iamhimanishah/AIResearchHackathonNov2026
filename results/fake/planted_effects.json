@@ -21,6 +21,16 @@
     "distill": 0.01,
     "wavg": 0.03
   },
+  "lr_control_effects": {
+    "5e-05": {
+      "retention": 0.025,
+      "log_acquisition": 0.02
+    },
+    "3e-05": {
+      "retention": 0.045,
+      "log_acquisition": 0.06
+    }
+  },
   "retention_selection_effects": {
     "loss/high": 0.004,
     "loss/low": -0.002,

@@ -74,10 +74,11 @@ def test_row_rules():
 
 def test_fake_rows_cover_the_cases_and_round_trip(tmp_path):
     rows = fake_rows(0)
-    assert 35 <= len(rows) <= 45
+    assert 40 <= len(rows) <= 55  # the pre-registered study: screen, replication, LR controls, failures
     assert {r.status for r in rows} == {"finished", "failed", "invalid"}
     assert len({r.spec_hash for r in rows}) == len(rows)  # every row is a distinct experiment
-    assert sum(1 for r in rows if not r.spec.techniques) == 5  # noise-floor seeds
+    assert sum(1 for r in rows if not r.spec.techniques and not r.spec.optim) == 5  # noise-floor seeds
+    assert sum(1 for r in rows if not r.spec.techniques and r.spec.optim) == 6  # lower-LR controls
     path = tmp_path / "rows.jsonl"
     write_rows(path, rows[:-1])
     append_row(path, rows[-1])
@@ -90,6 +91,7 @@ def test_fake_rows_carry_the_planted_effects():
             r.retention.report.mean_delta
             for r in fake_rows(0)
             if r.status == "finished" and set(r.spec.technique_names()) == names
+            and not r.spec.optim  # the lower-LR controls are no-mitigation at another LR
         ]
         return sum(hits) / len(hits)
 

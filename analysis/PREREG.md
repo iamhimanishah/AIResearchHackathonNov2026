@@ -24,7 +24,7 @@ less?
 
 **Confirmatory claims** are tested under the rules below. They are limited to:
 1. The three configurations promoted from the factorial screen (section 6.3), each against the
-   reference arm.
+   reference arm and against the best lower-learning-rate no-mitigation arm (rule 4).
 2. The two selection signals promoted from the selection screen (section 6.3b), each against
    the reference arm with random selection. This is a separate family with its own Holm
    correction.
@@ -110,7 +110,7 @@ Base accuracy per half:
 
 ## 5. Decision rule: "beats the reference arm" (decided)
 
-A configuration X beats the reference arm R only if **all three** of these hold, on the report
+A configuration X beats the reference arm R only if **all four** of these hold, on the report
 half, over the paired replication seeds:
 
 1. **Significant:** the 95% paired bootstrap interval (section 7) for
@@ -120,11 +120,20 @@ half, over the paired replication seeds:
    **σ_noise = TBD** (filled in from C3 before the freeze).
 3. **Learns enough:** acquisition(X) ≤ **1.05 × acquisition(R)**, using the own-boundary
    measure from section 4.
+4. **Beats just lowering the learning rate (A13):** let L be the lower-LR no-mitigation arm
+   (5e-5 or 3e-5) with the best *selection-half* primary outcome, among those whose
+   acquisition passes the gate in rule 3.
+   - X must beat L with the same tests as rules 1 and 2: the paired bootstrap interval for
+     primary(X) − primary(L) excludes 0 after Holm correction across the promoted
+     configurations, and that Δ is above 2 × σ_noise.
+   - If no lower-LR arm passes the gate, rule 4 holds trivially, and the report says so.
+   - Rule 4 applies to the factorial family only. The selection family compares selection
+     signals with random selection, where the learning rate plays no part.
 
 The retention–acquisition **Pareto frontier** is always shown next to these results. A
 configuration that is on the frontier but fails rule 3 is reported as a trade-off, not a win.
 
-If no configuration meets all three, we report the one closest to doing so, with the reason it
+If no configuration meets all four, we report the one closest to doing so, with the reason it
 fell short. That is a pre-registered outcome, not a failure.
 
 ## 6. Design
@@ -210,6 +219,9 @@ Specs that match the committed `no-mitigation-s0`, `reference-s0`, `replay-only-
   reference halves, selection variants and off-design rows are not candidates.
 - Run these 3, the reference arm and no-mitigation at **3 seeds each (0, 1, 2)**, paired by
   seed. Seed 0 reuses the screening and noise-floor runs. That makes at most **10 new runs**.
+- Run the two lower-LR controls (no-mitigation at 5e-5 and 3e-5) at seeds 1 and 2:
+  **4 new runs** (`design.lr_controls()`). Their seed 0 is A5's calibration run at that rate,
+  which has the same spec hash. They need no promotion, so they can run alongside the screen.
 - The agent applies this rule mechanically, and its decision log shows the ranking it used.
 
 ### 6.3b Selection family (decided)
@@ -445,7 +457,8 @@ collapse `invalid`; it now records the share and keeps the row.
 | Equal FLOPs | Strictest fairness | Needs FLOP accounting per technique; complex |
 | Equal wall-clock | What a practitioner pays | Depends on GPU and noise; hard to reproduce |
 
-### A13. Lower-learning-rate controls: **open** (decide before the freeze)
+### A13. Lower-learning-rate controls: **decided**, added to the win rule as rule 4
+Decided on 2026-11-14, before the freeze.
 Raised by Member A's code→legal calibration (TASKS A5; one seed each). Lowering the learning
 rate cuts forgetting with the same legal acquisition:
 
@@ -456,10 +469,10 @@ rate cuts forgetting with the same legal acquisition:
 | 3e-5 | −0.7 points |
 
 So "just lower the LR" is itself a strong mitigation, and a technique should be compared with
-it as well as with the reference arm. Not yet decided:
+it as well as with the reference arm.
 
 | Option | Pros | Cons |
 |---|---|---|
-| Add to the win rule: X must also beat the best lower-LR no-mitigation arm whose acquisition is within the 5% gate | Answers the obvious judge question ("why not lower the LR?"). One extra comparison per promoted configuration | 2 lower-LR arms × 3 seeds (6 runs, about $7); one more condition to pass |
+| **Add to the win rule (chosen):** X must also beat the best lower-LR no-mitigation arm whose acquisition is within the 5% gate | Answers the obvious judge question ("why not lower the LR?"). One extra comparison per promoted configuration | 2 lower-LR arms × 3 seeds (6 runs, about $7); one more condition to pass |
 | Report lower-LR arms as an exploratory comparison only | No change to the decision rule | Leaves the strongest simple baseline out of the claim |
 | Add LR as a 7th factor in the screen | Gives the LR × technique interactions | Changes the frozen bench's LR per run; doubles the screen or loses resolution |

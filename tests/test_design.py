@@ -71,3 +71,18 @@ def test_selection_is_a_parameter_of_replay():
         pass
     else:
         raise AssertionError("selection without replay must be refused")
+
+
+def test_lr_controls_seed_0_are_the_a5_calibration_runs():
+    for lr, path in [(5e-5, "calibration-code-legal-lr5e-5-s0"), (3e-5, "calibration-code-legal-lr3e-5-s0")]:
+        committed = load_spec(f"configs/bench/specs/{path}.json")
+        assert committed.spec_hash() == D.spec(D.NO_MITIGATION, 0, lr=lr).spec_hash(), path
+        assert D.lr_of(committed) == lr and D.is_design_spec(committed)
+    specs = D.lr_controls()
+    assert len(specs) == 6 and len({s.spec_hash() for s in specs}) == 6
+    try:
+        D.spec(frozenset({"replay"}), 0, lr=5e-5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an LR override with techniques must be refused")

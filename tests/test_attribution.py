@@ -46,7 +46,8 @@ def test_main_fit_is_six_techniques_plus_the_reference_interaction(screening):
 def test_selection_variants_and_off_design_rows_stay_out_of_the_fit(rows, screening):
     fitted = screening["effects_retention_selection"]["n_rows"]
     excluded = [r for r in rows if r.status == "finished"
-                and (A.selection_of(r.spec) is not None or not A.is_design_spec(r.spec))]
+                and (A.selection_of(r.spec) is not None or A.lr_of(r.spec) is not None
+                     or not A.is_design_spec(r.spec))]
     assert fitted == screening["rows"]["finished"] - len(excluded)
     assert screening["off_design_rows"] == ["fake-distill-10.0-s1"]
 
@@ -176,3 +177,41 @@ def test_acquisition_uses_own_boundary_and_falls_back_for_old_rows(rows, screeni
 def test_markdown_renders(confirmatory):
     md = A.to_markdown(confirmatory)
     assert "Confirmatory tests" in md and "Failed and invalid runs" in md
+
+
+def test_lr_controls_are_not_the_noise_floor_or_in_the_fit(rows, screening):
+    configs = A.group(rows)
+    assert A.find(configs, A.NO_MITIGATION).lr is None
+    lr_rows = [r for r in rows if r.status == "finished" and A.lr_of(r.spec) is not None]
+    assert len(lr_rows) == 6
+    assert screening["effects_retention_selection"]["effects"]["(baseline)"]["estimate"] == pytest.approx(
+        PLANTED["baseline_retention_mean_delta"], abs=0.01)
+
+
+def test_lr_control_is_the_best_arm_that_passes_the_acquisition_gate(screening):
+    """PREREG A13: 3e-5 learns too little (planted), so 5e-5 is the control."""
+    lc = screening["lr_control"]
+    gate = {a["lr"]: a["passes_acquisition_gate"] for a in lc["arms"]}
+    assert gate == {5e-5: True, 3e-5: False}
+    assert lc["chosen_label"] == "no-mitigation-lr5e-05"
+
+
+def test_rule4_must_hold_to_win_and_is_vacuous_without_a_control(rows):
+    configs = A.group(rows)
+    ref = A.find(configs, A.REFERENCE)
+    x = A.find(configs, frozenset({"distill", "freeze", "replay"}))
+    lr = next(c for c in configs.values() if c.lr == 5e-5)
+    strong = {"delta": 0.05, "lo": 0.02, "hi": 0.08, "p": 0.001, "mode": "parametric", "n_pairs": 3}
+    weak = {"delta": 0.004, "lo": -0.01, "hi": 0.02, "p": 0.6, "mode": "parametric", "n_pairs": 3}
+    d = A.decide(x, ref, strong, 0.003, 0.006, lr, weak, 0.6)
+    assert d["rule1_significant"] and d["rule2_large_enough"] and d["rule3_learns_enough"]
+    assert not d["rule4_beats_lr_control"] and not d["beats_reference"]
+    d = A.decide(x, ref, strong, 0.003, 0.006, lr, strong, 0.003)
+    assert d["rule4_beats_lr_control"] and d["beats_reference"]
+    d = A.decide(x, ref, strong, 0.003, 0.006)  # no lower-LR arm passed the gate
+    assert d["rule4_beats_lr_control"] and d["vs_lr_control"] is None
+
+
+def test_confirmatory_reports_the_lr_comparison(confirmatory):
+    assert all(d["vs_lr_control"]["config"] == "no-mitigation-lr5e-05" for d in confirmatory["confirmatory"])
+    assert all(d["rule4_beats_lr_control"] for d in confirmatory["confirmatory_selection"])  # n/a there
