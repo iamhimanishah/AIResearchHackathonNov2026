@@ -116,13 +116,73 @@ Each has one owner and one deliverable. Put a name in the owner column when you 
 
 | # | Workstream | Deliverable | Owner |
 |---|---|---|---|
-| 1 | Bench core | The harness changes listed below, a frozen fast bench, and the run-spec and result-row formats | |
-| 2 | Executor | One command that runs a spec on a cloud GPU and returns a result row; many in parallel | |
-| 3 | Techniques | Each technique as a plugin with a sanity run, including example selection with random and loss-based controls, and the reference arm | |
-| 4 | Design and analysis | Grid plan, noise floor, seed policy, attribution math, comparison against the reference arm | |
-| 5 | Agent and page | The loop that launches and tracks runs, and the live results page | |
+| 1 | Bench core | The harness changes listed below, a frozen fast bench, and the run-spec and result-row formats | Member A |
+| 2 | Executor | One command that runs a spec on a cloud GPU and returns a result row; many in parallel | Member A |
+| 3 | Techniques | Each technique as a plugin with a sanity run, including example selection with random and loss-based controls, and the reference arm | Member B |
+| 4 | Design and analysis | Grid plan, noise floor, seed policy, attribution math, comparison against the reference arm | Member C |
+| 5 | Agent and page | The loop that launches and tracks runs, and the live results page | Member D |
 
 With three people: combine 1 with 2, and 3 with 4. With four: combine 1 with 2.
+Members A to D are placeholders: replace each with a name when someone claims the role.
+
+## Division of work (team remember US, four people)
+
+**Member A: bench core and executor (1+2).**
+- Add the three harness changes listed below: a pre-optimizer model hook, a loss-term hook,
+  and per-domain LR re-warm.
+- Write a frozen fast bench config: code then biomedical, LR 1e-4, about 30 minutes per run.
+- Commit the run-spec and result-row formats early, with fake rows, so the other
+  workstreams can build against them.
+- Build a Modal executor with parallel fan-out, retries, idempotent run IDs and a budget
+  guard.
+- Add a Tinker backend that emits the same result row.
+- Add `make reproduce`.
+
+**Member B: techniques (3).** In this order, each with a sanity run at matched gradient tokens:
+1. The reference arm (replay plus per-domain LR re-warm).
+2. Replay.
+3. Example selection: random and loss-based controls, then the activation-based signal.
+4. LoRA, then layer freezing.
+5. Distillation from the base model.
+6. Weight averaging.
+
+**Member C: design and analysis (4).**
+- Write `analysis/PREREG.md` before the grid launches. It covers the seed policy, the
+  selection/report split of the protected set, and the decision rule against the reference
+  arm.
+- Measure the noise floor: the no-mitigation baseline at 3 to 5 seeds.
+- Build the attribution math (main effects and pairwise interactions), bootstrap intervals
+  and a cost-adjusted ranking, against fake rows first.
+- Own the pitch figures and the prior-work credit wording.
+- Also owns the time-boxed second task sequence (below).
+
+**Member D: agent and page (5).**
+- Build an agent loop that plans the screening grid, launches it, reads the rows and picks
+  what to replicate or combine, logging every decision with its reason.
+- Build the live results page.
+- Set up the past.dev memory shared by the planner and analysis agents.
+- Put Exa in the main loop once priorities 1 to 3 work.
+- Own the submission: demo video, description and the challenges entered.
+
+**Second task sequence (hybrid scope).** The top configurations are re-run on a published
+sequence: Tinker LoRA on the smallest Llama or Qwen, SST-2 then MNLI then AG News, 5k train
+and 1k eval per task. It runs naive, replay-200, joint and the top two techniques at 3 seeds,
+scored as gap closed and average forgetting. Rules:
+- It starts only after sync point 1.
+- It gets about 4 hours of Member C's time.
+- It is the first thing to cut.
+
+**Budget caps** (70% of the team total, 30% held back for reruns): Modal $700, Tinker $280,
+OpenAI $70.
+
+**Cut order if behind:**
+1. The second task sequence.
+2. The Exa loop.
+3. Weight averaging, then distillation.
+4. Activation-based selection (keep random and loss-based).
+5. Replication from 3 seeds to 2.
+
+Never cut the reference arm, the noise floor, the decision log or the results page.
 
 Candidate techniques: replay, LoRA adapters, layer freezing, weight averaging, per-domain
 learning-rate re-warm, distillation from the base model, and example selection by an
@@ -204,11 +264,16 @@ Only after priorities 1 to 3 work.
 
 ## Sync points
 
-1. One baseline run completes end to end on a cloud GPU.
-2. Techniques are checked and the grid is launched.
-3. Analysis runs on real result rows.
+Target times are Pacific.
+
+1. One baseline run completes end to end on a cloud GPU. Member A, Saturday 18:00. This is
+   the go/no-go: if it is missed, everyone helps Member A, and the Exa loop and the second
+   task sequence are dropped.
+2. Techniques are checked and the grid is launched. Members B and D, Saturday about 21:30.
+   The grid runs overnight.
+3. Analysis runs on real result rows. Member C, Sunday about 10:00.
 4. Submission is ready: demo video, project description and repository link, before Sunday
-   14:00.
+   14:00. Member D.
 
 ## Where things are
 
