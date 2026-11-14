@@ -188,3 +188,177 @@ def test_bad_source_and_params_raise(tmp_path, monkeypatch):
     for params in ({"share": 0}, {"share": 1.5}, {"shar": 0.1}, {"buffer_seqs": 0}):
         with pytest.raises(ValueError, match="replay"):
             build_hooks([TechniqueSpec(name="replay", params=params)])
+
+
+# -- selection: choosing which replay candidates to keep ----------------------------------------
+
+
+class SelectionSpy(BaseHook):
+    """Listed after replay. At every micro-batch where replay just selected rows, snapshots the
+    replay hook's last selection, recomputes each candidate's mean token loss independently
+    under the model as it is at that moment, and records the act_nov statistics' count."""
+
+    name = "selspy"
+
+    def __init__(self, replay):
+        self.replay = replay
+        self.records: list[dict] = []
+
+    def select_batch(self, ctx, batch):
+        mask = getattr(batch, "replay_mask", None)
+        r = self.replay
+        if mask is None or not bool(mask.any()) or r.last_pool is None:  # no selection (or random)
+            return batch
+        pool = r.last_pool.clone()
+        with torch.no_grad():
+            logits = ctx.model(input_ids=pool[:, :-1], use_cache=False).logits.float()
+            nll = torch.nn.functional.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]), pool[:, 1:].reshape(-1), reduction="none"
+            ).reshape(pool.shape[0], -1)
+        self.records.append({
+            "k": int(mask.sum()), "pool": pool,
+            "scores": None if r.last_scores is None else r.last_scores.clone(),
+            "chosen": r.last_chosen.clone(), "recomputed": nll.mean(1).double(),
+            "replayed": batch[mask].clone(), "stats_n": None if r.stats is None else r.stats.n,
+        })
+        return batch
+
+
+def _train_sel(tmp_path, monkeypatch, name, params, techniques=(), seed=None):
+    """Train with replay(params) plus optional other techniques; return (spy, selspy, replay
+    hook, trainer state, metrics)."""
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    raw = _cfg(tmp_path, name).dump()
+    raw["techniques"] = [{"name": "replay", "params": params}, *techniques]
+    if seed is not None:
+        raw["train"]["seed"] = seed
+    cfg = RunConfig.model_validate(raw)
+    hooks = build_hooks(cfg.techniques)
+    replay = next(h for h in hooks if h.name == "replay")
+    spy, selspy = Spy(), SelectionSpy(replay)
+    lm = _tiny_model(vocab=VOCAB, dtype=torch.float32)
+    trainer = Trainer(cfg, [*hooks, selspy, spy], eval_manifest=None, model_override=lm)
+    trainer.run()
+    metrics = [json.loads(line) for line in (tmp_path / name / "metrics.jsonl").read_text().splitlines()]
+    return spy, selspy, replay, trainer.ctx.state, metrics
+
+
+def test_random_select_is_unchanged(tmp_path, monkeypatch):
+    _add_general(tmp_path)
+    plain, _ = _train(tmp_path, monkeypatch, "plain", [{"name": "replay", "params": {"share": 0.25}}])
+    spy, _, replay, state, metrics = _train_sel(
+        tmp_path, monkeypatch, "rand", {"share": 0.25, "select": "random", "pool": 7, "keep": "low", "layer": 1})
+    assert _replayed_rows(spy) == _replayed_rows(plain)
+    assert state.get("extra_forward_tokens", 0) == 0
+    assert replay.wants_activations() == [] and replay.last_pool is None
+    assert not any("replay/scored_rows" in m for m in metrics)
+
+
+def test_loss_select_keeps_the_top_scores(tmp_path, monkeypatch):
+    general = _add_general(tmp_path)
+    base, _ = _train(tmp_path, monkeypatch, "base", [])
+    pool = 4
+    spy, selspy, _, state, metrics = _train_sel(
+        tmp_path, monkeypatch, "loss-high", {"share": 0.25, "select": "loss", "pool": pool})
+    assert selspy.records
+    for rec in selspy.records:
+        k, scores = rec["k"], rec["scores"]
+        assert scores.shape == (k * pool,) and rec["pool"].shape[0] == k * pool
+        torch.testing.assert_close(scores, rec["recomputed"], atol=1e-5, rtol=1e-5)
+        assert sorted(rec["chosen"].tolist()) == sorted(torch.topk(scores, k).indices.tolist())
+        # the kept rows are what is trained on
+        assert torch.equal(rec["replayed"], rec["pool"][rec["chosen"]])
+    # share, gradient tokens and the extra-forward count
+    rows = _replayed_rows(spy)
+    assert len(rows) == 8 and set(rows) <= _chunks(general)
+    assert [s.gradient_tokens for s in spy.steps] == [s.gradient_tokens for s in base.steps]
+    assert _last(metrics, "replay/share") == 0.25
+    assert _last(metrics, "replay/scored_rows") == pool * 8
+    assert _last(metrics, "replay/fallback_rows") == 0
+    assert state["extra_forward_tokens"] == pool * 8 * SEQ
+    assert _last(metrics, "replay/score_kept") >= _last(metrics, "replay/score_pool")
+
+
+def test_loss_select_keep_low(tmp_path, monkeypatch):
+    _add_general(tmp_path)
+    _, high, _, _, _ = _train_sel(tmp_path, monkeypatch, "high", {"share": 0.25, "select": "loss"})
+    _, low, _, _, metrics = _train_sel(tmp_path, monkeypatch, "low", {"share": 0.25, "select": "loss", "keep": "low"})
+    for rec in low.records:
+        k, scores = rec["k"], rec["scores"]
+        torch.testing.assert_close(scores, rec["recomputed"], atol=1e-5, rtol=1e-5)
+        assert sorted(rec["chosen"].tolist()) == sorted(torch.topk(scores, k, largest=False).indices.tolist())
+        assert torch.equal(rec["replayed"], rec["pool"][rec["chosen"]])
+    assert len(high.records) == len(low.records)
+    assert all(torch.equal(h["pool"], lo["pool"]) for h, lo in zip(high.records, low.records, strict=True))
+    assert [r["replayed"].tolist() for r in high.records] != [r["replayed"].tolist() for r in low.records]
+    assert _last(metrics, "replay/score_kept") <= _last(metrics, "replay/score_pool")
+
+
+def test_loss_select_follows_the_seed(tmp_path, monkeypatch):
+    _add_general(tmp_path)
+    params = {"share": 0.25, "select": "loss", "pool": 3}
+    a, sa, _, _, _ = _train_sel(tmp_path, monkeypatch, "a", params)
+    b, sb, _, _, _ = _train_sel(tmp_path, monkeypatch, "b", params)
+    assert _replayed_rows(a) == _replayed_rows(b) and len(_replayed_rows(a)) == 8
+    assert [r["chosen"].tolist() for r in sa.records] == [r["chosen"].tolist() for r in sb.records]
+
+
+def test_loss_select_from_a_buffer(tmp_path, monkeypatch):
+    general = _add_general(tmp_path)
+    for n_buf, pool in ((3, 4), (10, 2)):  # buffer smaller than the pool, then larger
+        spy, selspy, replay, _, _ = _train_sel(
+            tmp_path, monkeypatch, f"buf{n_buf}", {"share": 0.25, "buffer_seqs": n_buf, "select": "loss", "pool": pool})
+        buffer_rows = {tuple(r.tolist()) for r in replay._rows(replay.buffer)}
+        rows = _replayed_rows(spy)
+        assert len(rows) == 8 and set(rows) <= buffer_rows <= _chunks(general)
+        assert len(buffer_rows) == n_buf
+        for rec in selspy.records:
+            cands = [tuple(r.tolist()) for r in rec["pool"]]
+            assert set(cands) <= buffer_rows
+            if len(cands) <= n_buf:
+                assert len(set(cands)) == len(cands)  # without replacement when the buffer allows
+
+
+def test_act_nov_select_end_to_end(tmp_path, monkeypatch):
+    _add_general(tmp_path)
+    pool = 3
+    spy, selspy, replay, state, metrics = _train_sel(
+        tmp_path, monkeypatch, "actnov", {"share": 0.5, "select": "act_nov", "layer": 1, "pool": pool})
+    assert replay.wants_activations() == [1]
+    first = selspy.records[0]
+    assert first["stats_n"] == 0 and first["scores"] is None  # before any training forward
+    fallbacks = 0
+    for rec in selspy.records:
+        if rec["stats_n"] < 2:
+            assert rec["scores"] is None
+            fallbacks += rec["k"]
+        else:
+            k, scores = rec["k"], rec["scores"]
+            assert scores.shape == (k * pool,) and torch.isfinite(scores).all()
+            assert sorted(rec["chosen"].tolist()) == sorted(torch.topk(scores, k).indices.tolist())
+        assert torch.equal(rec["replayed"], rec["pool"][rec["chosen"]])
+    n_replayed = len(_replayed_rows(spy))
+    assert n_replayed == 16  # half of the 32 rows
+    assert fallbacks == 2  # one replayed and one trained row per micro-batch: stats after 2 forwards
+    assert _last(metrics, "replay/fallback_rows") == fallbacks
+    assert _last(metrics, "replay/scored_rows") == pool * (n_replayed - fallbacks)
+    assert state["extra_forward_tokens"] == pool * (n_replayed - fallbacks) * SEQ
+    trained = sum(int((~b["mask"]).sum()) for b in spy.batches)
+    assert trained == 16 and replay.stats.n == trained  # replayed rows never enter the statistics
+
+
+def test_act_nov_counts_rows_of_the_source_domain(tmp_path, monkeypatch):
+    """With `source: code` replay is off during code: all code rows feed the statistics, so the
+    first selection (during math) already has them and nothing falls back."""
+    spy, selspy, replay, _, metrics = _train_sel(
+        tmp_path, monkeypatch, "actnov-code", {"share": 0.25, "source": "code", "select": "act_nov", "layer": 1})
+    # first selection: second math micro-batch (floor(0.25 * 4) = 1), after 16 code + 2 math rows
+    assert selspy.records and selspy.records[0]["stats_n"] == 16 + 2
+    assert _last(metrics, "replay/fallback_rows") == 0
+    assert replay.stats.n == 32 - len(_replayed_rows(spy))
+
+
+def test_bad_selection_params_raise():
+    for params in ({"select": "loss", "pool": 0}, {"select": "nope"}, {"keep": "middle"}, {"layer": -1}):
+        with pytest.raises(ValueError, match="replay"):
+            build_hooks([TechniqueSpec(name="replay", params=params)])
