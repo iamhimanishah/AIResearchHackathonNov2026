@@ -216,8 +216,25 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   2. Map accuracy per task onto "retention", and the new task's accuracy onto "acquisition".
 - **Done when:** a 200-example smoke run on SST-2 produces a valid row.
 - **Open questions:**
-  - Tinker's smallest model, its price per token, and whether it exposes logprobs (for scoring
-    by verbalizer likelihood), custom losses, or LoRA weight export.
+  - ~~Tinker's smallest model and its price per token~~ Decided: `Qwen/Qwen3-8B` at $0.44/M
+    train (see C5). No Llama models are listed on Tinker now, and Qwen3-8B-Base was retired on
+    June 12, 2026.
+  - ~~Does the SDK expose logprobs, custom losses, or LoRA weight export?~~ Yes to all three.
+    Checked in `tinker` 0.39.0 (SDK methods only, no API call yet):
+    - **Logprobs:** `SamplingClient.compute_logprobs`, for verbalizer scoring.
+    - **Custom loss:** `TrainingClient.forward_backward_custom` and
+      `ServiceClient.create_custom_loss`, for EWC and distillation.
+    - **Weight export:** `TrainingClient.save_weights_external` and
+      `RestClient.get_external_weights_urls`, to download adapters for merging on Modal.
+    - `ServiceClient.get_server_capabilities()` is deprecated. Use
+      `tinker.RestClient().get_server_capabilities().result()`.
+  - ~~**Blocker:** the team's Tinker org returned `402` (billing)~~ Resolved on 2026-11-14
+    once the hackathon credit was applied.
+    - The account lists 38 models, including `Qwen/Qwen3-8B`.
+    - A rank-8 LoRA training client for Qwen3-8B was created successfully, and its tokenizer
+      is `Qwen2Tokenizer`.
+    - No training tokens have been spent yet.
+    - If the 402 comes back, check the org's credit balance in the Tinker console.
   - Tinker's concurrency limit.
 - **Options to try:** if Tinker can't export weights, skip merging techniques on this track.
 
@@ -441,18 +458,40 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 - **Goal:** check that the top result generalizes to a published sequence and another model.
 - **Where:** A7's backend, with specs in `configs/tinker/`.
 - **Steps:**
-  1. Smallest Llama or Qwen on Tinker, LoRA, SST-2 → MNLI → AG News, 5k train / 1k eval per
-     task.
+  1. **Model: `Qwen/Qwen3-8B` (decided).** LoRA, SST-2 → MNLI → AG News, 5k train / 1k eval
+     per task.
   2. Score classification by verbalizer log-likelihood.
   3. Arms: naive, replay-200, joint and the top 2 techniques, at 3 seeds.
   4. Report gap closed = (method − naive) / (joint − naive), and the average forgetting.
 - **Done when:** a figure exists with CIs, or the track is cut with the reason logged.
+- **Budget:** Tinker list price for Qwen3-8B (32K context, from
+  thinkingmachines.ai/tinker/pricing, dated Oct 19, 2026), per million tokens:
+
+  | Train | Sample | Prefill | Cached prefill |
+  |---|---|---|---|
+  | $0.44 | $0.60 | $0.195 | $0.039 |
+
+  - A 3-task run (about 2.5M training tokens over 2 epochs, plus about 0.75M eval tokens)
+    costs about **$1.25**.
+  - The 15 planned runs cost about **$19**, against a cap of $70 (70% of one member's Tinker
+    credit).
 - **Open questions:**
-  - Tinker price, model and features (see A7).
+  - ~~Tinker price, model and features (see A7)~~ Model and price settled (above). Features
+    (logprobs, custom loss, weight export) are still to be confirmed in the SDK (see A7).
+  - Qwen3-8B is an *instruct* model, so zero-shot scores on SST-2 and AG News start high and
+    leave less room for gains. Does that weaken the comparison with the main grid, which uses
+    the pretrained Gemma 3 1B? Mitigation: run naive and replay at 1 seed on
+    `Qwen/Qwen3.5-9B-Base` (the only small base model, $1.463/M train, about $8 in total).
   - Does each top technique even translate? LR re-warm and replay do. SAE-based selection
     needs the SAEs for that model, which may not exist, so substitute loss-based selection.
   - 1 or 2 epochs per task (2 doubles the cost).
-- **Options to try:** two task orders (forward and reversed) if the budget allows.
+- **Options to try:**
+  - Two task orders (forward and reversed) if the budget allows.
+  - Fallback models, in order:
+    1. `Qwen3.5-4B` ($0.737/M train): the smallest dense model.
+    2. `GPT-OSS-20B` ($0.396/M train, MoE with about 3.6B active): the cheapest, but its chat
+       format is awkward for plain text-to-text tasks.
+    3. Llama-3.2-1B trained with PEFT on Modal: off Tinker, uses spare Modal credit.
 
 ---
 
