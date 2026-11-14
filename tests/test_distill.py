@@ -3,11 +3,13 @@
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 from test_loop_hooks import _cfg, _state
 from test_loop_tiny import VOCAB, RecordingHook, _tiny_model
+from test_replay import _add_general
 
 from clharness.config import RunConfig
 from clharness.spec import TechniqueSpec
@@ -179,3 +181,68 @@ def test_bf16_mixed_runs_without_nan(tmp_path, monkeypatch):
 def test_bad_params_are_rejected(params):
     with pytest.raises(ValueError, match="distill"):
         build_hooks([TechniqueSpec(name="distill", params=params)])
+
+
+# -- rows: which rows of the batch are distilled ------------------------------------------------
+
+
+def _ctx_and_moved_student(tmp_path, techniques=()):
+    lm = _tiny_model(vocab=VOCAB, dtype=torch.float32)
+    cfg = SimpleNamespace(techniques=[SimpleNamespace(name=n) for n in techniques])
+    ctx = RunContext(cfg=cfg, model=lm.model, tokenizer=lm.tokenizer, device="cpu",
+                     data_manifest={}, eval_manifest=None, output_dir=str(tmp_path))
+    return lm, ctx
+
+
+@pytest.mark.parametrize(("rows", "kept"), [("replay", [1, 3]), ("new", [0, 2])])
+def test_rows_distils_only_the_chosen_rows(tmp_path, rows, kept):
+    lm, ctx = _ctx_and_moved_student(tmp_path, techniques=["replay"])
+    hook = _distill(top_k=8, rows=rows)
+    hook.on_run_start(ctx)
+    with torch.no_grad():  # move the student off the teacher so the term is not ~0
+        for p in lm.model.parameters():
+            p.add_(0.05 * torch.randn_like(p))
+    batch = torch.randint(3, VOCAB, (4, 17))
+    batch.replay_mask = torch.tensor([False, True, False, True])
+    logits = lm.model(input_ids=batch[:, :-1], use_cache=False).logits
+    term = hook.extra_loss(ctx, batch, logits, batch[:, 1:])
+    # the same term, computed the long way on the chosen rows alone
+    teacher = hook.teacher(input_ids=batch[kept, :-1], use_cache=False).logits
+    assert float(term) == pytest.approx(float(distill_kl(logits[kept], teacher, top_k=8)), rel=1e-5)
+    assert float(term) > 0
+    assert ctx.state["extra_forward_tokens"] == len(kept) * 16  # the teacher saw only those rows
+
+
+def test_rows_replay_skips_a_batch_with_no_replayed_rows(tmp_path):
+    lm, ctx = _ctx_and_moved_student(tmp_path, techniques=["replay"])
+    hook = _distill(rows="replay")
+    hook.on_run_start(ctx)
+    batch = torch.randint(3, VOCAB, (2, 17))
+    batch.replay_mask = torch.tensor([False, False])
+    logits = lm.model(input_ids=batch[:, :-1], use_cache=False).logits
+    assert hook.extra_loss(ctx, batch, logits, batch[:, 1:]) is None
+    assert ctx.state["extra_forward_tokens"] == 0  # no teacher pass was paid for
+    assert hook.on_step_end(ctx, None) is None
+
+
+def test_rows_replay_needs_the_replay_technique(tmp_path):
+    _, ctx = _ctx_and_moved_student(tmp_path, techniques=[])
+    with pytest.raises(ValueError, match="needs the replay technique"):
+        _distill(rows="replay").on_run_start(ctx)
+
+
+@pytest.mark.parametrize(("rows", "expected_rows"), [("replay", 8), ("new", 24), ("all", 32)])
+def test_rows_in_a_real_run_with_replay(tmp_path, monkeypatch, rows, expected_rows):
+    # code then math, 32 training rows of 32 tokens; replay swaps in exactly 25% of them
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    _add_general(tmp_path)
+    techniques = [{"name": "replay", "params": {"share": 0.25, "source": "general"}},
+                  {"name": "distill", "params": {"rows": rows, "top_k": 8}}]
+    cfg = RunConfig.model_validate({**_cfg(tmp_path, f"distill-rows-{rows}").dump(), "techniques": techniques})
+    hooks = build_hooks(cfg.techniques)
+    trainer = Trainer(cfg, hooks, eval_manifest=None, model_override=_tiny_model(vocab=VOCAB, dtype=torch.float32))
+    trainer.run()
+    assert trainer.gradient_tokens == 32 * 32
+    assert trainer.ctx.state["extra_forward_tokens"] == expected_rows * 32
+    distill = next(h for h in hooks if h.name == "distill")
+    assert all(math.isfinite(k) and k >= 0 for k in distill.kl_history)

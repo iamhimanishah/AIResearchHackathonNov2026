@@ -136,3 +136,12 @@ def test_measure_run_agrees_with_a_september_baseline():
     assert len(r.boundaries) == 4
     assert m["acquisition"].ppl_ratio["legal"] == pytest.approx(0.79, abs=0.01)
     assert m["acquisition"].general_ppl_ratio == pytest.approx(1.43, abs=0.01)
+
+
+def test_every_fake_row_names_real_techniques_with_valid_params():
+    """The fake rows must have the shape real rows will have, or analysis and the agent are
+    built against the wrong thing."""
+    from clharness.fake import fake_rows
+
+    for row in fake_rows(0):
+        build_hooks(row.spec.techniques)  # raises on an unknown technique or a bad parameter

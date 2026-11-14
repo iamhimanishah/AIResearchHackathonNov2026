@@ -37,12 +37,13 @@ claimed as wins.
 
 ## 2. Bench and arms
 
-- **Bench:** the frozen fast bench (`configs/bench/fast.yaml`, task A5):
-  - code then biomedical, about 10M gradient tokens per domain, LR 1e-4;
+- **Bench:** the fast bench, frozen by Member A on 2026-11-14 (`configs/bench/fast.yaml`,
+  task A5):
+  - **code then legal**, 10M gradient tokens per domain, LR 1e-4, 64 sequences per step;
   - the bench config's SHA is recorded in every result row.
 
-  If A5 freezes different numbers, this section is updated before the freeze. That is not an
-  amendment.
+  Legal replaced biomedical because legal is learned (held-out perplexity about 22–25% below
+  base in the calibration runs) and biomedical was not.
 - **No-mitigation:** all techniques off.
 - **Reference arm:** `replay` (5% of general text) plus `lr_rewarm` (per-domain warmup and
   decay). Its parameters are fixed by B1 before the freeze. They are not tuned on the report
@@ -132,7 +133,8 @@ fell short. That is a pre-registered outcome, not a failure.
 - No-mitigation at **5 seeds (0–4)**. The seed changes only the data order: the stream seed is
   `train.seed + domain_index`, and Gemma has no dropout in this setting.
 - Specs: `configs/bench/specs/no-mitigation-s0.json` to `-s4.json`. They are identical except
-  for `seed` (code then biomedical, 10M tokens each, no techniques).
+  for `seed` (code then legal, 10M tokens each, no techniques). They are the same experiments as
+  `design.spec(NO_MITIGATION, seed)` (same spec hash).
 - σ_noise = the SD of `retention.report.mean_delta` over these 5 runs. The selection-half SD is
   recorded too.
 - These runs finish before the grid launches.
@@ -340,6 +342,10 @@ learning:
 - biomedical was 1.00 (no change);
 - code was 1.81, worse than base, because the biomedical domain undid it.
 
+The bench then moved to code then legal (A5), and the reason still holds there. In the
+code→legal calibration at 1e-4, legal ends at 0.78, so it is learned. Code, though, ends at
+1.79, because the legal domain undid it.
+
 The end-of-stream number mixes learning with forgetting, so a gate on it can't tell "learned
 less" from "forgot more". The gate now reads the ratio at each domain's own boundary. The
 end-of-stream ratio stays as a secondary outcome.
@@ -438,3 +444,22 @@ collapse `invalid`; it now records the share and keeps the row.
 | **Equal gradient tokens; extra reported as cost (default)** | Matches the bench design and the row's `Cost` fields | Distillation gets about 1.3× FLOPs "free" in the primary test |
 | Equal FLOPs | Strictest fairness | Needs FLOP accounting per technique; complex |
 | Equal wall-clock | What a practitioner pays | Depends on GPU and noise; hard to reproduce |
+
+### A13. Lower-learning-rate controls: **open** (decide before the freeze)
+Raised by Member A's code→legal calibration (TASKS A5; one seed each). Lowering the learning
+rate cuts forgetting with the same legal acquisition:
+
+| LR | Change in selection-half mean |
+|---|---|
+| 1e-4 | −7.5 points |
+| 5e-5 | −3.1 points |
+| 3e-5 | −0.7 points |
+
+So "just lower the LR" is itself a strong mitigation, and a technique should be compared with
+it as well as with the reference arm. Not yet decided:
+
+| Option | Pros | Cons |
+|---|---|---|
+| Add to the win rule: X must also beat the best lower-LR no-mitigation arm whose acquisition is within the 5% gate | Answers the obvious judge question ("why not lower the LR?"). One extra comparison per promoted configuration | 2 lower-LR arms × 3 seeds (6 runs, about $7); one more condition to pass |
+| Report lower-LR arms as an exploratory comparison only | No change to the decision rule | Leaves the strongest simple baseline out of the claim |
+| Add LR as a 7th factor in the screen | Gives the LR × technique interactions | Changes the frozen bench's LR per run; doubles the screen or loses resolution |

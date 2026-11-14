@@ -18,16 +18,26 @@ Parameters
                exactly 0 when the two models agree, and it ignores how the student spreads the
                rest of its mass over tokens the teacher thinks unlikely.
 
+  rows         which rows of the micro-batch are distilled:
+                 all     every row (the default)
+                 new     only rows from the domain being trained
+                 replay  only rows a replay technique swapped in. The model is then free to move
+                         on new-domain text and is held to the base model on old text. Needs
+                         the `replay` technique in the same run.
+               The teacher runs only on the chosen rows, so `replay` at a 5% share costs 5%
+               of a full teacher pass.
+
 Logged: `distill/kl`, the mean of the term before `weight` (so including T^2) over the step's
 micro-batches; `train/extra_loss/distill` is `weight` times it.
 
-Cost: one extra forward-only pass per micro-batch (about 1.3x the compute of a plain step,
-since a training step is one forward plus a backward of about twice that), counted in
+Cost with `rows: all`: one extra forward-only pass per micro-batch (about 1.3x the compute of a
+plain step, since a training step is one forward plus a backward of about twice that). With
+`new` or `replay` the pass covers only the chosen rows. Either way the tokens are counted in
 `ctx.state["extra_forward_tokens"]`, plus one frozen copy of the model in memory and the
 teacher's [B, T, V] logits for the current micro-batch. Gradient tokens are unchanged.
 
 Known limits
-  - It distils on whatever the batch holds, including rows a replay hook swapped in.
+  - `rows: new` and `rows: replay` rely on the `.replay_mask` that `replay` sets on the batch.
   - On CUDA the teacher is held in bfloat16 to halve its memory, so even before the first
     update the term is not exactly 0 there. Elsewhere it keeps the model's dtype.
   - The teacher is copied in `on_run_start`. LoRA adapters injected before that start as a
@@ -38,6 +48,7 @@ Known limits
 from __future__ import annotations
 
 import copy
+from typing import Literal
 
 import torch
 from pydantic import Field
@@ -115,6 +126,7 @@ class Distill(BaseHook):
         weight: float = Field(1.0, gt=0)  # multiplier on the KL term
         temperature: float = Field(1.0, gt=0)  # softens both distributions; the term is scaled by T^2
         top_k: int | None = Field(64, ge=1)  # teacher's top-k tokens plus one "rest" bucket; None = full vocabulary
+        rows: Literal["all", "new", "replay"] = "all"  # which rows of the batch are distilled
 
     def __init__(self, params: Params):
         self.p = params
@@ -123,6 +135,8 @@ class Distill(BaseHook):
         self._kl_sum, self._kl_n = 0.0, 0
 
     def on_run_start(self, ctx: RunContext):
+        if self.p.rows == "replay" and "replay" not in {t.name for t in getattr(ctx.cfg, "techniques", ())}:
+            raise ValueError("distill: rows='replay' needs the replay technique in the same run")
         teacher = copy.deepcopy(ctx.model)
         teacher.eval()
         for p in teacher.parameters():
@@ -138,6 +152,14 @@ class Distill(BaseHook):
         if self.teacher is None:
             raise RuntimeError("distill: extra_loss called before on_run_start")
         ids = batch[:, :-1].to(logits.device)  # the input ids the loop fed the student
+        if self.p.rows != "all":
+            replayed = getattr(batch, "replay_mask", None)
+            if replayed is None:  # no replay hook touched this batch: every row is new-domain
+                replayed = torch.zeros(batch.shape[0], dtype=torch.bool)
+            keep = (replayed if self.p.rows == "replay" else ~replayed).to(logits.device)
+            if not keep.any():
+                return None  # nothing to distil in this micro-batch, so no teacher pass either
+            ids, logits, labels = ids[keep], logits[keep], labels[keep]
         with torch.no_grad(), ctx.ac():
             teacher_logits = self.teacher(input_ids=ids, use_cache=False).logits
         ctx.state["extra_forward_tokens"] = ctx.state.get("extra_forward_tokens", 0) + ids.numel()

@@ -23,6 +23,7 @@ from clharness.analysis.design import (
     selection_of,
 )
 from clharness.analysis.design import PARAMS as DESIGN_PARAMS
+from clharness.analysis.design import STREAM as DESIGN_STREAM
 from clharness.analysis.design import spec as design_spec
 from clharness.spec import (
     Acquisition,
@@ -39,7 +40,7 @@ from clharness.spec import (
 
 TASKS = ("arc_easy", "hellaswag", "piqa", "pubmedqa_pqal")
 BASE_SCORE = {"arc_easy": 0.706, "hellaswag": 0.634, "piqa": 0.738, "pubmedqa_pqal": 0.642}
-STREAM = (("code", 10_000_000), ("biomedical", 10_000_000))
+STREAM = DESIGN_STREAM  # the frozen bench: code then legal
 HALF_ITEMS = 250  # each task's 500 protected items split into a selection and a report half
 
 # What the generator plants. Retention values are changes to the mean delta, as fractions

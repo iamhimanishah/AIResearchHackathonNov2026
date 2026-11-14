@@ -3,8 +3,14 @@
   "seed": 0,
   "bench": "fast",
   "stream": [
-    {"name": "code", "tokens": 262144},
-    {"name": "biomedical", "tokens": 262144}
+    {
+      "name": "code",
+      "tokens": 262144
+    },
+    {
+      "name": "legal",
+      "tokens": 262144
+    }
   ],
   "techniques": [],
   "notes": "Four optimizer steps per domain. Checks the pipeline end to end for a few minutes of GPU; its numbers mean nothing."

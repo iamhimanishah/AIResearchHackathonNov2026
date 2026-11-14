@@ -223,7 +223,9 @@ Facts every card relies on (from `docs/baselines.md` and the code):
     points to about 1. On this bench, lowering the learning rate is a strong mitigation by
     itself. The grid therefore needs no-mitigation arms at lower learning rates as controls:
     a technique has to beat "just lower the LR" at matched acquisition, not only the 1e-4 run.
-  - Proposed bench: code then legal at 1e-4. Not adopted until Member C agrees.
+  - Decided and frozen: code then legal at 1e-4, 64 sequences per step
+    (`configs/bench/fast.yaml`). The 5e-5 and 3e-5 runs above are the lower-learning-rate
+    control arms. Noise-floor specs: `configs/bench/specs/no-mitigation-s0` to `-s4`.
 - **Open questions:**
   - Is 10M tokens per domain enough to forget at 1e-4? The 50M run lost 11.9 points, most of
     it early, so probably yes. Check it.
@@ -258,6 +260,8 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   prints the cost estimate.
 
 ### A7 · Tinker backend
+- **Status: cut** on Saturday afternoon by Member A, to protect the critical path. Nothing was
+  built. The second task sequence (C5) has no backend unless someone else builds one.
 - **Goal:** the second task sequence (C5) produces the same result-row format.
 - **Where:** `src/clharness/executor/tinker_backend.py`. Devin can scaffold it.
 - **Steps:**
@@ -432,11 +436,13 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 - **Status:** drafted in [`analysis/PREREG.md`](../analysis/PREREG.md).
   - The split is built: `manifests/eval-protected-v1-split.json`, from
     `scripts/make_item_split.py`, stratified by base correctness.
+  - Settled: the bench (code then legal, frozen by A5), the technique parameters
+    (`analysis/design.py`, copied from B's specs), answer collapse (A9) and the acquisition
+    measure (A2b).
   - Still open before the freeze:
     - σ_noise, from C3;
-    - the bench numbers, from A5;
-    - the reference-arm and technique parameters, from B;
-    - four provisional items (answer collapse, invalid-run rules, MBPP, matched compute).
+    - the lower-learning-rate controls (A13);
+    - three provisional items (invalid-run rules, MBPP, matched compute).
   - Every option considered is kept in the PREREG's Appendix A.
 - **Steps:** write down each of the following.
   1. **The split:** which items are in the selection half and which in the report half. Make
@@ -500,14 +506,10 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 - **Goal:** know how big a difference has to be before it means anything.
 - **Where:** specs `configs/bench/specs/no-mitigation-s0.json` to `-s4.json`, launched
   through A6.
-- **Status:** the specs are ready and identical except for the seed.
-  - Not yet run. GPU access is confirmed on Member C's Modal workspace (an H100 80GB was
-    granted on 2026-11-14).
-  - Still needed before launch:
-    - the `huggingface` Modal secret (`HF_TOKEN` with Gemma access);
-    - the `clh-data` volume, built once with
-      `modal run src/clharness/executor/modal_app.py::data`.
-  - Alternatively, launch from the team workspace that A6 uses.
+- **Status:** the specs are ready, on the frozen code-then-legal bench (A's files, the same
+  experiments as `design.spec(NO_MITIGATION, seed)`).
+  - Not yet run. Launch from A's deployed Modal app (the team workspace) after the PR with the
+    new executor is merged and the app is redeployed.
 - **Steps:**
   1. Run no-mitigation on the fast bench at 5 seeds. The seed changes the data order: the
      stream seed is `train.seed + domain_index`.

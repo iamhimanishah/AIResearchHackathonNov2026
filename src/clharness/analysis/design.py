@@ -41,7 +41,7 @@ SELECTION_PARAMS: dict[str, dict[str, Any]] = {
     "loss": {"select": "loss", "pool": 4},
     "act_nov": {"select": "act_nov", "pool": 4, "layer": 13},
 }
-STREAM = (("code", 10_000_000), ("biomedical", 10_000_000))  # configs/bench/fast.yaml
+STREAM = (("code", 10_000_000), ("legal", 10_000_000))  # configs/bench/fast.yaml, frozen 2026-11-14
 NO_MITIGATION: frozenset[str] = frozenset()
 REFERENCE = frozenset({"replay", "lr_rewarm"})
 

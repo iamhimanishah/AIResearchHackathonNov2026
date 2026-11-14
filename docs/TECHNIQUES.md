@@ -50,7 +50,7 @@ agent can read what it may set without importing torch code by hand.
 | `wavg` | `wavg.py` | `on_domain_end`: pull weights toward base; EMA in `on_step_end` | none |
 | `lora` | `lora.py` | `configure_model`: add adapters in place; `config_overrides`: learning rate | fewer trainable parameters, smaller update |
 | `freeze` | `freeze.py` | `configure_model`: set `requires_grad=False` | fewer trainable parameters |
-| `distill` | `distill.py` | `extra_loss`: KL to a frozen base copy | forward-only tokens for the teacher |
+| `distill` | `distill.py` | `extra_loss`: KL to a frozen base copy, on all rows or (`rows: new | replay`) on some | forward-only tokens for the teacher, on the chosen rows only |
 | `lr_rewarm` | `lr_rewarm.py` | `config_overrides`: switches on A4's per-domain schedule in `optim` | none |
 
 The reference arm is `replay` plus `lr_rewarm`: `configs/bench/specs/reference-s0.json`, with
@@ -64,6 +64,12 @@ draws k x `pool` candidates from the source, scores them under the current model
 - `select: act_nov` keeps by activation novelty at `layer`: how far the candidate's mean
   residual is from the running statistics of the sequences the model has been training on.
 - `keep: high | low` chooses which end of the ranking is kept, so the grid can test both.
+
+**Distilling on replayed rows** is `distill` with `rows: replay`, together with `replay`: the
+model is free to move on new-domain text and is held to the base model's predictions on the
+replayed text. The teacher runs only on those rows, so at a 5% share it costs 5% of a full
+teacher pass. Sanity spec: `configs/bench/specs/sanity/replay-distill-on-replay.json` (not yet
+run on a GPU).
 
 The SAE-feature signal (`sae_rare`) is not built: it needs SAE weights on the GPU, and
 activation-based selection is fourth in the cut order.
@@ -93,7 +99,7 @@ activation-based selection is fourth in the cut order.
 | Selection (B3): `random`, `loss`, `act_nov` on `replay` | done, with tiny-model tests; `sae_rare` not built |
 | `lora`, `freeze` (B4), `distill` (B5) | done, with tiny-model tests; no real-model run yet |
 | Reference arm (B1) | specs written and checked through `config_from_spec`; needs a fast-bench run |
-| Sanity runs on a GPU | specs written (`configs/bench/specs/sanity/`, four steps per domain, one technique each); not yet run |
+| Sanity runs on a GPU | all eight specs in `configs/bench/specs/sanity/` finished on Modal H100s at commit 314150a; rows in `results/rows.sanity.jsonl` (four steps per domain, so only status and cost mean anything) |
 
 Sanity results will be added to this file from result rows only, never typed in.
 

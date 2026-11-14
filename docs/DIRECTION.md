@@ -119,7 +119,7 @@ Each has one owner and one deliverable. Put a name in the owner column when you 
 | 1 | Bench core | The harness changes listed below, a frozen fast bench, and the run-spec and result-row formats | Member A |
 | 2 | Executor | One command that runs a spec on a cloud GPU and returns a result row; many in parallel | Member A |
 | 3 | Techniques | Each technique as a plugin with a sanity run, including example selection with random and loss-based controls, and the reference arm | peter |
-| 4 | Design and analysis | Grid plan, noise floor, seed policy, attribution math, comparison against the reference arm | Member C |
+| 4 | Design and analysis | Grid plan, noise floor, seed policy, attribution math, comparison against the reference arm | himani |
 | 5 | Agent and page | The loop that launches and tracks runs, and the live results page | brendan (Member D) |
 
 With three people: combine 1 with 2, and 3 with 4. With four: combine 1 with 2.
@@ -135,7 +135,7 @@ Members A to D are placeholders: replace each with a name when someone claims th
   workstreams can build against them.
 - Build a Modal executor with parallel fan-out, retries, idempotent run IDs and a budget
   guard.
-- Add a Tinker backend that emits the same result row.
+- ~~Add a Tinker backend that emits the same result row.~~ Cut on Saturday (see A7).
 - Add `make reproduce`.
 
 **Member B (peter): techniques (3).** In this order, each with a sanity run at matched gradient tokens:
@@ -199,7 +199,7 @@ are in [`TASKS.md`](TASKS.md).
 | A4 | Per-domain LR re-warm | A | (nothing upstream) | B1 (reference arm) |
 | A5 | Frozen fast bench config | A | One baseline run to confirm it | A6, B sanity runs, C3 |
 | A6 | Modal executor (fan-out, retries, budget guard) | A | A1, A5 | Sync point 1, then C3, D2 |
-| A7 | Tinker backend, same result row | A | A1 | C5 |
+| A7 | ~~Tinker backend, same result row~~ **Cut Saturday afternoon** to protect the critical path | A | A1 | C5 has no backend unless someone else builds one |
 | A8 | `make reproduce` | A | A6, C4 | Submission |
 | B1 | Reference arm: replay plus LR re-warm | B | A4, B2 | C1 decision rule, D2 grid, pitch |
 | B2 | Replay | B | (nothing upstream; smoke data is enough) | B1, B3 |

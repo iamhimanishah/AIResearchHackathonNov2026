@@ -8,10 +8,10 @@
       "tokens": 10000000
     },
     {
-      "name": "biomedical",
+      "name": "legal",
       "tokens": 10000000
     }
   ],
   "techniques": [],
-  "notes": "Noise floor (analysis/PREREG.md section 6.1), seed 3 of 0-4. Identical to no-mitigation-s0 except the seed, which changes only the data order. The SD of the primary outcome over seeds 0-4 is sigma_noise."
+  "notes": "No mitigation on the frozen fast bench. Seeds 0 to 4 together are the noise floor."
 }
