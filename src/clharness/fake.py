@@ -45,7 +45,6 @@ PLANTED: dict[str, Any] = {
         "freeze": 0.010,
         "distill": 0.020,
         "wavg": 0.012,
-        "select": 0.000,
     },
     "retention_interactions": {
         "distill+replay": -0.012,  # they overlap: together they give less than the sum
@@ -58,7 +57,6 @@ PLANTED: dict[str, Any] = {
         "freeze": 0.040,
         "distill": 0.030,
         "wavg": 0.050,
-        "select": 0.000,
     },
     "seed_noise_sd": 0.006,
     "item_noise_sd": 0.012,
@@ -66,16 +64,15 @@ PLANTED: dict[str, Any] = {
 
 DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "replay": {"share": 0.05, "source": "general"},
-    "lr_rewarm": {"rewarm_frac": 0.05, "min_lr_ratio": 0.1},
+    "lr_rewarm": {"rewarm_steps": 8, "min_lr_ratio": 0.1},
     "lora": {"rank": 8},
     "freeze": {"bottom_layers": 13},
     "distill": {"weight": 1.0},
     "wavg": {"alpha": 0.25},
-    "select": {"signal": "random", "keep": 0.5},
 }
 
 # Extra wall-clock per technique, as a fraction of the baseline run.
-_TIME_FACTOR = {"distill": 0.30, "select": 0.50, "replay": 0.02, "lora": -0.10, "freeze": -0.15}
+_TIME_FACTOR = {"distill": 0.30, "replay": 0.02, "lora": -0.10, "freeze": -0.15}
 _FULL_PARAMS = 1_000_000_000
 _TRAINABLE = {"lora": 6_500_000, "freeze": 480_000_000}
 
@@ -162,7 +159,7 @@ def _finished(spec: RunSpec, rng: random.Random) -> ResultRow:
             gpu_type="none",
             update_bytes=trainable * 4,  # fp32 delta
             trainable_params=trainable,
-            extra_forward_tokens=spec.gradient_tokens() if {"distill", "select"} & set(techs) else 0,
+            extra_forward_tokens=spec.gradient_tokens() if "distill" in techs else 0,
             est_usd=round(wall / 3600 * 4.0, 2),
         ),
         answer_share={t: round(rng.uniform(0.28, 0.45), 3) for t in TASKS},
@@ -200,8 +197,10 @@ def fake_rows(seed: int = 0) -> list[ResultRow]:
     add(("lr_rewarm", "replay"), range(3))  # the reference arm
     for tech in ("replay", "lr_rewarm", "lora", "freeze", "distill", "wavg"):
         add((tech,), range(1))  # screen: each technique alone, one seed
-    for signal in ("random", "loss", "act_nov"):  # selection, with its two controls
-        add(("replay", "select"), range(1), select={"signal": signal})
+    # Selection is a parameter of replay, not a technique of its own. No planted effect: the
+    # analysis should find loss-based and activation-based selection no different from random.
+    for signal in ("loss", "act_nov"):
+        add(("replay",), range(1), replay={"select": signal, "pool": 4})
     core = ("distill", "lora", "replay", "wavg")
     pairs = [(a, b) for i, a in enumerate(core) for b in core[i + 1:]]
     for pair in pairs:

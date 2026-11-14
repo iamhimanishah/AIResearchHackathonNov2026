@@ -209,7 +209,9 @@ Facts every card relies on (from `docs/baselines.md` and the code):
     points to about 1. On this bench, lowering the learning rate is a strong mitigation by
     itself. The grid therefore needs no-mitigation arms at lower learning rates as controls:
     a technique has to beat "just lower the LR" at matched acquisition, not only the 1e-4 run.
-  - Proposed bench: code then legal at 1e-4. Not adopted until Member C agrees.
+  - Decided and frozen: code then legal at 1e-4, 64 sequences per step
+    (`configs/bench/fast.yaml`). The 5e-5 and 3e-5 runs above are the lower-learning-rate
+    control arms. Noise-floor specs: `configs/bench/specs/no-mitigation-s0` to `-s4`.
 - **Open questions:**
   - Is 10M tokens per domain enough to forget at 1e-4? The 50M run lost 11.9 points, most of
     it early, so probably yes. Check it.
@@ -244,6 +246,8 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   prints the cost estimate.
 
 ### A7 · Tinker backend
+- **Status: cut** on Saturday afternoon by Member A, to protect the critical path. Nothing was
+  built. The second task sequence (C5) has no backend unless someone else builds one.
 - **Goal:** the second task sequence (C5) produces the same result-row format.
 - **Where:** `src/clharness/executor/tinker_backend.py`. Devin can scaffold it.
 - **Steps:**

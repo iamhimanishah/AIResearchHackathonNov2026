@@ -4,9 +4,11 @@
 #
 # Confirmed by one no-mitigation run on 2026-11-14 (results/rows.calibration.jsonl): 18 minutes
 # on an H100, multiple-choice mean down 10.7 points on the selection half and 6.2 on the report
-# half. Batch size settled at 64 sequences per step on 2026-11-14 after comparing it with 16
-# (docs/TASKS.md, A5). After the grid starts, do not change this file: runs would stop being
-# comparable.
+# half. Calibrated on 2026-11-14 (docs/TASKS.md, A5): 64 sequences per step, and the stream
+# code then legal, because legal is learned (held-out perplexity about 24% below base) while
+# biomedical was not.
+#
+# FROZEN 2026-11-14. Do not change this file: runs would stop being comparable.
 #
 # What is switched off against configs/pilot/base.yaml, and what it cost per checkpoint there:
 #   SAEs, CKA, mutual-kNN and readout probes (about 85 s)   -> no capture layers, no SAEs
@@ -49,7 +51,7 @@ data:
   probe_max_seqs_per_domain: 64       # unused while the probe hook is off
   domains:                            # the spec's stream replaces this list
     - { name: code,       tokens: 10000000 }
-    - { name: biomedical, tokens: 10000000 }
+    - { name: legal,      tokens: 10000000 }
 
 optim:
   lr: 1.0e-4                          # harsh on purpose: the 1e-4 pilot lost 3.6 points in 10M code tokens

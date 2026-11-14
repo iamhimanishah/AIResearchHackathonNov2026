@@ -7,8 +7,7 @@
     "lora": 0.03,
     "freeze": 0.01,
     "distill": 0.02,
-    "wavg": 0.012,
-    "select": 0.0
+    "wavg": 0.012
   },
   "retention_interactions": {
     "distill+replay": -0.012,
@@ -20,8 +19,7 @@
     "lora": 0.09,
     "freeze": 0.04,
     "distill": 0.03,
-    "wavg": 0.05,
-    "select": 0.0
+    "wavg": 0.05
   },
   "seed_noise_sd": 0.006,
   "item_noise_sd": 0.012
