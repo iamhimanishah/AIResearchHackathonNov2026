@@ -191,8 +191,22 @@ Facts every card relies on (from `docs/baselines.md` and the code):
     base model's after the biomedical domain. A technique cannot visibly "learn less" on a
     bench that learns almost nothing, so the acquisition floor in the pre-registration needs
     thought, or the bench needs a lower learning rate.
+    - **Answer (Member C, PREREG A2b):** keep LR 1e-4, so the bench can freeze.
+      - Acquisition is now measured at each domain's own boundary: code right after code,
+        biomedical right after biomedical. That separates learning from forgetting.
+      - The executor writes it as `acquisition.own_boundary_ppl_ratio` and
+        `mean_own_boundary_ppl_ratio`.
+      - The end-of-stream ratio stays as a secondary outcome.
+      - Rows from before this change (the calibration runs) lack the field. They can be
+        re-measured from their checkpoints with no retraining.
   - The two halves of the protected set differ by 4.5 points on the same run. The noise floor
     (C3) has to be measured on each half.
+    - **Answer (Member C):** both are handled.
+      - σ_noise is computed on each half (`grid-analysis`).
+      - That run used the executor's old plain-random split. The pinned split is stratified by
+        base correctness, so the halves have equal headroom, and the executor now reads it.
+      - Re-measuring `no-mitigation-s0` with the pinned split shows how much of the 4.5-point
+        gap was the split.
   - A run costs about $1.20, not the $2.50 planned for.
 
   Second calibration, same day: code then legal, 64 sequences per step, seed 0, one run each.
@@ -419,6 +433,19 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 ### C1 · `analysis/PREREG.md`
 - **Goal:** commit to the decision rules *before* seeing results, for rigour and for Q&A.
 - **Where:** `analysis/PREREG.md`, committed with a timestamp before sync point 2.
+- **Status:** drafted in [`analysis/PREREG.md`](../analysis/PREREG.md).
+  - The split is built: `manifests/eval-protected-v1-split.json`, from
+    `scripts/make_item_split.py`, stratified by base correctness.
+  - Settled:
+    - the bench: code then legal, frozen by A5;
+    - the technique parameters: `analysis/design.py`, copied from B's specs;
+    - answer collapse (A9) and the acquisition measure (A2b);
+    - the lower-LR controls (A13): rule 4 of the win rule, with no-mitigation at 5e-5 and 3e-5
+      at seeds 0–2. Seed 0 is A5's calibration run, so 4 runs are new.
+  - Still open before the freeze:
+    - σ_noise, from C3;
+    - three provisional items (invalid-run rules, MBPP, matched compute).
+  - Every option considered is kept in the PREREG's Appendix A.
 - **Steps:** write down each of the following.
   1. **The split:** which items are in the selection half and which in the report half. Make
      it a seeded split of each task's 500 items into 250/250, stored in `manifests/`
@@ -444,6 +471,21 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
   and a ranking per unit of cost.
 - **Where:** `src/clharness/analysis/attribution.py`. Reuse `analyze.py` and `findings.py`
   where possible.
+- **Status:** drafted. Run it with
+  `clh grid-analysis results/fake/rows.jsonl --planted results/fake/planted_effects.json`.
+  Add `--confirmatory` only after replication is finished. Tests are in
+  `tests/test_attribution.py`.
+  - The screen is code in `src/clharness/analysis/design.py`: a 2⁶⁻² factorial, the two
+    reference halves, and 4 selection-on-replay runs, 22 specs in all. Selection is a replay
+    parameter (TECHNIQUES decision 2). See PREREG 6.2 and A5.
+  - On the fake rows, which follow that design, all 22 planted effects fall inside their 95%
+    interval. That covers 6 main effects, the reference interaction, both planted pairs (read
+    through their alias chains), 6 acquisition effects and the selection effects.
+  - When per-item files are missing, the item level of the bootstrap falls back to parametric
+    noise. That gives wider, conservative intervals. On real rows it resamples items from
+    `items_path`.
+  - ~~**Open:** collapse rule~~ Decided (PREREG A9): flag the run and keep it. The executor
+    and the fake rows now leave collapsed runs `finished`.
 - **Steps:**
   1. Fit retention ~ techniques + pairwise interactions (OLS over the on/off grid), with
      cluster-bootstrap CIs over seeds and items.
@@ -464,7 +506,18 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 
 ### C3 · Noise floor
 - **Goal:** know how big a difference has to be before it means anything.
-- **Where:** specs in `configs/bench/noise/`, launched through A6.
+- **Where:** specs `configs/bench/specs/no-mitigation-s0.json` to `-s4.json`, launched
+  through A6.
+- **Status:** the plan is final as **phase 0** (PREREG section 0).
+  - The noise floor (no-mitigation seeds 0–4) **ran** (A, `results/rows.noise.jsonl`).
+    Preliminary report-half SD is 0.68 points, on the old split.
+  - Those 5 rows and the 2 seed-0 lower-LR calibration rows are re-measured from their
+    checkpoints with the current executor. No retraining.
+  - **7 GPU runs** remain, about $9: the reference arm at seeds 0–2, and no-mitigation at LR 5e-5
+    and 3e-5, seeds 1–2.
+  - The exact list is `configs/bench/phase0.txt`. Launch from A's deployed app after the PR with
+    the new executor is merged and the app is redeployed.
+  - The technique comparison is held until phase 0 is in and PREREG is frozen.
 - **Steps:**
   1. Run no-mitigation on the fast bench at 5 seeds. The seed changes the data order: the
      stream seed is `train.seed + domain_index`.

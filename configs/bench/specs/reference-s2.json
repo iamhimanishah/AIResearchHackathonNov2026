@@ -1,0 +1,33 @@
+{
+  "name": "reference-s2",
+  "seed": 2,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 10000000
+    },
+    {
+      "name": "legal",
+      "tokens": 10000000
+    }
+  ],
+  "techniques": [
+    {
+      "name": "lr_rewarm",
+      "params": {
+        "rewarm_steps": 8,
+        "min_lr_ratio": 0.1,
+        "schedule": "cosine"
+      }
+    },
+    {
+      "name": "replay",
+      "params": {
+        "share": 0.05,
+        "source": "general"
+      }
+    }
+  ],
+  "notes": "Reference arm (replay + per-domain LR re-warm), seed 2. Phase 0 (analysis/PREREG.md section 0)."
+}

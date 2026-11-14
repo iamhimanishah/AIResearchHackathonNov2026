@@ -382,6 +382,26 @@ def cmd_validate_row(args) -> int:
     return 1 if bad else 0
 
 
+def cmd_grid_analysis(args) -> int:
+    """Cross-run analysis per analysis/PREREG.md. Selection half only, unless --confirmatory."""
+    import json
+
+    from clharness.analysis.attribution import analyze, check_planted, check_planted_selection, write
+    from clharness.spec import read_rows
+
+    rows = [r for path in args.files for r in read_rows(path)]
+    report = analyze(rows, confirmatory=args.confirmatory, n_boot=args.n_boot, seed=args.seed)
+    if args.planted:
+        planted = json.loads(Path(args.planted).read_text())
+        checks = check_planted(report, planted) + check_planted_selection(rows, planted)
+        report["planted_check"] = checks
+        inside = sum(c["inside"] for c in checks)
+        print(f"planted effects inside their 95% interval: {inside}/{len(checks)}")
+    j, m = write(report, args.out)
+    print(f"wrote {j} and {m}")
+    return 0
+
+
 def cmd_spec_hash(args) -> int:
     from clharness.spec import load_spec
 
@@ -445,6 +465,16 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("validate-row", help="check JSONL files of result rows against the format")
     p.add_argument("files", nargs="+")
     p.set_defaults(fn=cmd_validate_row)
+    p = sub.add_parser("grid-analysis", help="effects, noise floor, promotion and (with --confirmatory) "
+                       "the pre-registered tests over result rows")
+    p.add_argument("files", nargs="+", help="JSONL files of result rows")
+    p.add_argument("--confirmatory", action="store_true",
+                   help="also read the report half and run the PREREG tests; only after replication is finished")
+    p.add_argument("--n-boot", type=int, default=10_000)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--planted", help="planted_effects.json, to check recovery on fake rows")
+    p.add_argument("--out", default="results/analysis")
+    p.set_defaults(fn=cmd_grid_analysis)
     p = sub.add_parser("spec-hash", help="print the idempotency key of run spec JSON files")
     p.add_argument("files", nargs="+")
     p.set_defaults(fn=cmd_spec_hash)

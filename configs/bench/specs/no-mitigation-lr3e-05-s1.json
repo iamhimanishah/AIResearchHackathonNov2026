@@ -1,0 +1,20 @@
+{
+  "name": "no-mitigation-lr3e-05-s1",
+  "seed": 1,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 10000000
+    },
+    {
+      "name": "legal",
+      "tokens": 10000000
+    }
+  ],
+  "optim": {
+    "lr": 3e-05
+  },
+  "techniques": [],
+  "notes": "Lower-learning-rate control (no mitigation at lr 3e-05), seed 1. PREREG A13 and section 0."
+}

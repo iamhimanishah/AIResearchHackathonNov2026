@@ -6,6 +6,7 @@ meta.json, metrics.json and items_<task>.npy (per-item correctness, in manifest 
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import random
@@ -17,14 +18,26 @@ import numpy as np
 from clharness.spec import Acquisition, BoundaryRetention, HalfRetention, Retention, TaskRetention
 
 # The protected items of each task are split in two: decisions use the selection half, reported
-# numbers use the report half. The split is a fixed shuffle of item positions, seeded per task.
-# If analysis/PREREG.md (task C1) pins a different split, change `half_indices` to read it.
+# numbers use the report half. analysis/PREREG.md (section 3) pins the split for the protected
+# set in manifests/eval-protected-v1-split.json (stratified by base-model correctness). Any other
+# task or item count (smoke sets, tests) falls back to a fixed shuffle seeded per task.
 SPLIT_SEED = 20261114
-COLLAPSE_SHARE = 0.9  # most-common-answer share above this marks a run invalid
+SPLIT_MANIFEST = Path(__file__).resolve().parents[3] / "manifests" / "eval-protected-v1-split.json"
+COLLAPSE_SHARE = 0.9  # most-common-answer share above this flags a task as collapsed (not invalid)
+
+
+@functools.lru_cache(maxsize=1)
+def _pinned_split() -> dict[str, Any]:
+    if not SPLIT_MANIFEST.exists():
+        return {}
+    return json.loads(SPLIT_MANIFEST.read_text())["tasks"]
 
 
 def half_indices(task: str, n_items: int) -> tuple[np.ndarray, np.ndarray]:
     """(selection, report) item positions for a task. Deterministic; the halves are disjoint."""
+    pinned = _pinned_split().get(task)
+    if pinned is not None and pinned["n_items"] == n_items:
+        return np.array(pinned["selection_positions"]), np.array(pinned["report_positions"])
     order = list(range(n_items))
     random.Random(f"{SPLIT_SEED}:{task}").shuffle(order)
     half = n_items // 2
@@ -93,27 +106,36 @@ def measure_run(run_dir: str | Path, trained_domains: list[str]) -> dict[str, An
         if meta["is_domain_boundary"]
     ]
 
-    def ratio(domain: str) -> float | None:
+    def ratio(domain: str, metrics: dict[str, Any] = final_metrics) -> float | None:
         key = f"eval/ppl_doc/{domain}"
-        if key not in base_metrics or key not in final_metrics:
+        if key not in base_metrics or key not in metrics:
             return None
-        return float(final_metrics[key]) / float(base_metrics[key])
+        return float(metrics[key]) / float(base_metrics[key])
+
+    def geomean(values: dict[str, float]) -> float | None:
+        return math.exp(sum(math.log(v) for v in values.values()) / len(values)) if values else None
 
     ratios = {d: r for d in trained_domains if (r := ratio(d)) is not None}
     if not ratios:
         raise ValueError(f"{run_dir}: no held-out perplexity for the trained domains {trained_domains}")
-    mean_ratio = math.exp(sum(math.log(v) for v in ratios.values()) / len(ratios))
+    mean_ratio = geomean(ratios)
 
+    # Acquisition at each domain's own boundary: the last boundary checkpoint of that domain.
+    own_metrics = {meta["domain"]: m for meta, m, _ in ckpts[1:] if meta["is_domain_boundary"]}
+    own = {d: r for d in trained_domains if d in own_metrics and (r := ratio(d, own_metrics[d])) is not None}
+
+    # Answer collapse (share > COLLAPSE_SHARE) is recorded in `answer_share` and flagged by the
+    # analysis, but it does not invalidate the run: collapse is itself forgetting (PREREG A9).
     shares = {t: s for t in tasks if (s := _answer_share(final_metrics, final_dir, t)) is not None}
-    reasons = [f"answer collapse on {t}: most common answer share {s:.2f} > {COLLAPSE_SHARE:.2f}"
-               for t, s in shares.items() if s > COLLAPSE_SHARE]
+    reasons = []
     if not all(math.isfinite(v) for v in [*ratios.values(), selection.mean_delta, report.mean_delta]):
         reasons.append("non-finite score or perplexity")
 
     return {
         "retention": Retention(selection=selection, report=report, boundaries=boundaries),
         "acquisition": Acquisition(ppl_ratio=ratios, mean_ppl_ratio=mean_ratio,
-                                   general_ppl_ratio=ratio("general")),
+                                   general_ppl_ratio=ratio("general"),
+                                   own_boundary_ppl_ratio=own, mean_own_boundary_ppl_ratio=geomean(own)),
         "answer_share": shares,
         "gradient_tokens": int(final_meta["gradient_tokens"]),
         "invalid_reason": "; ".join(reasons) or None,

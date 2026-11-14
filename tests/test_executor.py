@@ -110,12 +110,17 @@ def test_measure_run_reads_halves_boundaries_and_perplexity(tmp_path):
     assert m["acquisition"].ppl_ratio == {"code": pytest.approx(0.8), "biomedical": pytest.approx(0.5)}
     assert m["acquisition"].mean_ppl_ratio == pytest.approx((0.8 * 0.5) ** 0.5)
     assert m["acquisition"].general_ppl_ratio == pytest.approx(1.2)
+    # own boundary: code after code (5 / 10), biomedical after biomedical (10 / 20)
+    assert m["acquisition"].own_boundary_ppl_ratio == {"code": pytest.approx(0.5), "biomedical": pytest.approx(0.5)}
+    assert m["acquisition"].mean_own_boundary_ppl_ratio == pytest.approx(0.5)
     assert m["gradient_tokens"] == 2000 and m["invalid_reason"] is None
 
 
-def test_answer_collapse_marks_the_run_invalid(tmp_path):
+def test_answer_collapse_is_recorded_but_keeps_the_run(tmp_path):
+    """PREREG A9: collapse is flagged from `answer_share` by the analysis, not invalidated."""
     m = measure_run(_run_dir(tmp_path, final_share=0.97), ["code", "biomedical"])
-    assert "answer collapse" in m["invalid_reason"]
+    assert m["invalid_reason"] is None
+    assert max(m["answer_share"].values()) == pytest.approx(0.97)
 
 
 def test_measure_run_agrees_with_a_september_baseline():

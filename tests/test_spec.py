@@ -74,10 +74,11 @@ def test_row_rules():
 
 def test_fake_rows_cover_the_cases_and_round_trip(tmp_path):
     rows = fake_rows(0)
-    assert 35 <= len(rows) <= 45
+    assert 40 <= len(rows) <= 55  # the pre-registered study: screen, replication, LR controls, failures
     assert {r.status for r in rows} == {"finished", "failed", "invalid"}
     assert len({r.spec_hash for r in rows}) == len(rows)  # every row is a distinct experiment
-    assert sum(1 for r in rows if not r.spec.techniques) == 5  # noise-floor seeds
+    assert sum(1 for r in rows if not r.spec.techniques and not r.spec.optim) == 5  # noise-floor seeds
+    assert sum(1 for r in rows if not r.spec.techniques and r.spec.optim) == 6  # lower-LR controls
     path = tmp_path / "rows.jsonl"
     write_rows(path, rows[:-1])
     append_row(path, rows[-1])
@@ -90,13 +91,16 @@ def test_fake_rows_carry_the_planted_effects():
             r.retention.report.mean_delta
             for r in fake_rows(0)
             if r.status == "finished" and set(r.spec.technique_names()) == names
+            and not r.spec.optim  # the lower-LR controls are no-mitigation at another LR
         ]
         return sum(hits) / len(hits)
 
     base = mean(set())
     assert base == pytest.approx(PLANTED["baseline_retention_mean_delta"], abs=0.01)
     assert mean({"replay"}) - base == pytest.approx(0.025, abs=0.015)
-    assert mean({"lora"}) > mean({"lr_rewarm"})
+    # the fake study follows the pre-registered screen, which has no lora-only run: planted,
+    # distill+lora retains 0.050 more than base and lr_rewarm alone 0.008
+    assert mean({"distill", "lora"}) > mean({"lr_rewarm"}) + 0.02
 
 
 def test_bad_line_is_reported_with_its_number(tmp_path):
