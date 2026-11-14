@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "StreamDomain": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "tokens"
+      ],
+      "title": "StreamDomain",
+      "type": "object"
+    },
+    "TechniqueSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "TechniqueSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One run. Everything not listed here comes from the frozen bench config.",
+  "properties": {
+    "bench": {
+      "default": "fast",
+      "title": "Bench",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "notes": {
+      "default": "",
+      "title": "Notes",
+      "type": "string"
+    },
+    "optim": {
+      "additionalProperties": true,
+      "title": "Optim",
+      "type": "object"
+    },
+    "parent_spec_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Spec Hash"
+    },
+    "seed": {
+      "title": "Seed",
+      "type": "integer"
+    },
+    "stream": {
+      "items": {
+        "$ref": "#/$defs/StreamDomain"
+      },
+      "minItems": 1,
+      "title": "Stream",
+      "type": "array"
+    },
+    "techniques": {
+      "items": {
+        "$ref": "#/$defs/TechniqueSpec"
+      },
+      "title": "Techniques",
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "seed",
+    "stream"
+  ],
+  "title": "RunSpec",
+  "type": "object"
+}

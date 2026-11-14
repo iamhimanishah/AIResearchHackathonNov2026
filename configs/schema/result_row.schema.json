@@ -1,0 +1,454 @@
+{
+  "$defs": {
+    "Acquisition": {
+      "additionalProperties": false,
+      "properties": {
+        "general_ppl_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "General Ppl Ratio"
+        },
+        "mean_ppl_ratio": {
+          "title": "Mean Ppl Ratio",
+          "type": "number"
+        },
+        "ppl_ratio": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Ppl Ratio",
+          "type": "object"
+        }
+      },
+      "required": [
+        "ppl_ratio",
+        "mean_ppl_ratio"
+      ],
+      "title": "Acquisition",
+      "type": "object"
+    },
+    "BoundaryRetention": {
+      "additionalProperties": false,
+      "description": "Mean retention after one domain. Per-checkpoint detail lives in the file at `items_path`.",
+      "properties": {
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "gradient_tokens": {
+          "title": "Gradient Tokens",
+          "type": "integer"
+        },
+        "report_mean_delta": {
+          "title": "Report Mean Delta",
+          "type": "number"
+        },
+        "selection_mean_delta": {
+          "title": "Selection Mean Delta",
+          "type": "number"
+        }
+      },
+      "required": [
+        "domain",
+        "gradient_tokens",
+        "selection_mean_delta",
+        "report_mean_delta"
+      ],
+      "title": "BoundaryRetention",
+      "type": "object"
+    },
+    "Cost": {
+      "additionalProperties": false,
+      "properties": {
+        "est_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Est Usd"
+        },
+        "extra_forward_tokens": {
+          "default": 0,
+          "title": "Extra Forward Tokens",
+          "type": "integer"
+        },
+        "gpu_type": {
+          "title": "Gpu Type",
+          "type": "string"
+        },
+        "gradient_tokens": {
+          "title": "Gradient Tokens",
+          "type": "integer"
+        },
+        "trainable_params": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trainable Params"
+        },
+        "update_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Update Bytes"
+        },
+        "wall_clock_s": {
+          "title": "Wall Clock S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "gradient_tokens",
+        "wall_clock_s",
+        "gpu_type"
+      ],
+      "title": "Cost",
+      "type": "object"
+    },
+    "HalfRetention": {
+      "additionalProperties": false,
+      "description": "Retention on one half of the protected set.",
+      "properties": {
+        "mean_delta": {
+          "title": "Mean Delta",
+          "type": "number"
+        },
+        "per_task": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TaskRetention"
+          },
+          "title": "Per Task",
+          "type": "object"
+        }
+      },
+      "required": [
+        "per_task",
+        "mean_delta"
+      ],
+      "title": "HalfRetention",
+      "type": "object"
+    },
+    "Retention": {
+      "additionalProperties": false,
+      "properties": {
+        "boundaries": {
+          "items": {
+            "$ref": "#/$defs/BoundaryRetention"
+          },
+          "title": "Boundaries",
+          "type": "array"
+        },
+        "report": {
+          "$ref": "#/$defs/HalfRetention"
+        },
+        "selection": {
+          "$ref": "#/$defs/HalfRetention"
+        }
+      },
+      "required": [
+        "selection",
+        "report"
+      ],
+      "title": "Retention",
+      "type": "object"
+    },
+    "RunSpec": {
+      "additionalProperties": false,
+      "description": "One run. Everything not listed here comes from the frozen bench config.",
+      "properties": {
+        "bench": {
+          "default": "fast",
+          "title": "Bench",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "optim": {
+          "additionalProperties": true,
+          "title": "Optim",
+          "type": "object"
+        },
+        "parent_spec_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Spec Hash"
+        },
+        "seed": {
+          "title": "Seed",
+          "type": "integer"
+        },
+        "stream": {
+          "items": {
+            "$ref": "#/$defs/StreamDomain"
+          },
+          "minItems": 1,
+          "title": "Stream",
+          "type": "array"
+        },
+        "techniques": {
+          "items": {
+            "$ref": "#/$defs/TechniqueSpec"
+          },
+          "title": "Techniques",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "seed",
+        "stream"
+      ],
+      "title": "RunSpec",
+      "type": "object"
+    },
+    "StreamDomain": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "tokens"
+      ],
+      "title": "StreamDomain",
+      "type": "object"
+    },
+    "TaskRetention": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "title": "Base",
+          "type": "number"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "number"
+        },
+        "final": {
+          "title": "Final",
+          "type": "number"
+        },
+        "n_items": {
+          "exclusiveMinimum": 0,
+          "title": "N Items",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "base",
+        "final",
+        "delta",
+        "n_items"
+      ],
+      "title": "TaskRetention",
+      "type": "object"
+    },
+    "TechniqueSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "TechniqueSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "acquisition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Acquisition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "answer_share": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Answer Share",
+      "type": "object"
+    },
+    "attempt": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "backend": {
+      "enum": [
+        "modal",
+        "tinker",
+        "local",
+        "fake"
+      ],
+      "title": "Backend",
+      "type": "string"
+    },
+    "cost": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Cost"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Finished At"
+    },
+    "git_sha": {
+      "title": "Git Sha",
+      "type": "string"
+    },
+    "items_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Items Path"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "retention": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Retention"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "spec": {
+      "$ref": "#/$defs/RunSpec"
+    },
+    "spec_hash": {
+      "title": "Spec Hash",
+      "type": "string"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At"
+    },
+    "status": {
+      "enum": [
+        "finished",
+        "failed",
+        "invalid"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "spec",
+    "spec_hash",
+    "git_sha",
+    "status",
+    "backend"
+  ],
+  "title": "ResultRow",
+  "type": "object"
+}

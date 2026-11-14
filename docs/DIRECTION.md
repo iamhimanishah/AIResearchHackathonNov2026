@@ -257,6 +257,11 @@ team confirms them; once confirmed, change them only with everyone's agreement.
 
 With these fixed, the executor, analysis, agent and page can all be built against fake rows.
 
+Both formats are defined in code in `src/clharness/spec.py` (`RunSpec`, `ResultRow`), with JSON
+Schemas in `configs/schema/`. Fake rows with planted effects are in `results/fake/rows.jsonl`;
+`results/fake/planted_effects.json` says what was planted. Scores and deltas are fractions
+(a 5-point drop is -0.05). Check any rows file with `clh validate-row FILE`.
+
 ## Harness changes needed
 
 The harness in `src/clharness/` runs a domain stream and measures at every checkpoint.

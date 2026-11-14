@@ -73,14 +73,23 @@ Facts every card relies on (from `docs/baselines.md` and the code):
      noise, so C can test that the attribution analysis recovers them.
 - **Done when:** B, C and D have confirmed it in the team chat, and `clh validate-row` passes on
   the fake rows.
+- **Status:** drafted, waiting for B, C and D to confirm. Code is in `src/clharness/spec.py`
+  and `src/clharness/fake.py`. Regenerate with `clh fake-rows` and `clh export-schema`.
 - **Open questions:**
-  - Retention per checkpoint or only at boundaries? Recommended: boundaries plus final, with
-    per-checkpoint data stored aside.
-  - Store per-item outcomes in the row, or point to a file? Recommended: a pointer.
-  - Units for "size of the update that would ship": bytes of the delta, or trainable parameter
-    count? Record both.
-- **Options to try:** add a free-form `notes` field, and a `parent_spec_hash` so the agent's
-  lineage (screen, then replicate) is traceable.
+  - ~~Retention per checkpoint or only at boundaries?~~ Decided: the row holds the final
+    per-task numbers and the mean after each domain (`retention.boundaries`). Per-checkpoint
+    data stays in the run's own files.
+  - ~~Store per-item outcomes in the row, or point to a file?~~ Decided: a pointer
+    (`items_path`).
+  - ~~Units for "size of the update that would ship"?~~ Decided: both (`cost.update_bytes` and
+    `cost.trainable_params`).
+  - Scores and deltas are fractions, not points. Perplexity ratios are trained / base.
+  - `spec_hash` leaves out `name`, `notes` and `parent_spec_hash`, so relabelling a spec does
+    not make it a new experiment.
+  - Per-domain LR re-warm appears in the fake rows as a technique named `lr_rewarm`, so the
+    on/off grid treats it like the others. A4 decides whether it stays a technique or becomes
+    an `optim` override.
+- **Options to try:** ~~add a free-form `notes` field, and a `parent_spec_hash`~~ Both added.
 
 ### A2 · Pre-optimizer model hook
 - **Goal:** let a technique change the model (LoRA wrap, freeze layers) before AdamW sees the

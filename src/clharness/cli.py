@@ -8,6 +8,10 @@
   clh train CONFIG [--name N]               run the continual fine-tuning loop
   clh compare-runs A B                      repeatability diff of two runs' metrics.jsonl
   clh analyze RUN...                        per-run analysis.json + text report (no GPU)
+  clh validate-row FILE...                  check result-row JSONL files against the format
+  clh spec-hash FILE...                     idempotency key of run spec JSON files
+  clh fake-rows [--out F] [--seed N]        invented result rows with planted effects
+  clh export-schema [--out DIR]             JSON Schemas of the run spec and result row
 """
 
 from __future__ import annotations
@@ -352,10 +356,73 @@ def cmd_train(args) -> int:
     return 0
 
 
+def cmd_validate_row(args) -> int:
+    from clharness.spec import read_rows
+
+    bad = 0
+    for path in args.files:
+        try:
+            rows = read_rows(path)
+        except ValueError as e:
+            print(f"INVALID {e}", file=sys.stderr)
+            bad += 1
+            continue
+        by_status: dict[str, int] = {}
+        for r in rows:
+            by_status[r.status] = by_status.get(r.status, 0) + 1
+        print(f"ok {path}: {len(rows)} rows {by_status}")
+    return 1 if bad else 0
+
+
+def cmd_spec_hash(args) -> int:
+    from clharness.spec import load_spec
+
+    for path in args.files:
+        print(f"{load_spec(path).spec_hash()}  {path}")
+    return 0
+
+
+def cmd_fake_rows(args) -> int:
+    from clharness.fake import PLANTED, fake_rows
+    from clharness.spec import write_rows
+
+    out = Path(args.out)
+    rows = fake_rows(args.seed)
+    write_rows(out, rows)
+    planted = out.with_name("planted_effects.json")
+    planted.write_text(json.dumps(PLANTED, indent=2) + "\n")
+    print(f"wrote {len(rows)} fake rows to {out} and the planted effects to {planted}")
+    return 0
+
+
+def cmd_export_schema(args) -> int:
+    from clharness.spec import json_schemas
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for name, schema in json_schemas().items():
+        (out / name).write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n")
+        print(f"wrote {out / name}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="clh", description="continual-learning harness")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("env").set_defaults(fn=cmd_env)
+    p = sub.add_parser("validate-row", help="check JSONL files of result rows against the format")
+    p.add_argument("files", nargs="+")
+    p.set_defaults(fn=cmd_validate_row)
+    p = sub.add_parser("spec-hash", help="print the idempotency key of run spec JSON files")
+    p.add_argument("files", nargs="+")
+    p.set_defaults(fn=cmd_spec_hash)
+    p = sub.add_parser("fake-rows", help="write invented result rows with planted effects")
+    p.add_argument("--out", default=str(REPO_ROOT / "results" / "fake" / "rows.jsonl"))
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_fake_rows)
+    p = sub.add_parser("export-schema", help="write the run-spec and result-row JSON Schemas")
+    p.add_argument("--out", default=str(REPO_ROOT / "configs" / "schema"))
+    p.set_defaults(fn=cmd_export_schema)
     p = sub.add_parser("build-data")
     p.add_argument("--set", default="smoke", help="smoke | real")
     p.add_argument("--domain", action="append", help="real set: build only these domains (repeatable)")
