@@ -37,18 +37,21 @@ Facts every card relies on (from `docs/baselines.md` and the code):
 
 ### A0 · Restore the missing `clharness.data` package (blocker, do first)
 - **Goal:** make the harness importable from a clean clone.
-- **Problem:** `.gitignore` line 16 is `data/`, which also matches `src/clharness/data/`. So
-  `clharness/data/loader.py` and `clharness/data/manifest.py` were never committed. `loop.py`
-  imports `clharness.data.loader` and `clharness.data.manifest`, so `clh train` and the tests
-  that load the trainer fail on a fresh clone.
+- **Problem:** `.gitignore` had `data/`, which also matched `src/clharness/data/`. So the
+  `clharness.data` package was never committed. The code imports four modules from it:
+  `build`, `loader`, `manifest` and `sources`. Because of that, `clh build-data`, `clh train`
+  and the tests that load the trainer fail on a fresh clone.
 - **Steps:**
-  1. Change the ignore rule to `/data/`, so only the top-level data folder is ignored.
-  2. Commit `src/clharness/data/` from the machine where the harness was built (Justin's).
+  1. ~~Change the ignore rule to `/data/`~~ Done: the rule is now anchored, so only the
+     top-level data folder is ignored.
+  2. Commit `src/clharness/data/` (with `__init__.py`, `build.py`, `loader.py`, `manifest.py`
+     and `sources.py`) from the machine where the harness was built (Justin's). It should now
+     show up in `git status` there.
   3. Run `make test` on a clean clone.
 - **Done when:** `git clone && make setup && make test` passes on a machine that never had the
   repo.
-- **Open questions:** do other ignored paths hide source too? Run `git check-ignore -v` over
-  `src/` to find out.
+- **Open questions:** none left on the ignore rules. A scan of every `clharness.*` import
+  found no other missing modules.
 
 ### A1 · Run-spec and result-row formats, with fake rows
 - **Goal:** let B, C and D build against fixed formats before any real run exists.

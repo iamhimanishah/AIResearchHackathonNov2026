@@ -192,7 +192,7 @@ are in [`TASKS.md`](TASKS.md).
 
 | ID | Task | Owner | Needs | Unblocks |
 |---|---|---|---|---|
-| A0 | Restore the missing `src/clharness/data/` package (hidden by the `data/` ignore rule) | A | The original files from whoever built the harness | Every run: A5, A6, B sanity runs |
+| A0 | Commit the missing `src/clharness/data/` package (ignore rule fixed; the files are still needed) | A | The original files from whoever built the harness | Every run: A5, A6, B sanity runs |
 | A1 | Run-spec and result-row formats, with fake rows | A | Team agrees the contract | A6, A7, C2, D1, D3 |
 | A2 | Pre-optimizer model hook | A | (nothing upstream) | B4 (LoRA, layer freezing) |
 | A3 | Loss-term hook | A | (nothing upstream) | B5 (distillation) |
