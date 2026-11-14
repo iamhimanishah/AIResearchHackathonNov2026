@@ -39,6 +39,8 @@ eval:
     - { name: general,    max_seqs: 256 }
     - { name: code,       max_seqs: 256 }
     - { name: biomedical, max_seqs: 256 }
+    - { name: legal,      max_seqs: 256 }   # so a stream may use any of the four domains
+    - { name: math,       max_seqs: 256 }
 
 data:
   manifest: manifests/real.json
