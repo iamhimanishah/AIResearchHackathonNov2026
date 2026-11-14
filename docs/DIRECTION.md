@@ -165,7 +165,7 @@ Members A to D are placeholders: replace each with a name when someone claims th
 - Own the submission: demo video, description and the challenges entered.
 
 **Second task sequence (hybrid scope).** The top configurations are re-run on a published
-sequence: Tinker LoRA on the smallest Llama or Qwen, SST-2 then MNLI then AG News, 5k train
+sequence: Tinker LoRA on Qwen3-8B, SST-2 then MNLI then AG News, 5k train
 and 1k eval per task. It runs naive, replay-200, joint and the top two techniques at 3 seeds,
 scored as gap closed and average forgetting. Rules:
 - It starts only after sync point 1.
