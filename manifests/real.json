@@ -1,0 +1,421 @@
+{
+  "domains": {
+    "biomedical": {
+      "budgets": {
+        "heldout": 2000000,
+        "probe": 1000000,
+        "stream": 200000000
+      },
+      "n_docs_seen": 729856,
+      "source": {
+        "config": null,
+        "data_files": [
+          "chunk/pubmed23n0001.jsonl",
+          "chunk/pubmed23n0021.jsonl",
+          "chunk/pubmed23n0041.jsonl",
+          "chunk/pubmed23n0061.jsonl",
+          "chunk/pubmed23n0081.jsonl",
+          "chunk/pubmed23n0101.jsonl",
+          "chunk/pubmed23n0121.jsonl",
+          "chunk/pubmed23n0141.jsonl",
+          "chunk/pubmed23n0161.jsonl",
+          "chunk/pubmed23n0181.jsonl",
+          "chunk/pubmed23n0201.jsonl",
+          "chunk/pubmed23n0221.jsonl",
+          "chunk/pubmed23n0241.jsonl",
+          "chunk/pubmed23n0261.jsonl",
+          "chunk/pubmed23n0281.jsonl",
+          "chunk/pubmed23n0301.jsonl",
+          "chunk/pubmed23n0321.jsonl",
+          "chunk/pubmed23n0341.jsonl",
+          "chunk/pubmed23n0361.jsonl",
+          "chunk/pubmed23n0381.jsonl",
+          "chunk/pubmed23n0401.jsonl",
+          "chunk/pubmed23n0421.jsonl",
+          "chunk/pubmed23n0441.jsonl",
+          "chunk/pubmed23n0461.jsonl",
+          "chunk/pubmed23n0481.jsonl",
+          "chunk/pubmed23n0501.jsonl",
+          "chunk/pubmed23n0521.jsonl",
+          "chunk/pubmed23n0541.jsonl",
+          "chunk/pubmed23n0561.jsonl",
+          "chunk/pubmed23n0581.jsonl",
+          "chunk/pubmed23n0601.jsonl",
+          "chunk/pubmed23n0621.jsonl",
+          "chunk/pubmed23n0641.jsonl",
+          "chunk/pubmed23n0661.jsonl",
+          "chunk/pubmed23n0681.jsonl",
+          "chunk/pubmed23n0701.jsonl",
+          "chunk/pubmed23n0721.jsonl",
+          "chunk/pubmed23n0741.jsonl",
+          "chunk/pubmed23n0761.jsonl",
+          "chunk/pubmed23n0781.jsonl",
+          "chunk/pubmed23n0801.jsonl",
+          "chunk/pubmed23n0821.jsonl",
+          "chunk/pubmed23n0841.jsonl",
+          "chunk/pubmed23n0861.jsonl",
+          "chunk/pubmed23n0881.jsonl",
+          "chunk/pubmed23n0901.jsonl",
+          "chunk/pubmed23n0921.jsonl",
+          "chunk/pubmed23n0941.jsonl",
+          "chunk/pubmed23n0961.jsonl",
+          "chunk/pubmed23n0981.jsonl"
+        ],
+        "filters": {},
+        "kind": "hf_file_jsonl",
+        "max_chars": null,
+        "min_chars": 300,
+        "name": "medrag-pubmed-abstracts",
+        "repo_id": "MedRAG/pubmed",
+        "revision": "33da3593d5756bc04c8909f170003c0b14197957",
+        "split": "train",
+        "strip_header_re": null,
+        "text_field": "contents"
+      },
+      "splits": {
+        "heldout": {
+          "doc_ids_sha256": "f45957d89926c6e99926caee6c2c332ae66768f1338b9f5d4bef66ddcd1156e9",
+          "jsonl": {
+            "bytes": 10301441,
+            "path": "data/real/biomedical/heldout.jsonl",
+            "sha256": "1887709c16aed63379c97a8f185bd4558ca88bcd1910811668c6a1bb91703256"
+          },
+          "n_docs": 7165,
+          "n_tokens": 2000372,
+          "tokens": {
+            "bytes": 8001616,
+            "path": "data/real/biomedical/heldout.tokens.npy",
+            "sha256": "cf4feca6199ecc56f00fd802ab016fad21f4386399fa503fb964a380a59ed845"
+          }
+        },
+        "probe": {
+          "doc_ids_sha256": "81a0ddb391be4d1463a9dcf8b0b535628222ce922913651d2d013dd427f64537",
+          "jsonl": {
+            "bytes": 5165804,
+            "path": "data/real/biomedical/probe.jsonl",
+            "sha256": "7e79b28e0fc9ec015ef7053b8f87f6e9075d10ed367b29467586e253c7b881a9"
+          },
+          "n_docs": 3577,
+          "n_tokens": 1000080,
+          "tokens": {
+            "bytes": 4000448,
+            "path": "data/real/biomedical/probe.tokens.npy",
+            "sha256": "b87f2c3d7ea0824421221acd905a0ee840644bd671f5d39a5080492abd833122"
+          }
+        },
+        "stream": {
+          "doc_ids_sha256": "2dbadcd356795f3f8e391eb81843d3527f66aefaa4c8118d101c6dbe256a4e05",
+          "jsonl": {
+            "bytes": 1030579471,
+            "path": "data/real/biomedical/stream.jsonl",
+            "sha256": "13e82fc0108051d87f039bff773fb06799ea2c5b7a35fd24e49f87875de118aa"
+          },
+          "n_docs": 718961,
+          "n_tokens": 200000149,
+          "tokens": {
+            "bytes": 800000724,
+            "path": "data/real/biomedical/stream.tokens.npy",
+            "sha256": "2ea3713e80ead31e282d10058bf595b2acbb9dd34a8e7f5c925552c911bbca4c"
+          }
+        }
+      }
+    },
+    "code": {
+      "budgets": {
+        "heldout": 2000000,
+        "probe": 1000000,
+        "stream": 200000000
+      },
+      "n_docs_seen": 163072,
+      "source": {
+        "config": null,
+        "data_files": [
+          "python/train-00000-of-00059.parquet",
+          "python/train-00001-of-00059.parquet"
+        ],
+        "filters": {},
+        "kind": "hf_file_parquet",
+        "max_chars": 20000,
+        "min_chars": 200,
+        "name": "starcoderdata-python",
+        "repo_id": "bigcode/starcoderdata",
+        "revision": "9fc30b578cedaec69e47302df72cf00feed7c8c4",
+        "split": "train",
+        "strip_header_re": "^(?:<(?:reponame|filename|gh_stars)>[^\\n]*\\n)+",
+        "text_field": "content"
+      },
+      "splits": {
+        "heldout": {
+          "doc_ids_sha256": "5e8ad39338adfd97a318fd97f20bb6381b771f205564ff1ccbfbde4b3a47b210",
+          "jsonl": {
+            "bytes": 7106019,
+            "path": "data/real/code/heldout.jsonl",
+            "sha256": "ef9773fc9007861af1fa18710c9cbcc4f628932bd7cf5a2c617c1c4c178e7fe1"
+          },
+          "n_docs": 1606,
+          "n_tokens": 2001879,
+          "tokens": {
+            "bytes": 8007644,
+            "path": "data/real/code/heldout.tokens.npy",
+            "sha256": "a512da1067fef994a7133eccccbc80a7583629680e97de35b8d56cce217437cc"
+          }
+        },
+        "probe": {
+          "doc_ids_sha256": "65fe3a75cbdc6e49dc02e6156f15cad5affa803f74957f09f5c1b12f665cb7ae",
+          "jsonl": {
+            "bytes": 3589765,
+            "path": "data/real/code/probe.jsonl",
+            "sha256": "4056a029fe48449a3251ba4f518fd46cf100c205c4df34b615b1774db522aff4"
+          },
+          "n_docs": 801,
+          "n_tokens": 1015671,
+          "tokens": {
+            "bytes": 4062812,
+            "path": "data/real/code/probe.tokens.npy",
+            "sha256": "dd818e2d6dbce4412f9f077044a0b0d24771de5ef9ea6f2121ac598bda40f9a8"
+          }
+        },
+        "stream": {
+          "doc_ids_sha256": "d612da0ed2fc366c3b9aec013fd185a39c0963eb8759ed031db82c6c8cd3ddcf",
+          "jsonl": {
+            "bytes": 709809718,
+            "path": "data/real/code/stream.jsonl",
+            "sha256": "3c6fa270db101b64716fd6cdf31671fec9c4b27e8874303a2e2bf0f5efb2d360"
+          },
+          "n_docs": 160457,
+          "n_tokens": 200003268,
+          "tokens": {
+            "bytes": 800013200,
+            "path": "data/real/code/stream.tokens.npy",
+            "sha256": "209e898fdd917ca52cf68fdfb68597d8610cc451b5af012b04aa9f003f008289"
+          }
+        }
+      }
+    },
+    "general": {
+      "budgets": {
+        "heldout": 2000000,
+        "probe": 1000000,
+        "stream": 50000000
+      },
+      "n_docs_seen": 83200,
+      "source": {
+        "config": null,
+        "data_files": [
+          "sample/10BT/000_00000.parquet"
+        ],
+        "filters": {},
+        "kind": "hf_file_parquet",
+        "max_chars": 20000,
+        "min_chars": 200,
+        "name": "fineweb-sample-10BT",
+        "repo_id": "HuggingFaceFW/fineweb",
+        "revision": "9bb295ddab0e05d785b879661af7260fed5140fc",
+        "split": "train",
+        "strip_header_re": null,
+        "text_field": "text"
+      },
+      "splits": {
+        "heldout": {
+          "doc_ids_sha256": "09dda6238c37e86a380fbb1f7ede33b28a9de171360e8045eeafad6ef1d4a290",
+          "jsonl": {
+            "bytes": 9298086,
+            "path": "data/real/general/heldout.jsonl",
+            "sha256": "bd4658190c30f0cf1fe231fbef78fbc1986e0fbe26f137ca2d529a6dc469a640"
+          },
+          "n_docs": 3123,
+          "n_tokens": 2000099,
+          "tokens": {
+            "bytes": 8000524,
+            "path": "data/real/general/heldout.tokens.npy",
+            "sha256": "b5588100ded232dbbf4316b67cbbcad594584a1059d863ca34b9cd6df0439166"
+          }
+        },
+        "probe": {
+          "doc_ids_sha256": "841057ce8ae3fb11a48ce00813e578e67ae3d71ae365a1203f0e1a155c50018b",
+          "jsonl": {
+            "bytes": 4666806,
+            "path": "data/real/general/probe.jsonl",
+            "sha256": "3cc7418a97accd5dab36be9fb95f4cb8efaaa3b4bae67b8ad4a17d4d5345e7aa"
+          },
+          "n_docs": 1575,
+          "n_tokens": 1002248,
+          "tokens": {
+            "bytes": 4009120,
+            "path": "data/real/general/probe.tokens.npy",
+            "sha256": "60f364ffa2f85856127e16931ddc59cd71db5d60d1fbab4b8ed362c85ba07744"
+          }
+        },
+        "stream": {
+          "doc_ids_sha256": "cb228c8f97e8b15e89be8178c1296e8e26ec44984b1cbd706efbc6137b3157f5",
+          "jsonl": {
+            "bytes": 233618311,
+            "path": "data/real/general/stream.jsonl",
+            "sha256": "0b5fa3c8ae0f7726c42bf6aac86a5063e08edafbd2ce35d61301910207d03037"
+          },
+          "n_docs": 78421,
+          "n_tokens": 50000504,
+          "tokens": {
+            "bytes": 200002144,
+            "path": "data/real/general/stream.tokens.npy",
+            "sha256": "47dccb55a698b151baea7a11ccb104457020c9244f8593fe2f81ce7a57213f31"
+          }
+        }
+      }
+    },
+    "legal": {
+      "budgets": {
+        "heldout": 2000000,
+        "probe": 1000000,
+        "stream": 200000000
+      },
+      "n_docs_seen": 163840,
+      "source": {
+        "config": null,
+        "data_files": [
+          "data/train.courtlisteneropinions.0.jsonl.xz"
+        ],
+        "filters": {},
+        "kind": "hf_file_jsonl_xz",
+        "max_chars": 20000,
+        "min_chars": 500,
+        "name": "pile-of-law-courtlistener-opinions",
+        "repo_id": "pile-of-law/pile-of-law",
+        "revision": "2e96169e7e4b43f8ea36230515ebb44b27423b94",
+        "split": "train",
+        "strip_header_re": null,
+        "text_field": "text"
+      },
+      "splits": {
+        "heldout": {
+          "doc_ids_sha256": "269ecc284f17cbb80dd7a21e2450c2bce74c9eeef13cbdccd43c08bc3f8fae0b",
+          "jsonl": {
+            "bytes": 8617778,
+            "path": "data/real/legal/heldout.jsonl",
+            "sha256": "b0ea0587fb688e7587e294549817ca691a434f2e7bb22a23a6c242018a2aba9f"
+          },
+          "n_docs": 1615,
+          "n_tokens": 2003688,
+          "tokens": {
+            "bytes": 8014880,
+            "path": "data/real/legal/heldout.tokens.npy",
+            "sha256": "6171ce87c87764636bb20fa1a33651bd9b4767563eb44a2e2651fc6c5fa33b23"
+          }
+        },
+        "probe": {
+          "doc_ids_sha256": "5c5733f07195969e6e533218fb7528d199f1613b039a45228ce429aa13b55a1f",
+          "jsonl": {
+            "bytes": 4308819,
+            "path": "data/real/legal/probe.jsonl",
+            "sha256": "74c79b9f83409be71d594c0a56398d28608230c64acaa10ee0ebe322d21ca1c3"
+          },
+          "n_docs": 824,
+          "n_tokens": 1000627,
+          "tokens": {
+            "bytes": 4002636,
+            "path": "data/real/legal/probe.tokens.npy",
+            "sha256": "8333c3451b3f6dd0b3b9815ac95b00f83ed9af262fbaf3b3276e8de6ce6b4d5c"
+          }
+        },
+        "stream": {
+          "doc_ids_sha256": "0491dd4e3a28fdcb8f053be4c83f69c17e935ac0dee02eb55c7dd6cfa921e95b",
+          "jsonl": {
+            "bytes": 861125139,
+            "path": "data/real/legal/stream.jsonl",
+            "sha256": "467ed8923df7773bb304ca89bfa8721c5af7af62c120e0a04677e713a774ee08"
+          },
+          "n_docs": 161268,
+          "n_tokens": 200004208,
+          "tokens": {
+            "bytes": 800016960,
+            "path": "data/real/legal/stream.tokens.npy",
+            "sha256": "6aeee6a48f3bd2dadfdd4e88adc712771d53c2751c8fce706cc80944f6ed3413"
+          }
+        }
+      }
+    },
+    "math": {
+      "budgets": {
+        "heldout": 2000000,
+        "probe": 1000000,
+        "stream": 200000000
+      },
+      "n_docs_seen": 136960,
+      "source": {
+        "config": null,
+        "data_files": [
+          "data/train-00000-of-00114-5a023365406cb9c4.parquet",
+          "data/train-00001-of-00114-e32fc2813a15f61c.parquet",
+          "data/train-00002-of-00114-1429d96b99aec578.parquet"
+        ],
+        "filters": {},
+        "kind": "hf_file_parquet",
+        "max_chars": 20000,
+        "min_chars": 200,
+        "name": "open-web-math",
+        "repo_id": "open-web-math/open-web-math",
+        "revision": "fde8ef8de2300f5e778f56261843dab89f230815",
+        "split": "train",
+        "strip_header_re": null,
+        "text_field": "text"
+      },
+      "splits": {
+        "heldout": {
+          "doc_ids_sha256": "8e4efa59552aa6a41b30ef0868ab4242a25702a4c747e743f84a62f8ff40bbd7",
+          "jsonl": {
+            "bytes": 7618035,
+            "path": "data/real/math/heldout.jsonl",
+            "sha256": "95e2e2d1476b86d61f772155340c4b080d2609d8c1fbcb903c2929accc0a58f6"
+          },
+          "n_docs": 1310,
+          "n_tokens": 2002438,
+          "tokens": {
+            "bytes": 8009880,
+            "path": "data/real/math/heldout.tokens.npy",
+            "sha256": "b1e4830b85e42b92371f090ec83dd421190f144fa6f3fe655b2c67f876584b04"
+          }
+        },
+        "probe": {
+          "doc_ids_sha256": "543850c78dbf15a5659d8e9fbf6b81c77b11a9acdee686671c098b0c29057db8",
+          "jsonl": {
+            "bytes": 3738026,
+            "path": "data/real/math/probe.jsonl",
+            "sha256": "6367e8178f2c395d4e39c5ab7ff67a3322e873ea6f7479f920356eda03687463"
+          },
+          "n_docs": 684,
+          "n_tokens": 1000510,
+          "tokens": {
+            "bytes": 4002168,
+            "path": "data/real/math/probe.tokens.npy",
+            "sha256": "d2663bf2d4186c490984ae0aaf898019e9036c7c760254fa96bcbbf7ab03c492"
+          }
+        },
+        "stream": {
+          "doc_ids_sha256": "5fb1f2b9c969c9d7383a4aea66ff994aa4ed292a73670769feef87a2b4046761",
+          "jsonl": {
+            "bytes": 762983000,
+            "path": "data/real/math/stream.jsonl",
+            "sha256": "6ab1f715eeb1c9d3089e9b434595b6efffc4fbc64e7f9423e8542dca4ddb1f44"
+          },
+          "n_docs": 134791,
+          "n_tokens": 200000690,
+          "tokens": {
+            "bytes": 800002888,
+            "path": "data/real/math/stream.tokens.npy",
+            "sha256": "a2ab8b5425962c2e3f7f51304d4868370d6eaaf79d5c4d3d66dd16af717b004c"
+          }
+        }
+      }
+    }
+  },
+  "seed": 1234,
+  "seq_len": 1024,
+  "set": "real",
+  "tokenizer": {
+    "bos_token_id": 2,
+    "eos_token_id": 1,
+    "name_or_path": "google/gemma-3-1b-pt",
+    "probe_ids_sha256": "6dade7281d062b0e9634ec94dddf8c73c2094e481ac8f52ee51b44f9f1f032a8",
+    "vocab_size": 262144
+  }
+}

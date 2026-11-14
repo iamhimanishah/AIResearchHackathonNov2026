@@ -1,0 +1,6 @@
+# `clh baseline-evals configs/baseline-candidates.yaml`
+include:
+  - model/gemma3-1b-pt.yaml
+  - eval/candidates.yaml
+name: candidates
+device: auto

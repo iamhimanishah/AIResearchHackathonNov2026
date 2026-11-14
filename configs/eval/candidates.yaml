@@ -1,0 +1,81 @@
+# Deliverable 2: every tier-1 / tier-2 *candidate* for the protected set, baselined on base
+# Gemma 3 1B PT to decide what survives. Item counts are subsets sized for a prune decision
+# (~±2% standard error), not the final suite sizes. num_fewshot follows each task's standard.
+# The final frozen suite is declared separately after Justin's call (tier1.yaml / tier2.yaml).
+eval:
+  suite: candidates
+  item_seed: 20260905
+  batch_size: 4
+  max_length: 2048       # CaseHOLD prompts are long; 4 x 2048 x 262k fp32 logits = 8.6 GB, so batch 1 there
+  include_path: configs/lm_eval_tasks
+  tier2_every_n_checkpoints: 5
+  perplexity_slices: []
+  lm_eval_tasks:
+    # tier 1 — loglikelihood multiple choice
+    - { task: arc_easy,      n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: hellaswag,     n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: piqa,          n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: pubmedqa_pqal, n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: casehold,      n_items: 500, num_fewshot: 0, tier: 1, batch_size: 1 }
+    # MMLU: 57 subjects x 18 items = 1026 (expected to be near chance at 1B PT)
+    - { task: mmlu_abstract_algebra, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_anatomy, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_astronomy, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_business_ethics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_clinical_knowledge, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_college_biology, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_college_chemistry, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_college_computer_science, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_college_mathematics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_college_medicine, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_college_physics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_computer_security, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_conceptual_physics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_econometrics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_electrical_engineering, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_elementary_mathematics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_formal_logic, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_global_facts, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_biology, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_chemistry, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_computer_science, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_european_history, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_geography, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_government_and_politics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_macroeconomics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_mathematics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_microeconomics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_physics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_psychology, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_statistics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_us_history, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_high_school_world_history, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_human_aging, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_human_sexuality, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_international_law, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_jurisprudence, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_logical_fallacies, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_machine_learning, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_management, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_marketing, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_medical_genetics, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_miscellaneous, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_moral_disputes, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_moral_scenarios, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_nutrition, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_philosophy, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_prehistory, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_professional_accounting, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_professional_law, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_professional_medicine, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_professional_psychology, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_public_relations, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_security_studies, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_sociology, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_us_foreign_policy, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_virology, n_items: 18, num_fewshot: 0, tier: 1 }
+    - { task: mmlu_world_religions, n_items: 18, num_fewshot: 0, tier: 1 }
+    # tier 2 — generation (code execution for mbpp/humaneval; unsafe_code acknowledged in runner)
+    - { task: gsm8k,     n_items: 200, num_fewshot: 5, tier: 2 }
+    - { task: mbpp,      n_items: 200, num_fewshot: 3, tier: 2 }
+    - { task: humaneval, n_items: 164, num_fewshot: 0, tier: 2 }

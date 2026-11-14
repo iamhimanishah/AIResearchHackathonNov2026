@@ -1,0 +1,17 @@
+# Throughput probe: one domain, 4M tokens, no mid-run checkpoints (base + boundary only), no
+# recoverability probe, no signal log. Run with scripts/throughput_probe.sh on the GPU box.
+include:
+  - base.yaml
+name: tp-probe
+data:
+  domains:
+    - { name: code, tokens: 4000000 }
+optim:
+  warmup_steps: 5
+train:
+  checkpoint_every_steps: 100000
+  recover_tokens: 0
+  signal_log: false
+  readout_probe: false
+wandb:
+  tags: [throughput]

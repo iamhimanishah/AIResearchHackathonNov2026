@@ -1,0 +1,7 @@
+# Official base-model baseline of the frozen suite: run on the pilot GPU at the start of
+# deliverable 5 (`clh baseline-evals configs/baseline-protected-v1.yaml`).
+include:
+  - model/gemma3-1b-pt.yaml
+  - eval/protected-v1.yaml
+name: protected-v1
+device: auto

@@ -1,0 +1,20 @@
+# The pilot's chosen setting = Phase 1 seed 1 = the demo's run. 195M tokens/domain (the 200M streams pack to 199.8M
+# usable; the loop refuses a second epoch), all measurements on, checkpoint weights kept. lr 3e-5 chosen from the sweep (docs/research-notes.md, run 3 scorecard).
+include:
+  - base.yaml
+name: pilot-chosen-200M
+data:
+  domains:
+    - { name: code,       tokens: 195000000 }
+    - { name: biomedical, tokens: 195000000 }
+    - { name: legal,      tokens: 195000000 }
+    - { name: math,       tokens: 195000000 }
+optim:
+  lr: 3.0e-5                      # sweep: 1e-5 −1.0 / 3e-5 −3.4 / 1e-4 −11.8 pts MC mean at 50M; 3e-5 graded + instrument valid
+train:
+  checkpoint_every_steps: 300     # ~10 checkpoints per domain at 200M (3,052 steps/domain)
+  keep_checkpoint_weights: true   # ~4 GB fp32 per checkpoint x ~45 = ~180 GB on the box; the demo replays these
+  keep_optimizer_state: false     # no resume needed; optimizer state would add 8 GB per checkpoint
+  signal_log: true
+wandb:
+  tags: [pilot, chosen, phase1-seed1]

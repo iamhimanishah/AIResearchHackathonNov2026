@@ -1,0 +1,56 @@
+# `make smoke`: exercises the whole pipeline in a few minutes on one small GPU / Apple silicon.
+# Tiny stream (4 domains x 12k tokens), checkpoints every 3 steps, 8-item evals, 24-seq probes.
+# ~25 min on an M4 (forward ~1.5-5 ms/token on MPS, ~2 min per checkpoint); a few minutes on a datacenter GPU.
+# Numbers from this config are for plumbing checks only.
+include:
+  - model/gemma3-1b-pt.yaml
+  - eval/smoke.yaml
+
+name: smoke
+
+data:
+  manifest: manifests/smoke.json
+  seq_len: 256
+  probe_set: probe
+  probe_max_seqs_per_domain: 24   # 5 domains x 24 x 256 = 31k probe tokens per checkpoint
+  domains:               # presentation order is fixed: code -> biomedical -> legal -> math
+    - { name: code,       tokens: 12288 }
+    - { name: biomedical, tokens: 12288 }
+    - { name: legal,      tokens: 12288 }
+    - { name: math,       tokens: 12288 }
+
+optim:
+  lr: 2.0e-5
+  weight_decay: 0.0
+  betas: [0.9, 0.95]
+  warmup_steps: 2
+  schedule: constant
+  grad_clip: 1.0
+  batch_size: 8           # sequences per optimizer step  (8 x 256 = 2048 gradient tokens/step)
+  micro_batch_size: 2       # 262k-vocab logits dominate activation memory; keep micro-batches small
+
+train:
+  seed: 0
+  compile: false
+  precision: bf16-pure                 # Mac memory; see TrainCfg for why the pilot uses bf16-mixed
+  checkpoint_every_steps: 3
+  keep_checkpoint_weights: false
+  keep_optimizer_state: false
+  output_dir: results/runs
+  device: auto
+  probe_batch_size: 4
+  cka_max_tokens: 20000
+  massive_dims_k: 3
+  mknn_tokens: 4096
+  mknn_k: 10
+  recover_tokens: 4096
+  recover_lr: 2.0e-5
+  recover_domain: general
+  readout_probe: true
+  signal_log: true
+  gradient_checkpointing: false
+
+wandb:
+  project: null           # null -> WANDB_PROJECT env or offline
+  run_name: null
+  tags: [smoke]

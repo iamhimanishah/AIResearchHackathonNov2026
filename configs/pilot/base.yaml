@@ -1,0 +1,62 @@
+# Real-scale base config: no-mitigation continual fine-tuning on the four-domain stream with the
+# frozen protected set. Pilot sweeps (deliverable 5) include this and override optim.lr and
+# data.domains[*].tokens. Sized for one 40-80 GB CUDA GPU.
+include:
+  - ../model/gemma3-1b-pt.yaml
+  - ../eval/protected-v1.yaml
+
+name: pilot-base            # overridden by each sweep point
+
+model:                      # overrides the list from model/gemma3-1b-pt.yaml (lists merge wholesale)
+  saes:
+    - { release: gemma-scope-2-1b-pt-res, sae_id: layer_7_width_16k_l0_medium,  layer: 7 }
+    - { release: gemma-scope-2-1b-pt-res, sae_id: layer_13_width_16k_l0_medium, layer: 13 }
+    - { release: gemma-scope-2-1b-pt-res, sae_id: layer_13_width_65k_l0_medium, layer: 13 }   # replication control (Phase 1 Q7)
+    - { release: gemma-scope-2-1b-pt-res, sae_id: layer_22_width_16k_l0_medium, layer: 22 }
+
+data:
+  manifest: manifests/real.json
+  seq_len: 1024
+  probe_set: probe
+  probe_max_seqs_per_domain: 256        # 5 x 256 x 1024 = 1.3M probe tokens per checkpoint
+  domains:                              # fixed order: code -> biomedical -> legal -> math
+    - { name: code,       tokens: 100000000 }
+    - { name: biomedical, tokens: 100000000 }
+    - { name: legal,      tokens: 100000000 }
+    - { name: math,       tokens: 100000000 }
+
+optim:
+  lr: 2.0e-5
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  warmup_steps: 50
+  schedule: constant                    # constant so per-domain dynamics are comparable across the stream
+  grad_clip: 1.0
+  batch_size: 64                        # 64 x 1024 = 65,536 gradient tokens per step (~1,526 steps per 100M)
+  micro_batch_size: 4                   # 8 OOMed on an 80 GB H100 at the first boundary (fp32 master + Adam + recover probe)
+
+train:
+  seed: 0
+  compile: false
+  precision: bf16-mixed                # fp32 master weights + bf16 autocast (small-lr updates survive)
+  checkpoint_every_steps: 150           # ~10 checkpoints per domain at 100M tokens
+  keep_checkpoint_weights: false
+  keep_optimizer_state: false        # metrics only; flip on for the run whose checkpoints feed the demo
+  output_dir: results/runs
+  device: auto
+  probe_batch_size: 16
+  cka_max_tokens: 200000                # 200k x 1152 x bf16 x 3 layers = 1.4 GB CPU cache
+  massive_dims_k: 3
+  mknn_tokens: 4096
+  mknn_k: 10
+  recover_tokens: 2000000              # ~1% of a domain; Zheng et al. recovered ~100% with far more
+  recover_lr: 2.0e-5
+  recover_domain: general
+  readout_probe: true
+  signal_log: true
+  gradient_checkpointing: false
+
+wandb:
+  project: null
+  run_name: null
+  tags: [pilot]

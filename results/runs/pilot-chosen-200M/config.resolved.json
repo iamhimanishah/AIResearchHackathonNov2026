@@ -1,0 +1,176 @@
+{
+  "data": {
+    "domains": [
+      {
+        "name": "code",
+        "tokens": 195000000
+      },
+      {
+        "name": "biomedical",
+        "tokens": 195000000
+      },
+      {
+        "name": "legal",
+        "tokens": 195000000
+      },
+      {
+        "name": "math",
+        "tokens": 195000000
+      }
+    ],
+    "manifest": "manifests/real.json",
+    "probe_max_seqs_per_domain": 256,
+    "probe_set": "probe",
+    "seq_len": 1024
+  },
+  "eval": {
+    "batch_size": 8,
+    "include_path": "configs/lm_eval_tasks",
+    "item_seed": 20260905,
+    "lm_eval_tasks": [
+      {
+        "batch_size": null,
+        "gen_kwargs": null,
+        "n_items": 500,
+        "num_fewshot": 0,
+        "task": "arc_easy",
+        "tier": 1
+      },
+      {
+        "batch_size": null,
+        "gen_kwargs": null,
+        "n_items": 500,
+        "num_fewshot": 0,
+        "task": "hellaswag",
+        "tier": 1
+      },
+      {
+        "batch_size": null,
+        "gen_kwargs": null,
+        "n_items": 500,
+        "num_fewshot": 0,
+        "task": "piqa",
+        "tier": 1
+      },
+      {
+        "batch_size": null,
+        "gen_kwargs": null,
+        "n_items": 500,
+        "num_fewshot": 0,
+        "task": "pubmedqa_pqal",
+        "tier": 1
+      },
+      {
+        "batch_size": null,
+        "gen_kwargs": null,
+        "n_items": 200,
+        "num_fewshot": 3,
+        "task": "mbpp",
+        "tier": 2
+      }
+    ],
+    "max_length": 2048,
+    "perplexity_slices": [
+      {
+        "max_seqs": 256,
+        "name": "general"
+      },
+      {
+        "max_seqs": 256,
+        "name": "code"
+      },
+      {
+        "max_seqs": 256,
+        "name": "biomedical"
+      },
+      {
+        "max_seqs": 256,
+        "name": "legal"
+      },
+      {
+        "max_seqs": 256,
+        "name": "math"
+      }
+    ],
+    "suite": "protected-v1",
+    "tier2_every_n_checkpoints": 1000000
+  },
+  "model": {
+    "attn_implementation": null,
+    "capture_layers": [
+      7,
+      13,
+      22
+    ],
+    "dtype": "auto",
+    "exclude_bos_from_stats": true,
+    "model_id": "google/gemma-3-1b-pt",
+    "sae_fvu_invalid_delta": 0.1,
+    "saes": [
+      {
+        "layer": 7,
+        "release": "gemma-scope-2-1b-pt-res",
+        "sae_id": "layer_7_width_16k_l0_medium"
+      },
+      {
+        "layer": 13,
+        "release": "gemma-scope-2-1b-pt-res",
+        "sae_id": "layer_13_width_16k_l0_medium"
+      },
+      {
+        "layer": 13,
+        "release": "gemma-scope-2-1b-pt-res",
+        "sae_id": "layer_13_width_65k_l0_medium"
+      },
+      {
+        "layer": 22,
+        "release": "gemma-scope-2-1b-pt-res",
+        "sae_id": "layer_22_width_16k_l0_medium"
+      }
+    ]
+  },
+  "name": "pilot-chosen-200M",
+  "optim": {
+    "batch_size": 64,
+    "betas": [
+      0.9,
+      0.95
+    ],
+    "grad_clip": 1.0,
+    "lr": 3e-05,
+    "micro_batch_size": 4,
+    "schedule": "constant",
+    "warmup_steps": 50,
+    "weight_decay": 0.1
+  },
+  "train": {
+    "checkpoint_every_steps": 300,
+    "cka_max_tokens": 200000,
+    "compile": false,
+    "device": "auto",
+    "gradient_checkpointing": false,
+    "keep_checkpoint_weights": true,
+    "keep_optimizer_state": false,
+    "massive_dims_k": 3,
+    "mknn_k": 10,
+    "mknn_tokens": 4096,
+    "output_dir": "results/runs",
+    "precision": "bf16-mixed",
+    "probe_batch_size": 16,
+    "readout_probe": true,
+    "recover_domain": "general",
+    "recover_lr": 2e-05,
+    "recover_tokens": 2000000,
+    "seed": 0,
+    "signal_log": true
+  },
+  "wandb": {
+    "project": null,
+    "run_name": null,
+    "tags": [
+      "pilot",
+      "chosen",
+      "phase1-seed1"
+    ]
+  }
+}

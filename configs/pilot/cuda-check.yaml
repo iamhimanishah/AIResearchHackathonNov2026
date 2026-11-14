@@ -1,0 +1,25 @@
+# Deliverable 4 CUDA validation (~20-30 min on one A100/H100). Run twice with the same seed and
+# `clh compare-runs results/runs/cuda-check-a results/runs/cuda-check-b` to check repeatability;
+# also confirms train/anomalous_grad_steps == 0 off MPS and measures tokens/s for pilot planning.
+include:
+  - base.yaml
+
+name: cuda-check-a            # run again as cuda-check-b (override name on the CLI or edit)
+
+data:
+  domains:
+    - { name: code,       tokens: 4000000 }
+    - { name: biomedical, tokens: 4000000 }
+    - { name: legal,      tokens: 4000000 }
+    - { name: math,       tokens: 4000000 }
+
+optim:
+  warmup_steps: 5
+
+train:
+  checkpoint_every_steps: 30    # 61 steps per domain -> 2 mid-domain checkpoints + boundary
+  keep_checkpoint_weights: false
+  recover_tokens: 500000        # exercise the recoverability probe cheaply (pilot uses 2M)
+
+wandb:
+  tags: [cuda-check]

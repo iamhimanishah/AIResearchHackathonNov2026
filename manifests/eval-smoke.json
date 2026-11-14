@@ -1,0 +1,112 @@
+{
+  "item_seed": 20260905,
+  "suite": "smoke",
+  "tasks": {
+    "arc_easy": {
+      "chance_majority": 0.5,
+      "chance_uniform": 0.25,
+      "dataset_name": "ARC-Easy",
+      "dataset_path": "allenai/ai2_arc",
+      "docs_sha256": "8ef66c258bf9b7ab12b8306828b7a0b27201aa9955db8d40df963773dfa4272f",
+      "indices": [
+        275,
+        404,
+        646,
+        854,
+        862,
+        924,
+        1808,
+        2098
+      ],
+      "n_choices_mean": 4.0,
+      "n_items": 8,
+      "n_total_docs": 2376,
+      "num_fewshot": 0,
+      "tier": 1
+    },
+    "gsm8k": {
+      "chance_majority": null,
+      "chance_uniform": 0.0,
+      "dataset_name": "main",
+      "dataset_path": "openai/gsm8k",
+      "docs_sha256": "70d3782c7e0664ac365793b52f7a6c22c233118cd35713a367c3751183cb08f8",
+      "indices": [
+        73,
+        91,
+        337,
+        916
+      ],
+      "n_choices_mean": null,
+      "n_items": 4,
+      "n_total_docs": 1319,
+      "num_fewshot": 0,
+      "tier": 2
+    },
+    "hellaswag": {
+      "chance_majority": 0.375,
+      "chance_uniform": 0.25,
+      "dataset_name": null,
+      "dataset_path": "Rowan/hellaswag",
+      "docs_sha256": "ae833cd1feb062f7a51afa8ac0272343ba62b102e8e2b80cd8ccfee1c80fb4d8",
+      "indices": [
+        2619,
+        2758,
+        4304,
+        5105,
+        5341,
+        5440,
+        7560,
+        9852
+      ],
+      "n_choices_mean": 4.0,
+      "n_items": 8,
+      "n_total_docs": 10042,
+      "num_fewshot": 0,
+      "tier": 1
+    },
+    "piqa": {
+      "chance_majority": 0.75,
+      "chance_uniform": 0.5,
+      "dataset_name": null,
+      "dataset_path": "baber/piqa",
+      "docs_sha256": "88769c25f6f5be68f57c7dd0f5512ebde481a0accb7d9fb26453d2ae71c2135c",
+      "indices": [
+        122,
+        975,
+        979,
+        1152,
+        1170,
+        1492,
+        1590,
+        1800
+      ],
+      "n_choices_mean": 2.0,
+      "n_items": 8,
+      "n_total_docs": 1838,
+      "num_fewshot": 0,
+      "tier": 1
+    },
+    "pubmedqa_pqal": {
+      "chance_majority": 0.625,
+      "chance_uniform": 0.3333333333333333,
+      "dataset_name": "pqa_labeled",
+      "dataset_path": "qiaojin/PubMedQA",
+      "docs_sha256": "47d00e6fe332f5f0eac4071ef57c8cb7d9871e64e3cadff52941da325861edcb",
+      "indices": [
+        139,
+        148,
+        185,
+        376,
+        468,
+        483,
+        717,
+        807
+      ],
+      "n_choices_mean": 3.0,
+      "n_items": 8,
+      "n_total_docs": 1000,
+      "num_fewshot": 0,
+      "tier": 1
+    }
+  }
+}

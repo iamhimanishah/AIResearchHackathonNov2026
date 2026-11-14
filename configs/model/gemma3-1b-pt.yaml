@@ -1,0 +1,13 @@
+# Gemma 3 1B pre-trained + Gemma Scope 2 residual-stream SAEs.
+# Layers 7 / 13 / 22 of 26 = early-mid / mid / late (canonical Gemma Scope 2 layers at
+# ~25% / 50% / 85% depth). Width 16k, L0 "medium" (~60) — the Neuronpedia-linked variant.
+model:
+  model_id: google/gemma-3-1b-pt
+  dtype: auto                     # bf16 on cuda/mps, fp32 on cpu
+  capture_layers: [7, 13, 22]
+  exclude_bos_from_stats: true    # BOS residual norm is ~10x other tokens; it dominates variance
+  sae_fvu_invalid_delta: 0.10     # pre-registered 2026-09-06: FVU +0.10 over base => feature stats invalid at that layer
+  saes:
+    - { release: gemma-scope-2-1b-pt-res, sae_id: layer_7_width_16k_l0_medium,  layer: 7 }
+    - { release: gemma-scope-2-1b-pt-res, sae_id: layer_13_width_16k_l0_medium, layer: 13 }
+    - { release: gemma-scope-2-1b-pt-res, sae_id: layer_22_width_16k_l0_medium, layer: 22 }

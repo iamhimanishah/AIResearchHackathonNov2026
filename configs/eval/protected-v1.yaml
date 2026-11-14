@@ -1,0 +1,27 @@
+# Protected capability set v1 — FROZEN 2026-09-05 after the deliverable-2 baseline (docs/log.md).
+# Item counts, seed, and task list do not change mid-project. Item indices + doc hashes:
+# manifests/eval-protected-v1.json (shared by every run that includes this file).
+#
+# Pruned after baselining base Gemma 3 1B PT: CaseHOLD (0.21 vs 0.20 chance), MMLU (0.26 vs
+# 0.25), GSM8K (1%), HumanEval (6.1%, 11 s/item; MBPP covers code). Revisit GSM8K at 4B.
+eval:
+  suite: protected-v1
+  item_seed: 20260905
+  batch_size: 8
+  max_length: 2048
+  include_path: configs/lm_eval_tasks
+  tier2_every_n_checkpoints: 1000000      # effectively boundaries-only; lower it on a GPU
+  lm_eval_tasks:
+    # tier 1 — every checkpoint (loglikelihood MC)
+    - { task: arc_easy,      n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: hellaswag,     n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: piqa,          n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: pubmedqa_pqal, n_items: 500, num_fewshot: 0, tier: 1 }   # report with majority-class level (0.58)
+    # tier 2 — domain boundaries (generation, code executed)
+    - { task: mbpp,      n_items: 200, num_fewshot: 3, tier: 2 }
+  perplexity_slices:                       # held-out slices from manifests/real.json; 256 x 1024 tokens each
+    - { name: general,    max_seqs: 256 }  # (mean NLL over 262k tokens; ~1 min per checkpoint on a GPU)
+    - { name: code,       max_seqs: 256 }
+    - { name: biomedical, max_seqs: 256 }
+    - { name: legal,      max_seqs: 256 }
+    - { name: math,       max_seqs: 256 }

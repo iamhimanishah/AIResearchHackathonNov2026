@@ -1,0 +1,22 @@
+# Tiny eval suite for `make smoke`: exercises every code path (MC loglikelihood tier-1,
+# generation tier-2, perplexity slices) with a handful of items. NOT the frozen research suite;
+# that is declared in deliverable 2 after baselining (configs/eval/tier1.yaml, tier2.yaml).
+eval:
+  suite: smoke
+  item_seed: 20260905
+  batch_size: 4
+  max_length: 2048
+  include_path: configs/lm_eval_tasks
+  tier2_every_n_checkpoints: 2
+  lm_eval_tasks:
+    - { task: arc_easy,      n_items: 8, num_fewshot: 0, tier: 1 }
+    - { task: hellaswag,     n_items: 8, num_fewshot: 0, tier: 1 }
+    - { task: piqa,          n_items: 8, num_fewshot: 0, tier: 1 }
+    - { task: pubmedqa_pqal, n_items: 8, num_fewshot: 0, tier: 1 }
+    - { task: gsm8k,     n_items: 4, num_fewshot: 0, tier: 2, gen_kwargs: { max_gen_toks: 64 } }
+  perplexity_slices:
+    - { name: general, max_seqs: 12 }
+    - { name: code, max_seqs: 12 }
+    - { name: biomedical, max_seqs: 12 }
+    - { name: legal, max_seqs: 12 }
+    - { name: math, max_seqs: 12 }

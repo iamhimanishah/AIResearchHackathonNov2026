@@ -1,0 +1,10 @@
+{
+  "domain": "math",
+  "domain_index": 3,
+  "gradient_tokens": 589824000,
+  "index": 33,
+  "is_domain_boundary": false,
+  "is_tier2": false,
+  "step": 9000,
+  "time": 1788966438.7815673
+}

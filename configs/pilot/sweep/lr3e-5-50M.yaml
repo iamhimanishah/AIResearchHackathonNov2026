@@ -1,0 +1,18 @@
+# Pilot sweep point: lr 3e-5, 50M tokens/domain, no mitigation. Estimate + go/no-go before running.
+include:
+  - ../base.yaml
+name: pilot-lr3e-5-50M
+data:
+  domains:                     # 50M/domain sweep (lists merge wholesale)
+    - { name: code,       tokens: 50000000 }
+    - { name: biomedical, tokens: 50000000 }
+    - { name: legal,      tokens: 50000000 }
+    - { name: math,       tokens: 50000000 }
+
+optim:
+  lr: 3.0e-5
+train:
+  signal_log: false           # sweep runs are not Phase 1 seeds; the signal dataset comes from the 200M run (and it costs ~30% throughput)
+
+wandb:
+  tags: [pilot, sweep-lr]

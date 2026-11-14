@@ -1,0 +1,10 @@
+{
+  "domain": "biomedical",
+  "domain_index": 1,
+  "gradient_tokens": 255590400,
+  "index": 14,
+  "is_domain_boundary": false,
+  "is_tier2": false,
+  "step": 3900,
+  "time": 1788934341.3935666
+}
