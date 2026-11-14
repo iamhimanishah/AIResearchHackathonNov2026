@@ -508,10 +508,16 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 - **Goal:** know how big a difference has to be before it means anything.
 - **Where:** specs `configs/bench/specs/no-mitigation-s0.json` to `-s4.json`, launched
   through A6.
-- **Status:** the specs are ready, on the frozen code-then-legal bench (A's files, the same
-  experiments as `design.spec(NO_MITIGATION, seed)`).
-  - Not yet run. Launch from A's deployed Modal app (the team workspace) after the PR with the
-    new executor is merged and the app is redeployed.
+- **Status:** the plan is final as **phase 0** (PREREG section 0).
+  - The noise floor (no-mitigation seeds 0–4) **ran** (A, `results/rows.noise.jsonl`).
+    Preliminary report-half SD is 0.68 points, on the old split.
+  - Those 5 rows and the 2 seed-0 lower-LR calibration rows are re-measured from their
+    checkpoints with the current executor. No retraining.
+  - **7 GPU runs** remain, about $9: the reference arm at seeds 0–2, and no-mitigation at LR 5e-5
+    and 3e-5, seeds 1–2.
+  - The exact list is `configs/bench/phase0.txt`. Launch from A's deployed app after the PR with
+    the new executor is merged and the app is redeployed.
+  - The technique comparison is held until phase 0 is in and PREREG is frozen.
 - **Steps:**
   1. Run no-mitigation on the fast bench at 5 seeds. The seed changes the data order: the
      stream seed is `train.seed + domain_index`.

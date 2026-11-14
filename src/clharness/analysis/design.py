@@ -146,3 +146,37 @@ def alias_chains() -> list[list[tuple[str, str]]]:
         col = tuple(((a in r) == (b in r)) for r in runs)  # +1 when both on or both off
         chains.setdefault(col, []).append((a, b))
     return sorted(chains.values())
+
+
+# ---------------------------------------------------------------------------------------------
+# Phase 0 (PREREG section 0): the controls, run before the freeze and before any technique
+# comparison. sigma_noise and the acquisition margins come from these runs.
+# ---------------------------------------------------------------------------------------------
+
+PHASE0_LIST = "configs/bench/phase0.txt"  # the spec files, one path per line, for `clh run --modal`
+# Phase-0 runs that already ran (before the current executor). They are reused after
+# re-measuring them from their saved checkpoints (pinned item split, own-boundary acquisition):
+# same spec hash, no retraining. Spec file -> the committed rows file holding the original row.
+PHASE0_REUSE = {
+    **{f"configs/bench/specs/no-mitigation-s{s}.json": "results/rows.noise.jsonl" for s in range(5)},
+    "configs/bench/specs/calibration-code-legal-lr5e-5-s0.json": "results/rows.calibration.jsonl",
+    "configs/bench/specs/calibration-code-legal-lr3e-5-s0.json": "results/rows.calibration.jsonl",
+}
+
+
+def phase0() -> list[RunSpec]:
+    """Every phase-0 run, reused or new: no-mitigation at the bench LR (seeds 0-4), the
+    reference arm (seeds 0-2), and no-mitigation at each lower LR (seeds 0-2)."""
+    out = [spec(NO_MITIGATION, s) for s in range(5)]
+    out += [spec(REFERENCE, s) for s in range(3)]
+    out += lr_controls(range(3))
+    return out
+
+
+def phase0_new() -> list[RunSpec]:
+    """The phase-0 runs that still need a GPU: the reference arm (seeds 0-2) and the lower-LR
+    controls at seeds 1-2. The noise floor and the seed-0 LR controls already ran (PHASE0_REUSE)."""
+    reused_seed0_lr = {(lr, 0) for lr in LR_CONTROLS}
+    return [s for s in phase0()
+            if frozenset(s.technique_names()) == REFERENCE
+            or (lr_of(s) is not None and (lr_of(s), s.seed) not in reused_seed0_lr)]

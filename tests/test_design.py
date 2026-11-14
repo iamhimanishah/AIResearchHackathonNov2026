@@ -2,6 +2,7 @@
 real techniques, contain both controls, and produce specs the real plugins accept."""
 
 import itertools
+from pathlib import Path
 
 import numpy as np
 
@@ -86,3 +87,17 @@ def test_lr_controls_seed_0_are_the_a5_calibration_runs():
         pass
     else:
         raise AssertionError("an LR override with techniques must be refused")
+
+
+def test_phase0_list_is_exactly_the_preregistered_controls():
+    """configs/bench/phase0.txt (what A launches) must equal design.phase0(); REUSE lines are the
+    seed-0 calibration runs, which need re-measuring, not a GPU."""
+    lines = [ln.strip() for ln in Path(D.PHASE0_LIST).read_text().splitlines() if ln.strip()]
+    gpu = [ln for ln in lines if not ln.startswith("#")]
+    reuse = [ln.removeprefix("# REUSE ").strip() for ln in lines if ln.startswith("# REUSE ")]
+    assert {load_spec(p).spec_hash() for p in gpu} == {s.spec_hash() for s in D.phase0_new()}
+    assert {load_spec(p).spec_hash() for p in gpu + reuse} == {s.spec_hash() for s in D.phase0()}
+    assert sorted(reuse) == sorted(D.PHASE0_REUSE)
+    assert len(gpu) == 7 and len(reuse) == 7
+    # no technique other than the reference arm runs in phase 0
+    assert all(frozenset(s.technique_names()) in (D.NO_MITIGATION, D.REFERENCE) for s in D.phase0())

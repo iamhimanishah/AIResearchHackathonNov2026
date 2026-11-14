@@ -1,0 +1,18 @@
+# Phase 0 (analysis/PREREG.md section 0). GPU runs:
+#   clh run --modal $(grep -v '^#' configs/bench/phase0.txt) --out results/rows.phase0.jsonl
+# Lines marked REUSE already ran with an older executor: re-measure them from their checkpoints
+# (pinned item split, own-boundary acquisition); do not retrain.
+# REUSE configs/bench/specs/no-mitigation-s0.json
+# REUSE configs/bench/specs/no-mitigation-s1.json
+# REUSE configs/bench/specs/no-mitigation-s2.json
+# REUSE configs/bench/specs/no-mitigation-s3.json
+# REUSE configs/bench/specs/no-mitigation-s4.json
+configs/bench/specs/reference-s0.json
+configs/bench/specs/reference-s1.json
+configs/bench/specs/reference-s2.json
+# REUSE configs/bench/specs/calibration-code-legal-lr5e-5-s0.json
+configs/bench/specs/no-mitigation-lr5e-05-s1.json
+configs/bench/specs/no-mitigation-lr5e-05-s2.json
+# REUSE configs/bench/specs/calibration-code-legal-lr3e-5-s0.json
+configs/bench/specs/no-mitigation-lr3e-05-s1.json
+configs/bench/specs/no-mitigation-lr3e-05-s2.json

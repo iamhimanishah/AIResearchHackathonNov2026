@@ -215,3 +215,39 @@ def test_rule4_must_hold_to_win_and_is_vacuous_without_a_control(rows):
 def test_confirmatory_reports_the_lr_comparison(confirmatory):
     assert all(d["vs_lr_control"]["config"] == "no-mitigation-lr5e-05" for d in confirmatory["confirmatory"])
     assert all(d["rule4_beats_lr_control"] for d in confirmatory["confirmatory_selection"])  # n/a there
+
+
+def _with_acquisition(cfg, code, legal):
+    """A copy of cfg whose rows have the given own-boundary ratios."""
+    rows = []
+    for r in cfg.rows:
+        acq = r.acquisition.model_copy(update={"own_boundary_ppl_ratio": {"code": code, "legal": legal},
+                                               "mean_own_boundary_ppl_ratio": math.sqrt(code * legal)})
+        rows.append(r.model_copy(update={"acquisition": acq}))
+    return A.Config(key=cfg.key, techniques=cfg.techniques, rows=rows, label=cfg.label)
+
+
+def test_acquisition_gate_needs_both_domains(rows):
+    """PREREG 5, rule 3: code and legal must each pass; better legal cannot hide worse code."""
+    configs = A.group(rows)
+    ref = _with_acquisition(A.find(configs, A.REFERENCE), code=0.90, legal=0.78)
+    ok = _with_acquisition(A.find(configs, frozenset({"distill", "freeze", "replay"})), 0.93, 0.80)
+    hides = _with_acquisition(A.find(configs, frozenset({"distill", "freeze", "replay"})), 0.99, 0.70)
+    assert A.acquisition_gate(ok, ref)["passes"]
+    g = A.acquisition_gate(hides, ref)
+    assert math.sqrt(0.99 * 0.70) < 1.05 * math.sqrt(0.90 * 0.78)  # the average alone would pass
+    assert not g["passes"] and not g["domains"]["code"]["passes"] and g["domains"]["legal"]["passes"]
+
+
+def test_acquisition_margin_widens_to_twice_the_noise(rows):
+    configs = A.group(rows)
+    base = A.find(configs, A.NO_MITIGATION)
+    assert all(m == pytest.approx(A.ACQ_GATE) for m in A.acquisition_margins(base).values())  # quiet fake noise
+    noisy_rows = []
+    for i, r in enumerate(base.rows):
+        v = 0.78 * math.exp(0.08 * (i - 2))  # log ratio spread SD ~0.13 over 5 seeds
+        acq = r.acquisition.model_copy(update={"own_boundary_ppl_ratio": {"code": 0.9, "legal": v}})
+        noisy_rows.append(r.model_copy(update={"acquisition": acq}))
+    noisy = A.Config(key=base.key, techniques=base.techniques, rows=noisy_rows, label=base.label)
+    m = A.acquisition_margins(noisy)
+    assert m["legal"] > A.ACQ_GATE and m["code"] == pytest.approx(A.ACQ_GATE)

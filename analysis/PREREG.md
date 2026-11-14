@@ -1,19 +1,136 @@
 # Pre-registration: forgetting-reduction study
 
-**Status: DRAFT.** It becomes binding when it is merged to `main` before the screening grid
-launches (sync point 2). The agent records the commit SHA of this file in its first decision-log
-entry. After that, changes follow the amendment protocol in section 11.
+**Status: decisions final; one number pending.** Every rule below is decided. The only open
+value is σ_noise (and the acquisition margins), which phase 0 measures (section 0).
+- The file is **frozen** when σ_noise is filled in and merged to `main`. That happens before any
+  technique comparison and before the agent launches the screen (sync point 2).
+- The agent records the commit SHA of the frozen file in its first decision-log entry.
+- After the freeze, changes follow the amendment protocol in section 11.
 
-- **Owner:** Member C (workstream 4).
+- **Owner:** himani (workstream 4).
 - **Task card:** C1 in [`docs/TASKS.md`](../docs/TASKS.md).
-- **Decisions:** each one is marked **decided** or **provisional**. A provisional item has a
-  default that applies unless someone changes it before the freeze. The full record of options
-  considered is in [Appendix A](#appendix-a-decision-record).
+- **Record:** every option considered, with its trade-offs, is in
+  [Appendix A](#appendix-a-decision-record).
 
 Units follow `src/clharness/spec.py`: scores and deltas are fractions (a 5-point drop is
 −0.05), and perplexity ratios are trained / base.
 
 ---
+
+## 0. Decisions for the freeze, and phase 0
+
+**The technique comparison is on hold until phase 0 is done and this file is frozen.** The
+code→legal calibration (A5) is one seed per learning rate, so on its own it fixes no threshold.
+
+| LR | Report-half retention | Legal perplexity ratio (end of stream) |
+|---|---|---|
+| 1e-4 | −4.9 points | 0.78 |
+| 5e-5 | −2.0 points | 0.76 |
+| 3e-5 | −1.2 points | 0.75 |
+
+### 0.1 Primary metric and what the acquisition floor uses
+- **Primary metric:** the report-half change in the 4-task multiple-choice mean (ARC-Easy,
+  HellaSwag, PIQA, PubMedQA) at the end of the stream, against base. Row field:
+  `retention.report.mean_delta`.
+- **Acquisition floor: both domains, each one separately.**
+  - Code is measured right after the code domain, and legal right after the legal domain
+    (`acquisition.own_boundary_ppl_ratio`, section 4).
+  - A configuration passes only if it passes on **code and on legal**. An average of the two
+    would let better legal learning hide worse code learning.
+  - The end-of-stream ratios stay as secondary outcomes. They can't serve as the floor, because
+    code's end-of-stream ratio (1.79 at 1e-4) mostly measures forgetting caused by legal.
+
+### 0.2 Acquisition margin, and when a technique is better than its control
+- **Margin, per domain d:** m_d = max(1.05, exp(2 × SD_d)), where SD_d is the SD of
+  log(own-boundary perplexity ratio) for domain d over the 5 no-mitigation noise-floor seeds.
+  - The gate passes if mean ratio_d(X) ≤ m_d × mean ratio_d(control) for both domains.
+  - The 5% floor allows, for legal at 0.78, a ratio up to 0.82: losing at most about a fifth of
+    the reference arm's legal gain.
+  - The noise term makes sure the margin is never inside run-to-run noise. It is fixed from the
+    noise floor, never from technique results.
+- **Better than its control** (section 5): a promoted configuration X wins only if, on the
+  report half over 3 paired seeds, all four rules hold:
+  1. X beats the reference arm: the paired bootstrap interval excludes 0 after Holm.
+  2. That difference is above 2 × σ_noise.
+  3. X passes the acquisition gate against the reference arm on code and legal.
+  4. X beats the chosen lower-LR control with the same tests as rules 1 and 2.
+
+### 0.3 Learning-rate controls in the main comparison
+- **The bench LR stays 1e-4** (frozen by A5). Every technique runs at 1e-4.
+- **5e-5 and 3e-5 are both control arms** (no mitigation, 3 seeds each). Lowering the LR alone
+  cuts forgetting, so a technique has to beat that, not only the reference arm.
+- **Rule 4 compares against one of them,** chosen on the *selection half*: the one with the
+  better retention among those passing the acquisition gate against the reference arm. In the
+  calibration both learned legal at least as well as 1e-4 (0.76 and 0.75 vs 0.78), so the
+  harder one, 3e-5, may well be the control. A technique at 1e-4 then has to forget less than
+  no-mitigation at 3e-5 does. That bar is deliberately hard.
+- **If neither lower-LR arm passes the gate on code and legal,** rule 4 holds trivially, and the
+  report says so.
+
+### 0.4 Seed plan for phase 0, and the rows that are reused
+Phase 0 is the controls only. The exact list is `configs/bench/phase0.txt`, which equals
+`design.phase0()`; `tests/test_design.py` keeps them in sync.
+
+| Arm | Seeds | Spec files (`configs/bench/specs/`) | State |
+|---|---|---|---|
+| No-mitigation, LR 1e-4 (the noise floor) | 0–4 | `no-mitigation-s0.json` … `-s4.json` | **Ran** (A, `results/rows.noise.jsonl`): re-measure |
+| Reference arm (replay + LR re-warm) | 0–2 | `reference-s0.json`, `reference-s1.json`, `reference-s2.json` | **GPU: 3 runs** |
+| No-mitigation, LR 5e-5 | 0 | `calibration-code-legal-lr5e-5-s0.json` | **Ran** (A5 calibration): re-measure |
+| No-mitigation, LR 5e-5 | 1–2 | `no-mitigation-lr5e-05-s1.json`, `-s2.json` | **GPU: 2 runs** |
+| No-mitigation, LR 3e-5 | 0 | `calibration-code-legal-lr3e-5-s0.json` | **Ran** (A5 calibration): re-measure |
+| No-mitigation, LR 3e-5 | 1–2 | `no-mitigation-lr3e-05-s1.json`, `-s2.json` | **GPU: 2 runs** |
+
+**7 GPU runs**: `clh run --modal $(grep -v '^#' configs/bench/phase0.txt) --out results/rows.phase0.jsonl`.
+
+**Reused rows, re-measured.** Seven rows already ran: no-mitigation seeds 0–4, and the two
+seed-0 lower-LR calibration runs.
+- Each has the same spec hash as its design run.
+- They were measured by an older executor (the plain random item split, no own-boundary
+  acquisition), so they are **re-measured from their saved checkpoints** with the current
+  executor before use. No retraining.
+- The original rows stay in their files; the re-measured rows go to
+  `results/rows.phase0.remeasured.jsonl`.
+
+**Not reused:**
+- `calibration-code-legal-lr1e-4-s0` is the same training configuration as `no-mitigation-s0`,
+  but its spec sets `lr` explicitly, so it hashes differently (rule: one spec, one experiment).
+  It is kept as a reproducibility check: same seed and configuration, so its scores should match
+  `no-mitigation-s0` up to GPU nondeterminism.
+- The code→biomedical rows (the first `no-mitigation-s0` and `calibration-b16-s0`) are from the
+  old stream and are not used.
+
+**Preliminary noise floor** (A's 5 rows, measured on the old random split; not the frozen
+value):
+
+| Measure | Value |
+|---|---|
+| Report-half SD | 0.68 points |
+| Selection-half SD | 1.06 points |
+| Legal end-of-stream perplexity ratio | 0.787, SD 0.002 |
+
+So the size threshold 2σ is likely about 1.4 points, and the legal margin will be the 5% floor
+(2 SD of the log ratio is about 0.5%).
+
+**At the freeze**, these are written into sections 5 and 0.2 from the re-measured rows:
+- σ_noise on each half;
+- the margins m_code and m_legal;
+- the sanity check, reference vs no-mitigation;
+- which lower-LR arm is the rule-4 control.
+
+### 0.5 Estimated Modal cost
+Cost per run comes from A's real code→legal rows: about 19 minutes and $1.21–1.28 each on an
+H100, at the executor's $3.95 per GPU-hour.
+
+| Phase | GPU runs | Estimate |
+|---|---|---|
+| Already spent: noise floor (5) + code→legal calibration (3) | 8 | about $10 |
+| **Phase 0, still to run:** 7 runs + re-measuring 7 (CPU, under $0.10) | 7 | **about $9**; **cap $12** with retries |
+| Phase 1, screen (22 specs; no-mitigation-s0 and reference-s0 come from phase 0) | 20 | about $25 |
+| Phase 2, replication (top 3 × seeds 1–2) + selection family (2 × seeds 1–2) | 10 | about $13 |
+| **Still to spend on the whole study** | **37** | **about $47**; under $65 with retries |
+
+That is well inside the $700 Modal cap in DIRECTION.md. Phase 0 runs in parallel in about
+20 minutes.
 
 ## 1. Question
 
@@ -99,10 +216,10 @@ Base accuracy per half:
 | Role | Outcome | Row field | Direction |
 |---|---|---|---|
 | **Primary** (decided) | End-of-stream mean change across ARC-Easy, HellaSwag, PIQA and PubMedQA, on the report half | `retention.report.mean_delta` | higher is better |
-| **Co-primary gate** (decided) | Acquisition, measured at each domain's own boundary: the geometric mean over trained domains of held-out perplexity right after that domain's training, divided by base. Rows written before this field existed fall back to `mean_ppl_ratio`, and the analysis reports how many rows did | `acquisition.mean_own_boundary_ppl_ratio` | lower is better |
+| **Co-primary gate** (decided) | Acquisition, measured at each domain's own boundary: held-out perplexity right after that domain's training, divided by base, **for code and for legal separately**. Both must pass (section 0.2). Rows written before this field existed fall back to `ppl_ratio`, and the analysis reports how many rows did | `acquisition.own_boundary_ppl_ratio` | lower is better |
 | Secondary | Acquisition kept at the end of the stream: perplexity on the trained domains at the end, divided by base. This mixes learning with forgetting | `acquisition.mean_ppl_ratio` | lower |
 | Secondary | Per-task end-of-stream change, report half | `retention.report.per_task[*].delta` | higher |
-| Secondary | MBPP pass@1 change at the end of the stream (provisional: secondary only) | per-item file | higher |
+| Not measured | MBPP: the frozen fast bench does not run it (A11) | — | — |
 | Secondary | Persistent losses: items right at base and wrong at each of the last 3 checkpoints | per-item file | lower |
 | Secondary | General-web perplexity ratio (untrained slice) | `acquisition.general_ppl_ratio` | lower |
 | Secondary | Cost: gradient tokens, extra forward tokens, wall-clock, update bytes, est. USD | `cost.*` | report |
@@ -117,12 +234,13 @@ half, over the paired replication seeds:
    Δ = primary(X) − primary(R) excludes 0, after Holm correction across the confirmatory set.
 2. **Large enough to matter:** the point estimate Δ is above **2 × σ_noise**. σ_noise is the SD
    of the primary outcome across the 5 no-mitigation noise-floor seeds (section 6.1).
-   **σ_noise = TBD** (filled in from C3 before the freeze).
-3. **Learns enough:** acquisition(X) ≤ **1.05 × acquisition(R)**, using the own-boundary
-   measure from section 4.
+   **σ_noise = TBD** (filled in from phase 0, section 0.4, at the freeze).
+3. **Learns enough:** on **each** trained domain (code and legal), the mean own-boundary
+   perplexity ratio of X is at most m_d × that of R, with m_d = max(1.05, exp(2 × SD_d)) from
+   the noise floor (section 0.2).
 4. **Beats just lowering the learning rate (A13):** let L be the lower-LR no-mitigation arm
-   (5e-5 or 3e-5) with the best *selection-half* primary outcome, among those whose
-   acquisition passes the gate in rule 3.
+   (5e-5 or 3e-5) with the best *selection-half* primary outcome, among those that pass the
+   rule-3 gate against R on both domains.
    - X must beat L with the same tests as rules 1 and 2: the paired bootstrap interval for
      primary(X) − primary(L) excludes 0 after Holm correction across the promoted
      configurations, and that Δ is above 2 × σ_noise.
@@ -217,11 +335,9 @@ Specs that match the committed `no-mitigation-s0`, `reference-s0`, `replay-only-
 - Promote the **top 3 configurations** from the factorial, ranked on the *selection-half*
   primary outcome. Only runs that pass rule 3 (acquisition) are eligible. The controls, the
   reference halves, selection variants and off-design rows are not candidates.
-- Run these 3, the reference arm and no-mitigation at **3 seeds each (0, 1, 2)**, paired by
-  seed. Seed 0 reuses the screening and noise-floor runs. That makes at most **10 new runs**.
-- Run the two lower-LR controls (no-mitigation at 5e-5 and 3e-5) at seeds 1 and 2:
-  **4 new runs** (`design.lr_controls()`). Their seed 0 is A5's calibration run at that rate,
-  which has the same spec hash. They need no promotion, so they can run alongside the screen.
+- Run these 3 at **seeds 1 and 2** (6 new runs), paired by seed with their seed-0 screening
+  run. The controls they are compared with (no-mitigation, the reference arm and both lower-LR
+  arms at seeds 0–2) already ran in phase 0.
 - The agent applies this rule mechanically, and its decision log shows the ranking it used.
 
 ### 6.3b Selection family (decided)
@@ -265,7 +381,7 @@ If time remains, the agent may run one fold-over or targeted pair to separate on
 - **Fake-row check:** before the grid launches, the analysis must recover the planted effects in
   `results/fake/planted_effects.json` within their intervals.
 
-## 8. Validity rules (provisional)
+## 8. Validity rules (decided)
 
 A row is **invalid**, and leaves the analysis with its reason logged, if any of these hold:
 - NaN or inf loss, or anomalous gradient steps above 1% of all steps (the loop's
@@ -283,7 +399,7 @@ and leaves the row `finished`; the analysis flags it.
   sensitivity check.
 - PubMedQA's majority-class rate (0.58) is printed next to its scores.
 
-## 9. Matched compute (provisional)
+## 9. Matched compute (decided)
 
 - All arms in a comparison use the same **gradient tokens** (`spec.gradient_tokens()`).
 - Extra forward-only compute, such as teacher passes for `distill` or scoring passes for
@@ -369,6 +485,17 @@ end-of-stream ratio stays as a secondary outcome.
 | Pareto frontier only (drop the gate) | No code or bench change | A technique that learns nothing could "win"; weak for rigour |
 | More tokens per domain (e.g. 30M) | More learning | About 3× the cost and time (about 55 minutes per run); may not fit the overnight grid |
 
+### A2c. Acquisition gate per domain, with a noise-based margin: **decided**
+Decided on 2026-11-14, before the freeze. Each domain (code, legal) passes separately, with
+margin m_d = max(1.05, exp(2 × SD_d)) from the noise floor.
+
+| Option | Pros | Cons |
+|---|---|---|
+| **Each domain separately, margin max(5%, 2 SD) (chosen)** | Better legal learning can't hide worse code learning. The margin never sits inside run-to-run noise, and it's set from the noise floor, not from technique results | Stricter: a run must pass twice |
+| Geometric mean of the two domains, 5% | One number | One domain can mask the other |
+| Legal only | Legal is the domain that is clearly learned on this bench | Ignores code learning; a technique could block code learning for free |
+| Code only | — | Code ends worse than base at every LR, so it's the noisier domain to gate on alone |
+
 ### A3. Win rule: **decided**, paired CI and more than 2 × σ_noise
 | Option | Pros | Cons |
 |---|---|---|
@@ -435,7 +562,7 @@ collapse `invalid`; it now records the share and keeps the row.
 | Invalidate > 0.95 | Keeps degenerate scores out of the means | Throws away real forgetting; can flatter a technique |
 | Drop PubMedQA from the mean | Removes the noisiest task | Loses the biomedical capability the stream should stress |
 
-### A10. Invalid-run rules: **provisional**
+### A10. Invalid-run rules: **decided** (the defaults below)
 | Option | Default | Pros | Cons |
 |---|---|---|---|
 | NaN/inf, or anomalous grad steps above 1% | **in** | Catches backend faults | — |
@@ -443,14 +570,17 @@ collapse `invalid`; it now records the share and keeps the row.
 | General perplexity ratio above 3 | out | Catches a blown-up run | A harsh LR legitimately forgets a lot (1e-4 reached 1.84) |
 | Budget-killed or timed out | **in** (as `failed`) | Obvious | Partial rows are lost |
 
-### A11. MBPP: **provisional**, secondary only
+### A11. MBPP: **decided**, not measured on the fast bench
+The frozen fast bench (A5) leaves MBPP out of its eval list to save about 170 seconds per
+checkpoint, so it isn't an outcome of this study.
+
 | Option | Pros | Cons |
 |---|---|---|
 | **Secondary only (default)** | Keeps a noisy, low-base task out of the decision | Code ability is part of "what was kept" |
 | Not run on the fast bench | Saves eval time | Loses the only generative capability |
 | In the primary mean | Covers generation | SE about 2.2 points on a 0.11 base; very noisy |
 
-### A12. Matched compute: **provisional**, equal gradient tokens with extra compute reported
+### A12. Matched compute: **decided**, equal gradient tokens with extra compute reported
 | Option | Pros | Cons |
 |---|---|---|
 | **Equal gradient tokens; extra reported as cost (default)** | Matches the bench design and the row's `Cost` fields | Distillation gets about 1.3× FLOPs "free" in the primary test |

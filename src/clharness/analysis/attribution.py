@@ -98,6 +98,48 @@ class Config:
         return lr_of(self.rows[0].spec)
 
 
+def domain_acquisition(row: ResultRow) -> dict[str, float]:
+    """Per trained domain: perplexity ratio at the domain's own boundary (PREREG 4), falling back
+    to the end-of-stream ratio for rows written before that field existed."""
+    a = row.acquisition
+    return dict(a.own_boundary_ppl_ratio) if a.own_boundary_ppl_ratio else dict(a.ppl_ratio)
+
+
+def acquisition_margins(base: Config | None) -> dict[str, float]:
+    """PREREG 5, rule 3: the allowed factor per domain, max(ACQ_GATE, exp(2 x SD)), where SD is
+    the spread of log own-boundary perplexity ratio over the no-mitigation noise-floor seeds. So
+    the margin is never inside the run-to-run noise. Domains without 2+ seeds get ACQ_GATE."""
+    if base is None:
+        return {}
+    by_domain: dict[str, list[float]] = {}
+    for r in base.rows:
+        for d, v in domain_acquisition(r).items():
+            by_domain.setdefault(d, []).append(math.log(v))
+    return {d: max(ACQ_GATE, math.exp(2 * float(np.std(v, ddof=1)))) if len(v) >= 2 else ACQ_GATE
+            for d, v in by_domain.items()}
+
+
+def acquisition_gate(x: Config, ref: Config | None, margins: dict[str, float] | None = None) -> dict[str, Any]:
+    """Rule 3, per domain: for every trained domain, mean ratio(x) <= margin_d x mean ratio(ref).
+    Every domain must pass (code and legal), so one cannot hide behind the other."""
+    if ref is None:
+        return {"passes": True, "domains": {}}
+    margins = margins or {}
+
+    def means(cfg: Config) -> dict[str, float]:
+        acc: dict[str, list[float]] = {}
+        for r in cfg.rows:
+            for d, v in domain_acquisition(r).items():
+                acc.setdefault(d, []).append(v)
+        return {d: float(np.mean(v)) for d, v in acc.items()}
+
+    mx, mr = means(x), means(ref)
+    domains = {d: {"ratio": mx[d], "reference": mr[d], "limit": margins.get(d, ACQ_GATE) * mr[d],
+                   "passes": mx[d] <= margins.get(d, ACQ_GATE) * mr[d]}
+               for d in sorted(set(mx) & set(mr))}
+    return {"passes": all(v["passes"] for v in domains.values()), "domains": domains}
+
+
 def acquisition_of(row: ResultRow) -> float:
     """PREREG 4: acquisition is the perplexity ratio at each domain's own boundary (what was
     learned before later domains could erase it). Rows written before that field existed fall
@@ -340,14 +382,15 @@ def holm(pvalues: dict[str, float]) -> dict[str, float]:
 
 def decide(x: Config, ref: Config, boot: dict[str, Any], p_adj: float, sigma: float | None,
            lr_control: Config | None = None, lr_boot: dict[str, Any] | None = None,
-           lr_p_adj: float | None = None) -> dict[str, Any]:
+           lr_p_adj: float | None = None, margins: dict[str, float] | None = None) -> dict[str, Any]:
     """The rule of PREREG 5. `sigma` is sigma_noise on the same half. Rules 1-3 compare x with
     the reference arm; rule 4 (A13) asks the same significance and size of x against the chosen
     lower-LR control, and holds trivially when no lower-LR arm passes the acquisition gate."""
     acq_x, acq_r = float(x.acquisition().mean()), float(ref.acquisition().mean())
     rule1 = p_adj < ALPHA and (boot["lo"] > 0 or boot["hi"] < 0)
     rule2 = sigma is not None and boot["delta"] > SIZE_GATE_SIGMAS * sigma
-    rule3 = acq_x <= ACQ_GATE * acq_r
+    gate = acquisition_gate(x, ref, margins)
+    rule3 = gate["passes"]
     enough = boot["n_pairs"] >= MIN_PAIRS
     if lr_control is None or lr_boot is None:
         rule4, lr_info = True, None
@@ -361,7 +404,7 @@ def decide(x: Config, ref: Config, boot: dict[str, Any], p_adj: float, sigma: fl
         "config": x.label, "delta": boot["delta"], "ci": [boot["lo"], boot["hi"]],
         "p": boot["p"], "p_holm": p_adj, "bootstrap_mode": boot["mode"], "n_pairs": boot["n_pairs"],
         "size_threshold": None if sigma is None else SIZE_GATE_SIGMAS * sigma,
-        "acquisition": acq_x, "acquisition_limit": ACQ_GATE * acq_r,
+        "acquisition": acq_x, "acquisition_reference": acq_r, "acquisition_gate": gate["domains"],
         "enough_seeds": enough,
         "rule1_significant": bool(rule1), "rule2_large_enough": bool(rule2), "rule3_learns_enough": bool(rule3),
         "rule4_beats_lr_control": bool(rule4), "vs_lr_control": lr_info,
@@ -375,12 +418,12 @@ def decide(x: Config, ref: Config, boot: dict[str, Any], p_adj: float, sigma: fl
 # ---------------------------------------------------------------------------------------------
 
 
-def promote(configs: dict[str, Config], ref: Config | None, k: int = 3) -> list[dict[str, Any]]:
+def promote(configs: dict[str, Config], ref: Config | None, k: int = 3,
+            margins: dict[str, float] | None = None) -> list[dict[str, Any]]:
     """PREREG 6.3: rank non-control configurations by mean selection-half primary outcome,
     among those passing the acquisition gate against the reference arm. Uses the selection half
     only, so the agent may call it."""
     excluded = {NO_MITIGATION, REFERENCE, *HALVES}  # controls, and the halves of the reference recipe
-    limit = ACQ_GATE * float(ref.acquisition().mean()) if ref is not None else math.inf
     ranked = []
     for cfg in configs.values():
         if cfg.techniques in excluded or cfg.selection is not None or not is_design_spec(cfg.rows[0].spec):
@@ -388,7 +431,8 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3) -> list[
         acq = float(cfg.acquisition().mean())
         ranked.append({
             "config": cfg.label, "key": cfg.key, "selection_primary": float(cfg.primary("selection").mean()),
-            "n_seeds": len(cfg.rows), "acquisition": acq, "passes_acquisition_gate": acq <= limit,
+            "n_seeds": len(cfg.rows), "acquisition": acq,
+            "passes_acquisition_gate": acquisition_gate(cfg, ref, margins)["passes"],
         })
     ranked.sort(key=lambda d: (not d["passes_acquisition_gate"], -d["selection_primary"]))
     for i, d in enumerate(ranked):
@@ -397,10 +441,10 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3) -> list[
     return ranked
 
 
-def choose_lr_control(configs: dict[str, Config], ref: Config | None) -> dict[str, Any]:
+def choose_lr_control(configs: dict[str, Config], ref: Config | None,
+                      margins: dict[str, float] | None = None) -> dict[str, Any]:
     """PREREG A13: the lower-LR no-mitigation arm with the best selection-half outcome among
     those whose acquisition passes the 5% gate against the reference arm. Selection half only."""
-    limit = ACQ_GATE * float(ref.acquisition().mean()) if ref is not None else math.inf
     arms = []
     for cfg in configs.values():
         if cfg.lr is None:
@@ -408,17 +452,17 @@ def choose_lr_control(configs: dict[str, Config], ref: Config | None) -> dict[st
         acq = float(cfg.acquisition().mean())
         arms.append({"config": cfg.label, "key": cfg.key, "lr": cfg.lr, "n_seeds": len(cfg.rows),
                      "selection_primary": float(cfg.primary("selection").mean()),
-                     "acquisition": acq, "passes_acquisition_gate": acq <= limit})
+                     "acquisition": acq, "passes_acquisition_gate": acquisition_gate(cfg, ref, margins)["passes"]})
     eligible = [a for a in arms if a["passes_acquisition_gate"]]
     chosen = max(eligible, key=lambda a: a["selection_primary"], default=None)
     return {"arms": sorted(arms, key=lambda a: -a["lr"]), "chosen": chosen["key"] if chosen else None,
             "chosen_label": chosen["config"] if chosen else None}
 
 
-def promote_selection(configs: dict[str, Config], ref: Config | None) -> list[dict[str, Any]]:
+def promote_selection(configs: dict[str, Config], ref: Config | None,
+                      margins: dict[str, float] | None = None) -> list[dict[str, Any]]:
     """PREREG 6.3b: for each selection signal, the `keep` direction with the better mean
     selection-half outcome is promoted, if it passes the acquisition gate. Selection half only."""
-    limit = ACQ_GATE * float(ref.acquisition().mean()) if ref is not None else math.inf
     ref_sel = float(ref.primary("selection").mean()) if ref is not None else float("nan")
     rows = []
     for cfg in configs.values():
@@ -428,7 +472,7 @@ def promote_selection(configs: dict[str, Config], ref: Config | None) -> list[di
         sel = float(cfg.primary("selection").mean())
         rows.append({"config": cfg.label, "key": cfg.key, "signal": cfg.selection[0], "keep": cfg.selection[1],
                      "selection_primary": sel, "vs_reference": sel - ref_sel, "n_seeds": len(cfg.rows),
-                     "acquisition": acq, "passes_acquisition_gate": acq <= limit})
+                     "acquisition": acq, "passes_acquisition_gate": acquisition_gate(cfg, ref, margins)["passes"]})
     for signal in sorted({r["signal"] for r in rows}):
         options = [r for r in rows if r["signal"] == signal and r["passes_acquisition_gate"]]
         best = max(options, key=lambda r: r["selection_primary"], default=None)
@@ -496,6 +540,7 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     configs = group(finished)
     base, ref = find(configs, NO_MITIGATION), find(configs, REFERENCE)
     sigma_sel = noise_sd(base, "selection") if base else None
+    margins = acquisition_margins(base)
 
     out: dict[str, Any] = {
         "halves_read": ["selection"] + (["report"] if confirmatory else []),
@@ -521,9 +566,10 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         },
         "effects_log_acquisition": fit_effects(
             design_rows, lambda r: math.log(acquisition_of(r)), sigma=None),
-        "promotion": promote(configs, ref),
-        "selection_screen": promote_selection(configs, ref),
-        "lr_control": choose_lr_control(configs, ref),
+        "acquisition_margins": margins,
+        "promotion": promote(configs, ref, margins=margins),
+        "selection_screen": promote_selection(configs, ref, margins),
+        "lr_control": choose_lr_control(configs, ref, margins),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),
     }
@@ -541,14 +587,15 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     lr_adj = holm({name: b["p"] for name, b in lr_boots.items()}) if lr_boots else {}
     out["confirmatory"] = [
         decide(configs[k], ref, boots[configs[k].label], adj[configs[k].label], sigma_rep,
-               lr_ctrl, lr_boots.get(configs[k].label), lr_adj.get(configs[k].label))
+               lr_ctrl, lr_boots.get(configs[k].label), lr_adj.get(configs[k].label), margins)
         for k in promoted]
     sel_promoted = [d["key"] for d in out["selection_screen"] if d.get("promoted")]
     sel_boots = {configs[k].label: paired_bootstrap(configs[k], ref, "report", n_boot, seed, items)
                  for k in sel_promoted}
     sel_adj = holm({name: b["p"] for name, b in sel_boots.items()})
     out["confirmatory_selection"] = [
-        decide(configs[k], ref, sel_boots[configs[k].label], sel_adj[configs[k].label], sigma_rep)
+        decide(configs[k], ref, sel_boots[configs[k].label], sel_adj[configs[k].label], sigma_rep,
+               margins=margins)
         for k in sel_promoted]
     sanity = paired_bootstrap(ref, base, "report", n_boot, seed, items)
     out["sanity_reference_vs_no_mitigation"] = {k: sanity[k] for k in ("delta", "lo", "hi", "p", "n_pairs", "mode")}
