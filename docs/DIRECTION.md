@@ -13,6 +13,74 @@ measure which forgetting-reduction techniques work, alone and in combination.
 - **Science:** improve upon existing forgetting-reduction results.
 - **Product:** a framework that makes continual-learning experiments easier to run.
 
+## Hackathon constraints
+
+A summary of the official brief in [`hackathon-brief.md`](hackathon-brief.md). Times are
+Pacific, Sunday November 15.
+
+**Track: Open Track (Track 5).** Tracks 1 to 4 each set a fixed problem: mathematics records,
+GPU price forecasts, a biology benchmark, and world models. None is continual learning. The
+Open Track has the same rules and judging, and the top two teams of each track reach the
+finals.
+
+**Deadlines**
+
+| When | What |
+|---|---|
+| 12:00 | Team list closes on the platform |
+| 14:00 | Hacking ends, submissions due. The brief says 14:30 in one place; plan for 14:00 |
+| 14:45 | Round 1: 3-minute pitch and 2 minutes of questions |
+| 16:45 | Finals, also given as 16:30: 3-minute pitch with a live demo, no questions |
+
+**What to submit:** the track and any challenges entered, the link to this repository, a
+2-minute demo video, and a short project description.
+
+**Judging: five criteria, 20% each**
+
+| Criterion | What the brief asks for | What it means for us |
+|---|---|---|
+| Research rigour | Clear question, sound design, baselines or ablations, claims backed by results | Frozen bench, noise floor, controls and the reference arm |
+| Novelty | Beyond existing papers and open-source baselines | Interactions between techniques, cost-adjusted ranking, the selection-signal test |
+| Results | A measurable result against a baseline, and a working live demo | Beat the reference arm on the protected set; results page running live |
+| Autonomy and self-improvement | How much of the research loop runs without a human, with extra credit if it improves from its own results | The agent plans, launches, reads results and chooses the next runs itself, and later choices use earlier results |
+| Interpretability and reproducibility | Decisions can be followed, code runs, failures reported honestly | A log entry for every agent decision, one command to reproduce, failed and invalid runs reported |
+
+Autonomy carries the same weight as rigour. A grid launched by hand scores poorly on it, so the
+agent loop is part of the core project, not an extra.
+
+**Sponsor challenges.** Optional, and they stack on top of the track. Which to enter is not
+decided.
+
+- **Modal.** Best use of Modal for running many experiments in parallel. A direct fit for the
+  executor.
+- **Exa.** Needs an Exa call in the project's main loop, a pointer in the repository to where
+  it is called, and a demo that shows the sources found. It fits only if the agent's search
+  for techniques in the literature sits inside the main loop.
+- **past.dev.** A shared memory layer: more than one agent writes, more than one reads, and at
+  least one uses what another wrote. It fits if the loop is split into agents that share what
+  was tried and what failed. The README must say which memory holds what.
+- **Originator.** Agent sessions are uploaded and scored. Uploading shares the full session
+  transcripts, so the team decides before anyone does it.
+
+**Rules that bind us**
+
+- Build entirely during the event. No prior commits to the repository.
+- Open-source libraries, APIs and pre-trained models are allowed if properly credited.
+- The repository is public, and all code and demos are submitted before the deadline.
+- All team members are on site.
+
+**Open issue: prior work.** The harness and the September baseline runs in this repository's
+first commit were built before the event. Every commit here was made during the event, but
+importing earlier work is in tension with "build entirely during the event". This is
+unresolved until an organizer answers. Until then:
+
+- Keep the import commit separate and labelled, as it is now.
+- Credit the earlier work in the README, the submission description and the pitch.
+- Never present the imported harness or the September runs as work done this weekend.
+- If the organizers do not allow it, the fallbacks are to depend on the harness as a separately
+  published and credited open-source library, if they accept that, or to rebuild the part we
+  need during the event.
+
 ## What that means concretely
 
 - **The framework.** A technique plugs in, runs against baselines at matched compute, and is
@@ -30,13 +98,17 @@ no-mitigation baseline, by more than the measured noise.
 
 ## Priorities
 
-In this order. Items 1 and 2 are a complete project; do not start a later item while an
+In this order. Items 1 to 3 are the complete project; do not start a later item while an
 earlier one is broken.
 
-1. The grid running on GPUs with five or six hand-checked techniques.
-2. The attribution analysis and a results page, with uncertainty shown.
-3. The agent driving runs and choosing which configurations to replicate.
-4. The agent finding a new technique in the literature and adding it.
+1. One run goes from a run spec to a result row on a cloud GPU, in about 30 minutes.
+2. The agent loop, in its simplest form: it plans the screening grid over five or six
+   hand-checked techniques, launches it, reads the results, chooses what to replicate or
+   combine next, and logs every decision with its reason.
+3. The attribution analysis and a live results page, with uncertainty shown and the
+   comparison against the reference arm.
+4. The agent searches the literature for a technique it has not tried, adds it as a plugin and
+   tests it. This is what the Exa challenge requires, and it must be in the main loop to count.
 
 ## Workstreams
 
@@ -125,8 +197,7 @@ These keep results comparable and honest. They apply to every run that is report
 
 Only after priorities 1 to 3 work.
 
-- The agent searches the literature, writes a new technique as a plugin and adds it to the
-  ranking.
+- A shared memory of what was tried and what failed, read and written by more than one agent.
 - One contrast between supervised and reward-based fine-tuning on the same skill, measuring
   what each forgot. Kept separate from the main grid.
 - The top configurations on a second, published task sequence.
@@ -136,10 +207,13 @@ Only after priorities 1 to 3 work.
 1. One baseline run completes end to end on a cloud GPU.
 2. Techniques are checked and the grid is launched.
 3. Analysis runs on real result rows.
+4. Submission is ready: demo video, project description and repository link, before Sunday
+   14:00.
 
 ## Where things are
 
 - `README.md`: overview, quick start, what predates the hackathon.
+- `docs/hackathon-brief.md`: the official event brief, with access codes removed.
 - `docs/baselines.md`: the no-mitigation numbers and what the earlier runs showed.
 - `docs/harness.md`: harness reference.
 - `docs/background/`: literature review and field overviews.

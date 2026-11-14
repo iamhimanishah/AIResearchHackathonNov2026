@@ -26,6 +26,7 @@ The plan, priorities and division of work are in [`docs/DIRECTION.md`](docs/DIRE
 | `results/baselines/` | Base-model scores on the protected eval suite |
 | `results/runs/` | Four no-mitigation runs: scores, per-question outcomes and configs at every checkpoint |
 | `docs/DIRECTION.md` | Goal, priorities, workstreams and the rules for reported experiments |
+| `docs/hackathon-brief.md` | The official event brief: tracks, judging, rules, schedule |
 | `docs/harness.md` | Harness reference: setup, CLI, config format, layout, caveats |
 | `docs/baselines.md` | The numbers to beat, with where each comes from |
 | `docs/background/` | Literature review, field overview and pretraining overview |
