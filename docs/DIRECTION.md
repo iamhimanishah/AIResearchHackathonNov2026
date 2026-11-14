@@ -187,11 +187,13 @@ Never cut the reference arm, the noise floor, the decision log or the results pa
 ### Task dependencies
 
 Read each row as "this task cannot finish until the tasks in *Needs* are done". A task
-with nothing upstream can start now.
+with nothing upstream can start now. Each task's details, open questions and options to try
+are in [`TASKS.md`](TASKS.md).
 
 | ID | Task | Owner | Needs | Unblocks |
 |---|---|---|---|---|
-| A1 | Run-spec and result-row formats, with fake rows | A | Team agrees the contract | A4, A5, C2, D1, D3 |
+| A0 | Restore the missing `src/clharness/data/` package (hidden by the `data/` ignore rule) | A | The original files from whoever built the harness | Every run: A5, A6, B sanity runs |
+| A1 | Run-spec and result-row formats, with fake rows | A | Team agrees the contract | A6, A7, C2, D1, D3 |
 | A2 | Pre-optimizer model hook | A | (nothing upstream) | B4 (LoRA, layer freezing) |
 | A3 | Loss-term hook | A | (nothing upstream) | B5 (distillation) |
 | A4 | Per-domain LR re-warm | A | (nothing upstream) | B1 (reference arm) |
@@ -217,7 +219,7 @@ with nothing upstream can start now.
 | D5 | Submission: video, description, challenges | D | D3, C4, A8 | Sync point 4 |
 | D6 | Exa in the main loop | D, B | Sync points 1 to 3 working, then B wraps the found technique | Exa challenge |
 
-**Critical path:** A1 → A5 → A6 → sync point 1 → C3 and B1 → C1 → D2 (grid overnight) →
+**Critical path:** A0 → A1 → A5 → A6 → sync point 1 → C3 and B1 → C1 → D2 (grid overnight) →
 C4 → D3 → D5. Any slip on this chain moves the submission, so help the owner of the slipping
 task before starting off-path work.
 
@@ -324,5 +326,6 @@ Target times are Pacific.
 - `README.md`: overview, quick start, what predates the hackathon.
 - `docs/hackathon-brief.md`: the official event brief, with access codes removed.
 - `docs/baselines.md`: the no-mitigation numbers and what the earlier runs showed.
+- `docs/TASKS.md`: one card per task, with steps, open questions and options to try.
 - `docs/harness.md`: harness reference.
 - `docs/background/`: literature review and field overviews.
