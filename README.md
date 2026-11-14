@@ -81,6 +81,31 @@ uv run clh items results/runs/<run>                  # which protected questions
 
 The full command list and config format are in [`docs/harness.md`](docs/harness.md).
 
+## Running on Modal
+
+The repository targets Python 3.12. Install the optional Modal CLI in the project environment
+instead of using the separate system `modal` command (which may use an older Python):
+
+```bash
+uv sync --extra dev --extra modal
+uv run modal profile activate bkbrohon795
+uv run modal profile current
+```
+
+Create the Hugging Face secret once if it is not already in the active Modal workspace, then
+launch validated run specs on cloud GPUs:
+
+```bash
+uv run modal secret create huggingface HF_TOKEN=<your-hugging-face-token>
+uv run modal run src/clharness/executor/modal_app.py::data
+uv run clh run --modal --gpu H100 configs/bench/specs/*.json
+```
+
+Create the Hugging Face secret and build/cache the data once per Modal workspace; rerun the data
+step only when you need to rebuild it. The Modal app uses Python 3.12 in its remote image too.
+The Modal CLI reads the active local profile (`bkbrohon795` above). To use another GPU type,
+change `--gpu` to a type enabled for your Modal workspace.
+
 ## Adding a technique
 
 Techniques plug into the training loop as hooks (`src/clharness/train/hooks.py`). A hook can:
