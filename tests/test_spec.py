@@ -96,7 +96,9 @@ def test_fake_rows_carry_the_planted_effects():
     base = mean(set())
     assert base == pytest.approx(PLANTED["baseline_retention_mean_delta"], abs=0.01)
     assert mean({"replay"}) - base == pytest.approx(0.025, abs=0.015)
-    assert mean({"lora"}) > mean({"lr_rewarm"})
+    # the fake study follows the pre-registered screen, which has no lora-only run: planted,
+    # distill+lora retains 0.050 more than base and lr_rewarm alone 0.008
+    assert mean({"distill", "lora"}) > mean({"lr_rewarm"}) + 0.02
 
 
 def test_bad_line_is_reported_with_its_number(tmp_path):

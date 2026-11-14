@@ -252,7 +252,9 @@ team confirms them; once confirmed, change them only with everyone's agreement.
 
 - the full run spec and the git commit that produced it
 - retention: change in protected-set scores against base, per task and averaged
-- acquisition: held-out perplexity on the trained domains against base
+- acquisition: held-out perplexity on the trained domains against base, at the end of the stream
+  and at each domain's own boundary (`own_boundary_ppl_ratio`, the one the pre-registered gate
+  uses; see `analysis/PREREG.md` A2b)
 - cost: gradient tokens, wall-clock seconds, GPU type, size of the update that would ship
 - answer-distribution check per multiple-choice task (see `docs/baselines.md` for why)
 - status: finished, failed, or invalid, with a reason

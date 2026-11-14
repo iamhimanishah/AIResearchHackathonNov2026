@@ -26,12 +26,29 @@ def confirmatory(rows):
 
 def test_retention_main_effects_and_planted_pairs_are_recovered(screening):
     checks = A.check_planted(screening, PLANTED)
-    retention = [c for c in checks if c["fit"] == "effects_retention_selection"]
-    mains = [c for c in retention if "×" not in c["effect"]]
+    mains = [c for c in checks if c["fit"] == "effects_retention_selection" and "×" not in c["effect"]]
     assert {c["effect"] for c in mains} == set(PLANTED["retention_main_effects"])
     assert all(c["inside"] for c in mains), [c for c in mains if not c["inside"]]
-    pairs = {c["effect"]: c for c in retention if "×" in c["effect"]}
-    assert pairs["distill×replay"]["inside"] and pairs["lora×replay"]["inside"]
+    # the planted pairs are read through their alias chains in the factorial
+    chains = screening["alias_chains_retention_selection"]["effects"]
+    for pair in ("distill×replay", "lora×replay"):
+        name = next(n for n, e in chains.items() if n == pair or pair in e["aliased_with"])
+        check = next(c for c in checks if c["fit"] == "alias_chains_retention_selection" and c["effect"] == name)
+        assert check["inside"], check
+
+
+def test_main_fit_is_six_techniques_plus_the_reference_interaction(screening):
+    names = set(screening["effects_retention_selection"]["effects"])
+    assert names == {"(baseline)", *PLANTED["retention_main_effects"], "lr_rewarm×replay"}
+    assert len(screening["alias_chains_retention_selection"]["aliases"]) == 7
+
+
+def test_selection_variants_and_off_design_rows_stay_out_of_the_fit(rows, screening):
+    fitted = screening["effects_retention_selection"]["n_rows"]
+    excluded = [r for r in rows if r.status == "finished"
+                and (A.selection_of(r.spec) is not None or not A.is_design_spec(r.spec))]
+    assert fitted == screening["rows"]["finished"] - len(excluded)
+    assert screening["off_design_rows"] == ["fake-distill-10.0-s1"]
 
 
 def test_most_planted_effects_overall_are_recovered(screening):
@@ -77,10 +94,33 @@ def test_promotion_respects_the_acquisition_gate(screening):
     assert "no-mitigation" not in labels and "lr_rewarm+replay" not in labels
 
 
-def test_parameter_variants_get_readable_labels(rows):
+def test_selection_variants_get_readable_labels(rows):
     labels = {c.label for c in A.group(rows).values()}
-    assert {"replay+select[select.signal=random]", "replay+select[select.signal=loss]",
-            "replay+select[select.signal=act_nov]"} <= labels
+    assert {f"lr_rewarm+replay+select-{s}-{k}" for s in ("loss", "act_nov") for k in ("high", "low")} <= labels
+    assert "lr_rewarm+replay" in labels  # plain replay stays the reference arm
+
+
+def test_selection_family_promotes_one_keep_direction_per_signal(screening):
+    promoted = [d for d in screening["selection_screen"] if d["promoted"]]
+    assert sorted(d["signal"] for d in promoted) == ["act_nov", "loss"]
+    assert all(d["passes_acquisition_gate"] for d in promoted)
+
+
+def test_promotion_excludes_the_reference_halves_and_selection_variants(screening):
+    labels = {d["config"] for d in screening["promotion"]}
+    assert not labels & {"replay", "lr_rewarm", "no-mitigation", "lr_rewarm+replay"}
+    assert not any("select-" in label for label in labels)
+
+
+def test_confirmatory_selection_family_is_tested_against_the_reference(confirmatory):
+    fam = confirmatory["confirmatory_selection"]
+    assert len(fam) == 2 and all("select-" in d["config"] for d in fam)
+    assert all(d["p_holm"] >= d["p"] for d in fam)
+
+
+def test_planted_selection_effects_are_recovered(rows):
+    checks = A.check_planted_selection(rows, PLANTED, n_boot=1000)
+    assert checks and all(c["inside"] for c in checks), checks
 
 
 def test_confirmatory_needs_three_paired_seeds(confirmatory):
@@ -112,10 +152,10 @@ def test_holm_matches_hand_computation():
 def test_decision_rule_needs_all_three_parts(rows):
     configs = A.group(rows)
     ref = A.find(configs, A.REFERENCE)
-    x = A.find(configs, frozenset({"lora", "replay"}))  # replicated at 3 seeds in the fake data
+    x = A.find(configs, frozenset({"lora", "replay", "wavg"}))  # a LoRA run: learns less
     boot = {"delta": 0.05, "lo": 0.02, "hi": 0.08, "p": 0.001, "mode": "parametric", "n_pairs": 3}
     d = A.decide(x, ref, boot, p_adj=0.003, sigma=0.006)
-    # lora+replay learns less than 1.05 x the reference arm, so rule 3 fails it
+    # with LoRA it learns less than 1.05 x the reference arm allows, so rule 3 fails it
     assert d["rule1_significant"] and d["rule2_large_enough"] and not d["rule3_learns_enough"]
     assert not d["beats_reference"]
     d = A.decide(ref, ref, boot, p_adj=0.003, sigma=0.03)  # 0.05 < 2 x 0.03: too small

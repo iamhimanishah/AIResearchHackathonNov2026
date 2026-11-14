@@ -27,7 +27,6 @@ Imports only numpy and clharness.spec, so it is cheap to import from the agent a
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
 import math
 from collections.abc import Callable, Iterable
@@ -37,9 +36,16 @@ from typing import Any
 
 import numpy as np
 
+from clharness.analysis.design import (
+    HALVES,
+    alias_chains,
+    factorial,
+    is_design_spec,
+    selection_of,
+)
 from clharness.spec import ResultRow, canonical_json
 
-COLLAPSE_SHARE = 0.90  # PREREG 8: flag above this (provisional: flag, do not invalidate)
+COLLAPSE_SHARE = 0.90  # PREREG 8: flag above this; collapse does not invalidate a run (A9)
 ACQ_GATE = 1.05  # PREREG 5, rule 3: acquisition(X) <= 1.05 x acquisition(reference)
 SIZE_GATE_SIGMAS = 2.0  # PREREG 5, rule 2: delta > 2 x sigma_noise
 MIN_PAIRS = 3  # PREREG 6.3: confirmatory comparisons are over 3 paired seeds
@@ -80,6 +86,11 @@ class Config:
     def acquisition(self) -> np.ndarray:
         return np.array([acquisition_of(r) for r in self.rows])
 
+    @property
+    def selection(self) -> tuple[str, str] | None:
+        """(signal, keep) when replay selects by a signal; None for plain replay or no replay."""
+        return selection_of(self.rows[0].spec)
+
 
 def acquisition_of(row: ResultRow) -> float:
     """PREREG 4: acquisition is the perplexity ratio at each domain's own boundary (what was
@@ -110,11 +121,13 @@ def group(rows: Iterable[ResultRow]) -> dict[str, Config]:
         key = config_key(row)
         cfg = configs.setdefault(key, Config(key=key, techniques=frozenset(row.spec.technique_names())))
         cfg.rows.append(row)
-    names: dict[frozenset[str], list[Config]] = {}
+    names: dict[tuple[frozenset[str], tuple[str, str] | None], list[Config]] = {}
     for cfg in configs.values():
-        names.setdefault(cfg.techniques, []).append(cfg)
-    for techs, same in names.items():
+        names.setdefault((cfg.techniques, cfg.selection), []).append(cfg)
+    for (techs, sel), same in names.items():
         base = "+".join(sorted(techs)) or "no-mitigation"
+        if sel:
+            base += f"+select-{sel[0]}-{sel[1]}"
         if len(same) == 1:
             same[0].label = base
             continue
@@ -129,9 +142,9 @@ def group(rows: Iterable[ResultRow]) -> dict[str, Config]:
 
 
 def find(configs: dict[str, Config], techniques: frozenset[str]) -> Config | None:
-    """The configuration with exactly these techniques. With several (different parameters),
-    the one with the most seeds, which is the replicated one."""
-    hits = [c for c in configs.values() if c.techniques == techniques]
+    """The configuration with exactly these techniques and plain (random) replay. With several
+    (different parameters), the one with the most seeds, which is the replicated one."""
+    hits = [c for c in configs.values() if c.techniques == techniques and c.selection is None]
     return max(hits, key=lambda c: len(c.rows)) if hits else None
 
 
@@ -150,17 +163,21 @@ def fit_effects(
     rows: list[ResultRow],
     outcome: Callable[[ResultRow], float],
     sigma: float | None = None,
-    interactions: bool = True,
+    interactions: Iterable[list[tuple[str, str]]] = (),
 ) -> dict[str, Any]:
-    """Least squares of `outcome` on an intercept, one 0/1 column per technique and, if asked,
-    one column per pair of techniques that appear together in some row. Columns that would make
-    the design rank-deficient are dropped and listed. Standard errors use the residual variance
-    when there are spare degrees of freedom, otherwise the known `sigma` (PREREG 7)."""
+    """Least squares of `outcome` on an intercept, one 0/1 column per technique, and one column
+    per entry of `interactions`. An entry is a chain of pairs whose columns coincide in the
+    design: the first pair names the column and the rest are reported as `aliased_with`, so the
+    estimate is read as the sum of the chain. Columns that would make the design rank-deficient
+    are dropped and listed. Standard errors use the residual variance when there are spare
+    degrees of freedom, otherwise the known `sigma` (PREREG 7)."""
     techs = sorted({t for r in rows for t in r.spec.technique_names()})
     cols: list[tuple[str, frozenset[str]]] = [(t, frozenset({t})) for t in techs]
-    if interactions:
-        seen = {frozenset(p) for r in rows for p in itertools.combinations(sorted(r.spec.technique_names()), 2)}
-        cols += [("×".join(sorted(p)), p) for p in sorted(seen, key=sorted)]
+    chain_of: dict[str, list[str]] = {}
+    for chain in interactions:
+        name = "×".join(sorted(chain[0]))
+        cols.append((name, frozenset(chain[0])))
+        chain_of[name] = ["×".join(sorted(p)) for p in chain[1:]]
     present = [frozenset(r.spec.technique_names()) for r in rows]
     y = np.array([outcome(r) for r in rows])
 
@@ -169,12 +186,23 @@ def fit_effects(
 
     X = np.ones((len(rows), 1))
     kept, dropped = ["(baseline)"], []
+    vectors: dict[str, np.ndarray] = {}
+    aliases: dict[str, list[str]] = {}
     for name, members in cols:  # greedy: main effects first, then pairs
-        trial = np.column_stack([X, column(members)])
+        vec = column(members)
+        trial = np.column_stack([X, vec])
         if np.linalg.matrix_rank(trial) > X.shape[1]:
             X, kept = trial, kept + [name]
+            vectors[name] = vec
         else:
             dropped.append(name)
+            # identical column on these rows: the kept estimate is the sum of both effects
+            twin = next((k for k, v in vectors.items() if np.array_equal(v, vec)), None)
+            if twin is not None:
+                aliases.setdefault(twin, []).append(name)
+    for name, partners in chain_of.items():
+        if name in vectors:
+            aliases.setdefault(name, []).extend(partners)
 
     beta, *_ = np.linalg.lstsq(X, y, rcond=None)
     df = len(y) - X.shape[1]
@@ -187,11 +215,12 @@ def fit_effects(
     se = np.sqrt(np.diag(cov))
     z = 1.959963984540054
     effects = {
-        name: {"estimate": float(b), "se": float(s), "lo": float(b - z * s), "hi": float(b + z * s)}
+        name: {"estimate": float(b), "se": float(s), "lo": float(b - z * s), "hi": float(b + z * s),
+               "aliased_with": aliases.get(name, [])}
         for name, b, s in zip(kept, beta, se)
     }
     return {
-        "effects": effects, "dropped": dropped, "n_rows": len(rows), "df": df,
+        "effects": effects, "dropped": dropped, "aliases": aliases, "n_rows": len(rows), "df": df,
         "residual_sd": math.sqrt(s2) if s2 is not None else None,
         "se_source": "residual" if s2 is not None else "sigma_noise",
     }
@@ -329,11 +358,11 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3) -> list[
     """PREREG 6.3: rank non-control configurations by mean selection-half primary outcome,
     among those passing the acquisition gate against the reference arm. Uses the selection half
     only, so the agent may call it."""
-    controls = {NO_MITIGATION, REFERENCE}
+    excluded = {NO_MITIGATION, REFERENCE, *HALVES}  # controls, and the halves of the reference recipe
     limit = ACQ_GATE * float(ref.acquisition().mean()) if ref is not None else math.inf
     ranked = []
     for cfg in configs.values():
-        if cfg.techniques in controls:
+        if cfg.techniques in excluded or cfg.selection is not None or not is_design_spec(cfg.rows[0].spec):
             continue
         acq = float(cfg.acquisition().mean())
         ranked.append({
@@ -345,6 +374,29 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3) -> list[
         d["rank"] = i + 1
         d["promoted"] = d["passes_acquisition_gate"] and i < k
     return ranked
+
+
+def promote_selection(configs: dict[str, Config], ref: Config | None) -> list[dict[str, Any]]:
+    """PREREG 6.3b: for each selection signal, the `keep` direction with the better mean
+    selection-half outcome is promoted, if it passes the acquisition gate. Selection half only."""
+    limit = ACQ_GATE * float(ref.acquisition().mean()) if ref is not None else math.inf
+    ref_sel = float(ref.primary("selection").mean()) if ref is not None else float("nan")
+    rows = []
+    for cfg in configs.values():
+        if cfg.selection is None or (ref is not None and cfg.techniques != ref.techniques):
+            continue
+        acq = float(cfg.acquisition().mean())
+        sel = float(cfg.primary("selection").mean())
+        rows.append({"config": cfg.label, "key": cfg.key, "signal": cfg.selection[0], "keep": cfg.selection[1],
+                     "selection_primary": sel, "vs_reference": sel - ref_sel, "n_seeds": len(cfg.rows),
+                     "acquisition": acq, "passes_acquisition_gate": acq <= limit})
+    for signal in sorted({r["signal"] for r in rows}):
+        options = [r for r in rows if r["signal"] == signal and r["passes_acquisition_gate"]]
+        best = max(options, key=lambda r: r["selection_primary"], default=None)
+        for r in rows:
+            if r["signal"] == signal:
+                r["promoted"] = r is best
+    return sorted(rows, key=lambda r: (r["signal"], r["keep"]))
 
 
 def pareto(configs: dict[str, Config], half: Half) -> list[str]:
@@ -397,6 +449,10 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     pre-registered tests on the report half (PREREG 3, 5, 6, 7)."""
     statuses = {s: sum(r.status == s for r in rows) for s in ("finished", "failed", "invalid")}
     finished = [r for r in rows if r.status == "finished"]
+    # selection variants are their own family (PREREG 6.3b), not a seventh factor of the fit
+    design_rows = [r for r in finished if selection_of(r.spec) is None and is_design_spec(r.spec)]
+    in_factorial = set(factorial())
+    factorial_rows = [r for r in design_rows if frozenset(r.spec.technique_names()) in in_factorial]
     configs = group(finished)
     base, ref = find(configs, NO_MITIGATION), find(configs, REFERENCE)
     sigma_sel = noise_sd(base, "selection") if base else None
@@ -410,15 +466,23 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         "noise_floor": {"config": base.label if base else None, "n_seeds": len(base.rows) if base else 0,
                         "sigma_selection": sigma_sel},
         "reference": ref.label if ref else None,
+        "off_design_rows": sorted(r.spec.name for r in finished if not is_design_spec(r.spec)),
+        # PREREG 7: six main effects plus replay x lr_rewarm, which the reference halves make estimable
         "effects_retention_selection": fit_effects(
-            finished, lambda r: r.retention.selection.mean_delta, sigma=sigma_sel),
+            design_rows, lambda r: r.retention.selection.mean_delta, sigma=sigma_sel,
+            interactions=[[("lr_rewarm", "replay")]]),
+        # exploratory: one contrast per alias chain of the factorial (PREREG 6.2), factorial runs only
+        "alias_chains_retention_selection": fit_effects(
+            factorial_rows, lambda r: r.retention.selection.mean_delta, sigma=sigma_sel,
+            interactions=alias_chains()),
         "acquisition_measure": {
             "own_boundary": sum(r.acquisition.mean_own_boundary_ppl_ratio is not None for r in finished),
             "final_fallback": sum(r.acquisition.mean_own_boundary_ppl_ratio is None for r in finished),
         },
         "effects_log_acquisition": fit_effects(
-            finished, lambda r: math.log(acquisition_of(r)), sigma=None),
+            design_rows, lambda r: math.log(acquisition_of(r)), sigma=None),
         "promotion": promote(configs, ref),
+        "selection_screen": promote_selection(configs, ref),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),
     }
@@ -432,6 +496,13 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     adj = holm({name: b["p"] for name, b in boots.items()})
     out["confirmatory"] = [decide(configs[k], ref, boots[configs[k].label], adj[configs[k].label], sigma_rep)
                            for k in promoted]
+    sel_promoted = [d["key"] for d in out["selection_screen"] if d.get("promoted")]
+    sel_boots = {configs[k].label: paired_bootstrap(configs[k], ref, "report", n_boot, seed, items)
+                 for k in sel_promoted}
+    sel_adj = holm({name: b["p"] for name, b in sel_boots.items()})
+    out["confirmatory_selection"] = [
+        decide(configs[k], ref, sel_boots[configs[k].label], sel_adj[configs[k].label], sigma_rep)
+        for k in sel_promoted]
     sanity = paired_bootstrap(ref, base, "report", n_boot, seed, items)
     out["sanity_reference_vs_no_mitigation"] = {k: sanity[k] for k in ("delta", "lo", "hi", "p", "n_pairs", "mode")}
     out["pareto_report"] = pareto(configs, "report")
@@ -452,21 +523,40 @@ def check_planted(report: dict[str, Any], planted: dict[str, Any]) -> list[dict[
                 e = eff[name]
                 checks.append({"fit": fit_key, "effect": name, "planted": value, "estimate": e["estimate"],
                                "lo": e["lo"], "hi": e["hi"], "inside": e["lo"] <= value <= e["hi"]})
-    eff = report["effects_retention_selection"]["effects"]
     planted_pairs = {"×".join(sorted(k.split("+"))): v for k, v in planted["retention_interactions"].items()}
-    for name, e in eff.items():
-        if "×" in name:
-            value = planted_pairs.get(name, 0.0)
-            checks.append({"fit": "effects_retention_selection", "effect": name, "planted": value,
+    for fit_key in ("effects_retention_selection", "alias_chains_retention_selection"):
+        for name, e in report[fit_key]["effects"].items():
+            if "×" not in name:
+                continue
+            # an aliased estimate is the sum of every effect in its chain
+            value = sum(planted_pairs.get(n, 0.0) for n in [name, *e.get("aliased_with", [])])
+            checks.append({"fit": fit_key, "effect": name, "planted": value,
                            "estimate": e["estimate"], "lo": e["lo"], "hi": e["hi"],
                            "inside": e["lo"] <= value <= e["hi"]})
     return checks
 
 
+def check_planted_selection(rows: list[ResultRow], planted: dict[str, Any], n_boot: int = 4000,
+                            seed: int = 0) -> list[dict[str, Any]]:
+    """Fake rows only: each replicated selection variant against the reference arm, on the
+    selection half, compared with its planted effect."""
+    configs = group(rows)
+    ref = find(configs, REFERENCE)
+    checks = []
+    for cfg in configs.values():
+        if cfg.selection is None or len(set(cfg.seeds) & set(ref.seeds)) < 2:
+            continue
+        b = paired_bootstrap(cfg, ref, "selection", n_boot, seed, items=None)
+        value = planted["retention_selection_effects"][f"{cfg.selection[0]}/{cfg.selection[1]}"]
+        checks.append({"fit": "selection_vs_reference", "effect": cfg.label, "planted": value,
+                       "estimate": b["delta"], "lo": b["lo"], "hi": b["hi"], "inside": b["lo"] <= value <= b["hi"]})
+    return checks
+
+
 def to_markdown(report: dict[str, Any]) -> str:
     """A short human summary of `analyze`'s output."""
-    pct = lambda v: "—" if v is None else f"{100 * v:+.2f}"  # noqa: E731
-    pts = lambda v: "—" if v is None else f"{100 * v:.2f}"  # noqa: E731
+    pct = lambda v: "—" if v is None else f"{100 * v:+.2f}"
+    pts = lambda v: "—" if v is None else f"{100 * v:.2f}"
     lines = ["# Grid analysis\n", f"Halves read: {', '.join(report['halves_read'])}\n",
              f"Rows: {report['rows']}\n"]
     nf = report["noise_floor"]
@@ -476,14 +566,29 @@ def to_markdown(report: dict[str, Any]) -> str:
     lines.append("## Retention effects (selection half, points)\n")
     lines.append("| Effect | Estimate | 95% CI |\n|---|---|---|")
     for name, e in report["effects_retention_selection"]["effects"].items():
-        lines.append(f"| {name} | {pct(e['estimate'])} | {pct(e['lo'])} to {pct(e['hi'])} |")
+        alias = f" (= {' = '.join(e['aliased_with'])})" if e.get("aliased_with") else ""
+        lines.append(f"| {name}{alias} | {pct(e['estimate'])} | {pct(e['lo'])} to {pct(e['hi'])} |")
     if report["effects_retention_selection"]["dropped"]:
         lines.append(f"\nNot estimable from these rows: {', '.join(report['effects_retention_selection']['dropped'])}\n")
+    chains = {k: v for k, v in report["alias_chains_retention_selection"]["effects"].items() if "×" in k}
+    if chains:
+        lines.append("\n### Interaction chains (exploratory; each estimate is the sum of its chain)\n")
+        lines.append("| Chain | Estimate | 95% CI |\n|---|---|---|")
+        for name, e in chains.items():
+            lines.append(f"| {' = '.join([name, *e['aliased_with']])} | {pct(e['estimate'])} | {pct(e['lo'])} to {pct(e['hi'])} |")
+    if report.get("off_design_rows"):
+        lines.append(f"\nOff-design rows, not in the fits or promotion: {', '.join(report['off_design_rows'])}\n")
     lines.append("\n## Promotion (selection half)\n")
     lines.append("| Rank | Config | Selection primary | Acq. ratio | Gate | Promoted |\n|---|---|---|---|---|---|")
     for d in report["promotion"]:
         lines.append(f"| {d['rank']} | {d['config']} | {pct(d['selection_primary'])} | {d['acquisition']:.3f} | "
                      f"{'pass' if d['passes_acquisition_gate'] else 'fail'} | {'yes' if d['promoted'] else ''} |")
+    if report.get("selection_screen"):
+        lines.append("\n## Selection on replay (selection half, against the reference arm)\n")
+        lines.append("| Config | Δ vs reference | Seeds | Gate | Promoted |\n|---|---|---|---|---|")
+        for d in report["selection_screen"]:
+            lines.append(f"| {d['config']} | {pct(d['vs_reference'])} | {d['n_seeds']} | "
+                         f"{'pass' if d['passes_acquisition_gate'] else 'fail'} | {'yes' if d.get('promoted') else ''} |")
     if "confirmatory" in report:
         lines.append("\n## Confirmatory tests vs the reference arm (report half)\n")
         lines.append("| Config | Seeds | Δ | 95% CI | p (Holm) | > 2σ | Acq. gate | Beats reference |\n"
@@ -493,6 +598,14 @@ def to_markdown(report: dict[str, Any]) -> str:
             lines.append(f"| {d['config']} | {seeds} | {pct(d['delta'])} | {pct(d['ci'][0])} to {pct(d['ci'][1])} | "
                          f"{d['p_holm']:.3f} | {'yes' if d['rule2_large_enough'] else 'no'} | "
                          f"{'pass' if d['rule3_learns_enough'] else 'fail'} | **{'yes' if d['beats_reference'] else 'no'}** |")
+        if report.get("confirmatory_selection"):
+            lines.append("\n### Selection family (Holm across signals)\n")
+            lines.append("| Config | Seeds | Δ | 95% CI | p (Holm) | > 2σ | Beats reference |\n|---|---|---|---|---|---|---|")
+            for d in report["confirmatory_selection"]:
+                seeds = f"{d['n_pairs']}" + ("" if d["enough_seeds"] else " (too few)")
+                lines.append(f"| {d['config']} | {seeds} | {pct(d['delta'])} | {pct(d['ci'][0])} to {pct(d['ci'][1])} | "
+                             f"{d['p_holm']:.3f} | {'yes' if d['rule2_large_enough'] else 'no'} | "
+                             f"**{'yes' if d['beats_reference'] else 'no'}** |")
         s = report["sanity_reference_vs_no_mitigation"]
         lines.append(f"\nSanity, reference vs no-mitigation: Δ = {pct(s['delta'])} "
                      f"({pct(s['lo'])} to {pct(s['hi'])}), {s['mode']} bootstrap over {s['n_pairs']} seeds.")

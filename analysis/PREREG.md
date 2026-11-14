@@ -23,9 +23,12 @@ per-domain LR re-warm, Ibrahim et al. 2024)? And do they do it without learning 
 less?
 
 **Confirmatory claims** are tested under the rules below. They are limited to:
-1. The three configurations promoted from screening (section 6.3), each against the reference
-   arm.
-2. The reference arm against no-mitigation. This is a sanity check that the reference arm
+1. The three configurations promoted from the factorial screen (section 6.3), each against the
+   reference arm.
+2. The two selection signals promoted from the selection screen (section 6.3b), each against
+   the reference arm with random selection. This is a separate family with its own Holm
+   correction.
+3. The reference arm against no-mitigation. This is a sanity check that the reference arm
    works on this bench.
 
 Everything else is **exploratory**: the screening effects, the interactions, the second task
@@ -44,10 +47,20 @@ claimed as wins.
 - **Reference arm:** `replay` (5% of general text) plus `lr_rewarm` (per-domain warmup and
   decay). Its parameters are fixed by B1 before the freeze. They are not tuned on the report
   half.
-- **Techniques screened** (factor names match the result-row technique names): `replay`,
-  `lr_rewarm`, `lora`, `freeze`, `distill`, `wavg` and `select`. Each one's parameters are
-  fixed at one level for the screen, recorded in `TECHNIQUES.md` by B, and frozen with this
-  file.
+- **Techniques screened** (names match workstream 3's plugins): `replay`, `lr_rewarm`, `lora`,
+  `freeze`, `distill` and `wavg`.
+  - Each technique's parameters are fixed at one level, given in `PARAMS` in
+    `src/clharness/analysis/design.py`. They match the specs in `configs/bench/specs/` and are
+    frozen with this file.
+  - Rows whose parameters differ from these are **off-design**: they are counted and flagged,
+    but left out of the fits and of promotion.
+- **Selection is a parameter of `replay`,** not a seventh technique (`docs/TECHNIQUES.md`,
+  decision 2, confirmed here).
+  - It chooses among *replay candidates*: replay draws `pool` = 4 candidates per row it needs,
+    scores them, and keeps the ones the signal ranks highest (`keep: high`) or lowest
+    (`keep: low`).
+  - `select: random` is plain replay and the control.
+  - Selection is screened in its own block (6.2) and tested as its own family (6.3b).
 
 ## 3. Item split (decided)
 
@@ -124,63 +137,86 @@ fell short. That is a pre-registered outcome, not a failure.
   recorded too.
 - These runs finish before the grid launches.
 
-### 6.2 Screening (decided): 2⁷⁻³ fractional factorial, 16 runs, seed 0
+### 6.2 Screening (decided): 2⁶⁻² factorial, plus the reference halves and selection; 22 runs at seed 0
 
-- **Generators:** distill = replay·lr_rewarm·lora, wavg = lr_rewarm·lora·freeze,
-  select = replay·lora·freeze.
+The design is code: `src/clharness/analysis/design.py` (`screen()` builds all 22 specs).
+`tests/test_design.py` checks three things: the design is resolution IV, both controls are runs
+of it, and every spec is accepted by the real plugins.
+
+**Block 1, factorial (16 runs).**
+- A 2⁶⁻² over the six techniques, with generators distill = replay·lr_rewarm·lora and
+  wavg = replay·lr_rewarm·freeze.
 - **Resolution IV:** no main effect is aliased with a pairwise interaction.
-- **Plus one control,** the reference arm. It is not one of the 16 runs, so the total is
-  **17 runs**. Run S01 (all off) is no-mitigation at seed 0, shared with the noise floor.
+- Among the resolution IV choices, these generators put **both controls inside the design**:
+  F01 is no-mitigation (shared with noise-floor seed 0) and F02 is the reference arm.
 
-| Run | replay | lr_rewarm | lora | freeze | distill | wavg | select |
+**Block 2, reference halves (2 runs).** `replay` alone and `lr_rewarm` alone. With F01 and F02
+they complete the 2×2 of the reference recipe. That makes replay × lr_rewarm estimable, even
+though the factorial aliases it with lora × distill and freeze × wavg.
+
+| Run | replay | lr_rewarm | lora | freeze | distill | wavg | Note |
 |---|---|---|---|---|---|---|---|
-| S01 | · | · | · | · | · | · | · |
-| S02 | on | on | · | on | · | · | · |
-| S03 | · | · | on | on | on | · | · |
-| S04 | on | · | on | · | · | on | · |
-| S05 | · | on | · | · | on | on | · |
-| S06 | · | on | on | · | · | · | on |
-| S07 | on | · | · | · | on | · | on |
-| S08 | · | · | · | on | · | on | on |
-| S09 | on | on | on | · | on | · | · |
-| S10 | · | on | on | on | · | on | · |
-| S11 | on | · | · | on | on | on | · |
-| S12 | on | · | on | on | · | · | on |
-| S13 | · | on | · | on | on | · | on |
-| S14 | on | on | · | · | · | on | on |
-| S15 | · | · | on | · | on | on | on |
-| S16 | on | on | on | on | on | on | on |
-| REF | on | on | · | · | · | · | · |
+| F01 | · | · | · | · | · | · | no-mitigation (noise-floor seed 0) |
+| F02 | · | · | on | · | on | · |  |
+| F03 | · | · | · | on | · | on |  |
+| F04 | on | on | · | · | · | · | reference arm |
+| F05 | · | on | · | on | on | · |  |
+| F06 | on | · | · | on | on | · |  |
+| F07 | · | on | · | · | on | on |  |
+| F08 | on | · | · | · | on | on |  |
+| F09 | · | on | on | on | · | · |  |
+| F10 | on | · | on | on | · | · |  |
+| F11 | · | on | on | · | · | on |  |
+| F12 | on | · | on | · | · | on |  |
+| F13 | · | · | on | on | on | on |  |
+| F14 | on | on | on | · | on | · |  |
+| F15 | on | on | · | on | · | on |  |
+| F16 | on | on | on | on | on | on |  |
+| H1 | on | · | · | · | · | · | half of the reference recipe |
+| H2 | · | on | · | · | · | · | half of the reference recipe |
 
-**Pairwise interactions are aliased in groups of three.** The screen cannot separate the
-interactions within a group:
+The interactions are aliased in 7 chains. The factorial alone cannot separate the pairs within
+a chain:
 
-| Alias group |
+| Alias chain |
 |---|
-| replay×lr_rewarm = lora×distill = wavg×select |
-| replay×lora = lr_rewarm×distill = freeze×select |
-| replay×freeze = lora×select = distill×wavg |
-| replay×distill = lr_rewarm×lora = freeze×wavg |
-| replay×wavg = lr_rewarm×select = freeze×distill |
-| replay×select = lr_rewarm×wavg = lora×freeze |
-| lr_rewarm×freeze = lora×wavg = distill×select |
+| distill×freeze = lora×wavg |
+| distill×lora = freeze×wavg = lr_rewarm×replay |
+| distill×lr_rewarm = lora×replay |
+| distill×replay = lora×lr_rewarm |
+| distill×wavg = freeze×lora |
+| freeze×lr_rewarm = replay×wavg |
+| freeze×replay = lr_rewarm×wavg |
 
-The reference arm's own interaction (replay × lr_rewarm) shares a group with lora × distill and
-wavg × select. Any interaction claim needs a follow-up run that separates its group (6.4).
+**Block 3, selection on replay (4 runs).** The reference arm with `select` set to `loss` or
+`act_nov` (`layer` 13 for act_nov), each with `keep: high` and `keep: low`. The control is F02,
+the same arm with random selection.
 
 **Known couplings:**
 - `lora` with `freeze`: LoRA adapters only on the unfrozen layers.
-- `wavg` with `lora`: averaging the adapter toward zero.
-- `select` acts on new-domain examples.
+- `wavg` with `lora`: averaging the adapter factors toward zero.
 
-These are documented in `TECHNIQUES.md`. The factorial treats them as on/off factors anyway.
+These are documented in `docs/TECHNIQUES.md`. The factorial treats them as on/off factors
+anyway.
+
+Specs that match the committed `no-mitigation-s0`, `reference-s0`, `replay-only-s0` and
+`rewarm-only-s0` have the same spec hash, so those runs are shared and never repeated.
 
 ### 6.3 Replication (decided)
-- Promote the **top 3 configurations**, ranked on the *selection-half* primary outcome
-  among the screening runs that pass rule 3 on the selection half.
+- Promote the **top 3 configurations** from the factorial, ranked on the *selection-half*
+  primary outcome. Only runs that pass rule 3 (acquisition) are eligible. The controls, the
+  reference halves, selection variants and off-design rows are not candidates.
 - Run these 3, the reference arm and no-mitigation at **3 seeds each (0, 1, 2)**, paired by
-  seed. Seed 0 reuses the screening and noise-floor runs. That makes **10 new runs**.
+  seed. Seed 0 reuses the screening and noise-floor runs. That makes at most **10 new runs**.
 - The agent applies this rule mechanically, and its decision log shows the ranking it used.
+
+### 6.3b Selection family (decided)
+- For each signal (`loss`, `act_nov`), promote the `keep` direction with the better
+  selection-half outcome, if it passes rule 3.
+- Run both promoted variants at seeds 1 and 2 (4 new runs). Each is compared with the reference
+  arm at the same seeds.
+- The two comparisons form their own family, with its own Holm correction. The question is
+  whether a model-internal signal chooses better replay examples than chance.
 
 ### 6.4 Follow-ups (exploratory)
 If time remains, the agent may run one fold-over or targeted pair to separate one alias group
@@ -195,13 +231,23 @@ If time remains, the agent may run one fold-over or targeted pair to separate on
   3. Recompute the per-task means and then the 4-task mean.
 
   Report the percentile 95% interval.
-- **Multiplicity (decided):** apply Holm–Bonferroni across the confirmatory family, which is
-  the 3 promoted configurations vs the reference arm at α = 0.05. The reference-vs-no-mitigation
-  sanity check is reported on its own. Screening effects are exploratory: intervals, no
-  p-values.
-- **Screening attribution (exploratory):** an OLS fit of the selection-half primary outcome on
-  the 7 factors (±1 coding). That gives main effects, plus the 7 alias-group contrasts. Intervals
-  use σ_noise as the known residual SD, because the screen is unreplicated.
+- **Multiplicity (decided):** apply Holm–Bonferroni within each confirmatory family at α = 0.05:
+  - the 3 promoted configurations vs the reference arm;
+  - the 2 selection signals vs the reference arm.
+
+  The reference-vs-no-mitigation sanity check is reported on its own. Screening effects are
+  exploratory: intervals, no p-values.
+- **Screening attribution (exploratory):** least squares of the selection-half primary outcome
+  on 0/1 technique indicators, over the design rows (factorial, halves and replications; not
+  selection variants or off-design rows):
+  - **Main fit:** the 6 main effects plus replay × lr_rewarm, which the halves make estimable.
+    A coefficient reads as "what switching this on changes".
+  - **Chain fit:** on the factorial runs only, the 6 main effects plus one column per alias
+    chain. Each chain estimate is the sum of the pairs in its chain, and it is reported with
+    all of their names.
+  - Intervals use the residual SD when there are spare degrees of freedom, otherwise σ_noise.
+- **Selection screen:** each selection variant's selection-half outcome minus the reference
+  arm's.
 - **Fake-row check:** before the grid launches, the analysis must recover the planted effects in
   `results/fake/planted_effects.json` within their intervals.
 
@@ -321,13 +367,23 @@ end-of-stream ratio stays as a secondary outcome.
 | Both strata | Balances difficulty and answer mix | Some cells are tiny; more code |
 | Plain seeded random | Simplest | Halves can differ by about 2–3 points by chance |
 
-### A5. Screening design: **decided**, 2⁷⁻³ (16 runs)
+### A5. Screening design: **decided**, 2⁶⁻² factorial + reference halves + selection block (22 runs)
+Revised on 2026-11-14, before the freeze. Workstream 3 built selection as a parameter of
+`replay` (`docs/TECHNIQUES.md`, decision 2), not as a technique named `select`. In the first
+design (2⁷⁻³ over 7 factors), several runs switched selection on without replay, which cannot
+run.
+
 | Option | Pros | Cons |
 |---|---|---|
-| **2⁷⁻³ resolution IV, 16 runs (chosen)** | Every main effect is clean of pairwise interactions; about $40; fits one night | Pairs are aliased in groups of 3; interactions need follow-ups |
-| Plackett–Burman, 12 runs | Cheapest | Main effects partly mixed with interactions; weak for an interactions claim |
-| One-at-a-time, 8 runs | Simplest to explain | No interactions; loses the novelty angle |
-| 2⁷⁻², 32 runs | More interactions separable | 2× the cost; may not fit overnight |
+| **2⁶⁻² + halves + selection block, 22 runs (chosen)** | Resolution IV over the real techniques. Both controls are runs of the design. The halves make the reference interaction estimable. Selection is tested where it exists, on replay. About $26 at $1.20 per run | 7 alias chains (pairs within a chain need follow-ups); two families to correct |
+| 2⁷⁻³ with `select` as a factor, 17 runs (the first design) | One design for everything | Runs with selection but no replay can't exist; the reference interaction was aliased in a chain of 3 |
+| 2⁶⁻¹ resolution VI, 32 runs | Every pair separable | 2× the runs; still needs the selection block |
+| One-at-a-time + selection, 11 runs | Simplest | No interactions at all; loses the novelty angle |
+
+**Replay candidates vs new-domain candidates** (confirming decision 2): replay candidates were
+chosen. Selection then composes with the reference arm, random selection is exactly plain
+replay (a free control), and scoring costs about 20% extra forward tokens. New-domain selection
+would need a change to the shared loop's accumulation.
 
 ### A6. Seed policy: **decided**, top 3 plus controls at 3 seeds
 | Option | Pros | Cons |

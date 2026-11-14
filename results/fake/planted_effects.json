@@ -7,8 +7,7 @@
     "lora": 0.03,
     "freeze": 0.01,
     "distill": 0.02,
-    "wavg": 0.012,
-    "select": 0.0
+    "wavg": 0.012
   },
   "retention_interactions": {
     "distill+replay": -0.012,
@@ -18,10 +17,15 @@
     "replay": 0.01,
     "lr_rewarm": -0.01,
     "lora": 0.09,
-    "freeze": 0.04,
-    "distill": 0.03,
-    "wavg": 0.05,
-    "select": 0.0
+    "freeze": 0.02,
+    "distill": 0.01,
+    "wavg": 0.03
+  },
+  "retention_selection_effects": {
+    "loss/high": 0.004,
+    "loss/low": -0.002,
+    "act_nov/high": 0.012,
+    "act_nov/low": -0.006
   },
   "seed_noise_sd": 0.006,
   "item_noise_sd": 0.012

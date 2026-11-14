@@ -386,13 +386,14 @@ def cmd_grid_analysis(args) -> int:
     """Cross-run analysis per analysis/PREREG.md. Selection half only, unless --confirmatory."""
     import json
 
-    from clharness.analysis.attribution import analyze, check_planted, write
+    from clharness.analysis.attribution import analyze, check_planted, check_planted_selection, write
     from clharness.spec import read_rows
 
     rows = [r for path in args.files for r in read_rows(path)]
     report = analyze(rows, confirmatory=args.confirmatory, n_boot=args.n_boot, seed=args.seed)
     if args.planted:
-        checks = check_planted(report, json.loads(Path(args.planted).read_text()))
+        planted = json.loads(Path(args.planted).read_text())
+        checks = check_planted(report, planted) + check_planted_selection(rows, planted)
         report["planted_check"] = checks
         inside = sum(c["inside"] for c in checks)
         print(f"planted effects inside their 95% interval: {inside}/{len(checks)}")

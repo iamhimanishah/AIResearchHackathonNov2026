@@ -451,9 +451,12 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
   `clh grid-analysis results/fake/rows.jsonl --planted results/fake/planted_effects.json`.
   Add `--confirmatory` only after replication is finished. Tests are in
   `tests/test_attribution.py`.
-  - On the fake rows, 19 of 21 planted effects fall inside their 95% interval: all 7 retention
-    main effects and both planted pairs. The 2 misses are acquisition effects, about what
-    chance predicts.
+  - The screen is code in `src/clharness/analysis/design.py`: a 2⁶⁻² factorial, the two
+    reference halves, and 4 selection-on-replay runs, 22 specs in all. Selection is a replay
+    parameter (TECHNIQUES decision 2). See PREREG 6.2 and A5.
+  - On the fake rows, which follow that design, all 22 planted effects fall inside their 95%
+    interval. That covers 6 main effects, the reference interaction, both planted pairs (read
+    through their alias chains), 6 acquisition effects and the selection effects.
   - When per-item files are missing, the item level of the bootstrap falls back to parametric
     noise. That gives wider, conservative intervals. On real rows it resamples items from
     `items_path`.
