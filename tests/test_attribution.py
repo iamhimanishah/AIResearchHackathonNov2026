@@ -1,0 +1,127 @@
+"""C2 analysis on fake rows: it must recover the planted effects, keep the report half closed
+unless asked, and apply the PREREG decision rule exactly."""
+
+import math
+
+import pytest
+
+from clharness.analysis import attribution as A
+from clharness.fake import PLANTED, fake_rows
+
+
+@pytest.fixture(scope="module")
+def rows():
+    return fake_rows(seed=0)
+
+
+@pytest.fixture(scope="module")
+def screening(rows):
+    return A.analyze(rows, confirmatory=False, n_boot=500)
+
+
+@pytest.fixture(scope="module")
+def confirmatory(rows):
+    return A.analyze(rows, confirmatory=True, n_boot=2000)
+
+
+def test_retention_main_effects_and_planted_pairs_are_recovered(screening):
+    checks = A.check_planted(screening, PLANTED)
+    retention = [c for c in checks if c["fit"] == "effects_retention_selection"]
+    mains = [c for c in retention if "×" not in c["effect"]]
+    assert {c["effect"] for c in mains} == set(PLANTED["retention_main_effects"])
+    assert all(c["inside"] for c in mains), [c for c in mains if not c["inside"]]
+    pairs = {c["effect"]: c for c in retention if "×" in c["effect"]}
+    assert pairs["distill×replay"]["inside"] and pairs["lora×replay"]["inside"]
+
+
+def test_most_planted_effects_overall_are_recovered(screening):
+    checks = A.check_planted(screening, PLANTED)
+    # 95% intervals: about 1 in 20 misses by chance; require at least 85% inside
+    assert sum(c["inside"] for c in checks) >= math.ceil(0.85 * len(checks))
+
+
+def test_screening_never_reads_the_report_half(screening):
+    assert screening["halves_read"] == ["selection"]
+    assert "confirmatory" not in screening and "sigma_report" not in screening["noise_floor"]
+    assert all("report" not in k for k in screening)
+
+
+def test_failed_and_invalid_rows_are_excluded_and_listed(rows, screening):
+    assert screening["rows"]["failed"] == 2 and screening["rows"]["invalid"] == 1
+    used = sum(len(c.rows) for c in A.group(rows).values())
+    assert used == screening["rows"]["finished"]
+    assert {d["status"] for d in screening["not_finished"]} == {"failed", "invalid"}
+
+
+def test_answer_collapse_is_flagged_but_kept(rows, screening):
+    """PREREG A9 (decided): flag a task above 0.90 answer share, keep the run in the analysis."""
+    collapsed = [r for r in rows if max(r.answer_share.values(), default=0) > A.COLLAPSE_SHARE]
+    assert len(collapsed) == 2 and all(r.status == "finished" for r in collapsed)
+    assert set(screening["collapse_flags"]) == {r.spec.name for r in collapsed}
+    assert all(flags == ["pubmedqa_pqal"] for flags in screening["collapse_flags"].values())
+    used = {r.spec.name for c in A.group(rows).values() for r in c.rows}
+    assert {r.spec.name for r in collapsed} <= used
+
+
+def test_noise_floor_is_the_sd_over_no_mitigation_seeds(rows, screening):
+    base = A.find(A.group(rows), A.NO_MITIGATION)
+    assert len(base.rows) == 5
+    assert screening["noise_floor"]["sigma_selection"] == pytest.approx(A.noise_sd(base, "selection"))
+
+
+def test_promotion_respects_the_acquisition_gate(screening):
+    promoted = [d for d in screening["promotion"] if d["promoted"]]
+    assert len(promoted) == 3
+    assert all(d["passes_acquisition_gate"] for d in promoted)
+    labels = {d["config"] for d in screening["promotion"]}
+    assert "no-mitigation" not in labels and "lr_rewarm+replay" not in labels
+
+
+def test_parameter_variants_get_readable_labels(rows):
+    labels = {c.label for c in A.group(rows).values()}
+    assert {"replay+select[select.signal=random]", "replay+select[select.signal=loss]",
+            "replay+select[select.signal=act_nov]"} <= labels
+
+
+def test_confirmatory_needs_three_paired_seeds(confirmatory):
+    for d in confirmatory["confirmatory"]:
+        if d["n_pairs"] < A.MIN_PAIRS:
+            assert not d["enough_seeds"] and not d["beats_reference"]
+
+
+def test_reference_beats_no_mitigation_in_the_sanity_check(confirmatory):
+    s = confirmatory["sanity_reference_vs_no_mitigation"]
+    # planted: replay 0.025 + lr_rewarm 0.008, and no planted interaction between them
+    # (only distill+replay and lora+replay interact), so the reference gains 0.033
+    assert s["lo"] > 0 and s["delta"] == pytest.approx(0.033, abs=0.015)
+
+
+def test_paired_bootstrap_identical_arms_include_zero(rows):
+    cfg = A.find(A.group(rows), A.REFERENCE)
+    b = A.paired_bootstrap(cfg, cfg, "selection", n_boot=1000)
+    assert b["delta"] == 0 and b["lo"] <= 0 <= b["hi"]
+
+
+def test_holm_matches_hand_computation():
+    adj = A.holm({"a": 0.01, "b": 0.04, "c": 0.03})
+    assert adj["a"] == pytest.approx(0.03)  # 3 x 0.01
+    assert adj["c"] == pytest.approx(0.06)  # 2 x 0.03
+    assert adj["b"] == pytest.approx(0.06)  # max(0.06, 1 x 0.04): step-down stays monotone
+
+
+def test_decision_rule_needs_all_three_parts(rows):
+    configs = A.group(rows)
+    ref = A.find(configs, A.REFERENCE)
+    x = A.find(configs, frozenset({"lora", "replay"}))  # replicated at 3 seeds in the fake data
+    boot = {"delta": 0.05, "lo": 0.02, "hi": 0.08, "p": 0.001, "mode": "parametric", "n_pairs": 3}
+    d = A.decide(x, ref, boot, p_adj=0.003, sigma=0.006)
+    # lora+replay learns less than 1.05 x the reference arm, so rule 3 fails it
+    assert d["rule1_significant"] and d["rule2_large_enough"] and not d["rule3_learns_enough"]
+    assert not d["beats_reference"]
+    d = A.decide(ref, ref, boot, p_adj=0.003, sigma=0.03)  # 0.05 < 2 x 0.03: too small
+    assert not d["rule2_large_enough"] and not d["beats_reference"]
+
+
+def test_markdown_renders(confirmatory):
+    md = A.to_markdown(confirmatory)
+    assert "Confirmatory tests" in md and "Failed and invalid runs" in md

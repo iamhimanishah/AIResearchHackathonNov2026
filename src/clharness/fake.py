@@ -178,14 +178,10 @@ def _failed(spec: RunSpec, reason: str) -> ResultRow:
 
 
 def _collapsed(spec: RunSpec, rng: random.Random) -> ResultRow:
-    """A run that finished but answers one option almost every time on PubMedQA."""
+    """A run that finished but answers one option almost every time on PubMedQA. It stays
+    `finished`: the analysis flags collapse from `answer_share` (analysis/PREREG.md, A9)."""
     row = _finished(spec, rng)
-    share = {**row.answer_share, "pubmedqa_pqal": 0.97}
-    return row.model_copy(update={
-        "status": "invalid",
-        "reason": "answer collapse on pubmedqa_pqal: most common answer share 0.97 > 0.90",
-        "answer_share": share,
-    })
+    return row.model_copy(update={"answer_share": {**row.answer_share, "pubmedqa_pqal": 0.97}})
 
 
 def fake_rows(seed: int = 0) -> list[ResultRow]:
@@ -216,4 +212,7 @@ def fake_rows(seed: int = 0) -> list[ResultRow]:
     rows.append(_failed(_spec(("distill", "freeze"), 0), "out of memory in the teacher forward"))
     rows.append(_collapsed(_spec(("distill",), 1, distill={"weight": 10.0}), rng))
     rows.append(_collapsed(_spec(("freeze", "lora"), 0), rng))
+    nan = _spec(("lora",), 0, lora={"rank": 512})
+    rows.append(ResultRow(spec=nan, spec_hash=nan.spec_hash(), git_sha="fake", status="invalid",
+                          reason="non-finite score or perplexity", backend="fake"))
     return rows
