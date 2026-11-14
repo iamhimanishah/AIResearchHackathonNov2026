@@ -145,3 +145,18 @@ def test_every_fake_row_names_real_techniques_with_valid_params():
 
     for row in fake_rows(0):
         build_hooks(row.spec.techniques)  # raises on an unknown technique or a bad parameter
+
+
+def test_remeasure_keeps_the_run_and_replaces_only_measurements(tmp_path):
+    from clharness.executor.run import remeasure_row
+    from clharness.fake import fake_rows
+
+    old = next(r for r in fake_rows(0) if r.status == "finished")
+    old = old.model_copy(update={"spec": old.spec.model_copy(update={
+        "stream": old.spec.stream[:1] + [old.spec.stream[1].model_copy(update={"name": "biomedical"})]})})
+    old = old.model_copy(update={"spec_hash": old.spec.spec_hash()})
+    new = remeasure_row(old, _run_dir(tmp_path))
+    assert (new.spec, new.cost, new.git_sha, new.spec_hash) == (old.spec, old.cost, old.git_sha, old.spec_hash)
+    assert new.acquisition.ppl_ratio == {"code": pytest.approx(0.8), "biomedical": pytest.approx(0.5)}
+    assert new.acquisition.own_boundary_ppl_ratio == {"code": pytest.approx(0.5), "biomedical": pytest.approx(0.5)}
+    assert new.retention.selection.mean_delta == pytest.approx(-0.5)

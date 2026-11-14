@@ -162,6 +162,40 @@ def run(spec_json: str, git_sha: str, gpu_type: str = DEFAULT_GPU) -> str:
     return line
 
 
+@app.function(cpu=2, memory=4096, timeout=900, **_common)
+def remeasure(spec_json: str) -> str:
+    """Recompute a finished run's row from its checkpoint files on the work volume. No GPU, no
+    training. Returns the new row as a JSON line, or a line starting "MISSING" if the run's
+    row or directory is not on the volume."""
+    from clharness.executor.run import remeasure_row, run_name
+    from clharness.spec import ResultRow, RunSpec, row_to_line
+
+    work_vol.reload()
+    spec = RunSpec.model_validate_json(spec_json)
+    row_file = Path(WORK) / "rows" / f"{spec.spec_hash()}.json"
+    run_dir = Path(WORK) / "runs" / run_name(spec)
+    if not row_file.exists() or not (run_dir / "checkpoints").exists():
+        return f"MISSING {spec.name} {spec.spec_hash()[:12]}: no saved row or run directory\n"
+    old = ResultRow.model_validate_json(row_file.read_text())
+    return row_to_line(remeasure_row(old, run_dir))
+
+
+@app.local_entrypoint()
+def remeasure_rows(specs: str, out: str):
+    """Re-measure comma-separated spec files' saved runs and append the new rows to `out`."""
+    texts = [Path(p).read_text() for p in specs.split(",") if p]
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    for line in remeasure.map(texts):
+        if line.startswith("MISSING"):
+            print(line.strip())
+            continue
+        with open(out_path, "a") as f:
+            f.write(line)
+        row = json.loads(line)
+        print(f"re-measured {row['spec']['name']} {row['spec_hash'][:12]} {row['status']}")
+
+
 @app.local_entrypoint()
 def data(force: bool = False):
     print(build_data.remote(force=force))

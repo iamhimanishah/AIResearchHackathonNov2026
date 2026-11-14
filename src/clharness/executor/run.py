@@ -115,3 +115,19 @@ def _train_and_measure(spec: RunSpec, gpu_type: str | None, output_dir: str | No
         est_usd=round(wall / 3600 * price, 2) if price else None,
     )
     return measured, cost, Path(trainer.out_dir)
+
+
+def remeasure_row(row: ResultRow, run_dir: str | Path) -> ResultRow:
+    """The same row with its measured parts recomputed from the run's saved checkpoint files.
+
+    For rows written by an older executor (another item split, fewer acquisition fields). Nothing
+    is retrained: spec, cost, commit and timestamps are kept, and only retention, acquisition,
+    the answer shares and the status are replaced."""
+    from clharness.executor.rows import measure_run
+
+    measured = measure_run(Path(run_dir), [d.name for d in row.spec.stream])
+    invalid = measured.pop("invalid_reason")
+    measured.pop("gradient_tokens")
+    data = row.model_dump()
+    data.update(status="invalid" if invalid else "finished", reason=invalid, **measured)
+    return ResultRow.model_validate(data)
