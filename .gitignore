@@ -13,7 +13,8 @@ __pycache__/
 #   clh build-data --set smoke                    (tiny fixture, also built by `make smoke`)
 #   clh build-data --set real --seq-len 1024      (~6.7 GB, verified against manifests/real.json)
 # manifests/smoke.json is generated next to the smoke fixture, so it is not tracked either.
-data/
+# Anchored with a leading slash: a bare `data/` also matched src/clharness/data/ (source code).
+/data/
 manifests/smoke.json
 
 # run outputs: scores, per-item files, configs and analysis ARE tracked so results survive the

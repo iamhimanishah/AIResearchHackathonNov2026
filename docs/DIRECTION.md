@@ -184,6 +184,52 @@ OpenAI $70.
 
 Never cut the reference arm, the noise floor, the decision log or the results page.
 
+### Task dependencies
+
+Read each row as "this task cannot finish until the tasks in *Needs* are done". A task
+with nothing upstream can start now. Each task's details, open questions and options to try
+are in [`TASKS.md`](TASKS.md).
+
+| ID | Task | Owner | Needs | Unblocks |
+|---|---|---|---|---|
+| A0 | Commit the missing `src/clharness/data/` package (ignore rule fixed; the files are still needed) | A | The original files from whoever built the harness | Every run: A5, A6, B sanity runs |
+| A1 | Run-spec and result-row formats, with fake rows | A | Team agrees the contract | A6, A7, C2, D1, D3 |
+| A2 | Pre-optimizer model hook | A | (nothing upstream) | B4 (LoRA, layer freezing) |
+| A3 | Loss-term hook | A | (nothing upstream) | B5 (distillation) |
+| A4 | Per-domain LR re-warm | A | (nothing upstream) | B1 (reference arm) |
+| A5 | Frozen fast bench config | A | One baseline run to confirm it | A6, B sanity runs, C3 |
+| A6 | Modal executor (fan-out, retries, budget guard) | A | A1, A5 | Sync point 1, then C3, D2 |
+| A7 | Tinker backend, same result row | A | A1 | C5 |
+| A8 | `make reproduce` | A | A6, C4 | Submission |
+| B1 | Reference arm: replay plus LR re-warm | B | A4, B2 | C1 decision rule, D2 grid, pitch |
+| B2 | Replay | B | (nothing upstream; smoke data is enough) | B1, B3 |
+| B3 | Selection: random and loss-based controls, then activation signal | B | B2 | Selection-signal test in the grid |
+| B4 | LoRA, then layer freezing | B | A2 | Grid |
+| B5 | Distillation from base | B | A3 | Grid |
+| B6 | Weight averaging | B | (nothing upstream) | Grid |
+| C1 | `analysis/PREREG.md` | C | B1 defined, C3 for the threshold | Sync point 2 (grid must not launch without it) |
+| C2 | Attribution math, bootstrap, cost ranking on fake rows | C | A1 | C4, D3 uncertainty display |
+| C3 | Noise floor: no-mitigation at 3 to 5 seeds | C | Sync point 1 | C1 threshold, D2 replication rule |
+| C4 | Analysis on real rows, pitch figures | C | Sync point 2 grid results, C2 | Sync point 3, A8, D5 video |
+| C5 | Second task sequence on Tinker | C | A7, sync point 1. The top-two-technique arms also need the screening results (Sunday morning) | Pitch backup slide |
+| D1 | Agent v1: plan, launch, read, decide, log | D | A1 (fake rows); A6 for real launches | Sync point 2, D4 |
+| D2 | Agent launches the screening grid | D | D1, A6, C1, C3, B1 plus at least four of B2 to B6 | Overnight grid, C4 |
+| D3 | Live results page | D | A1, C2 | D5 video, finals demo |
+| D4 | past.dev shared memory | D | D1, plus C's analysis agent writing to it | past.dev challenge |
+| D5 | Submission: video, description, challenges | D | D3, C4, A8 | Sync point 4 |
+| D6 | Exa in the main loop | D, B | Sync points 1 to 3 working, then B wraps the found technique | Exa challenge |
+
+**Critical path:** A0 → A1 → A5 → A6 → sync point 1 → C3 and B1 → C1 → D2 (grid overnight) →
+C4 → D3 → D5. Any slip on this chain moves the submission, so help the owner of the slipping
+task before starting off-path work.
+
+**Unblocked from the start:**
+- A: A2 to A4.
+- B: B2 and B6 on smoke data.
+- C and D: they start on fake rows as soon as A1 lands.
+
+A1 is the single biggest unblocker: do it first.
+
 Candidate techniques: replay, LoRA adapters, layer freezing, weight averaging, per-domain
 learning-rate re-warm, distillation from the base model, and example selection by an
 activation-based signal.
@@ -280,5 +326,6 @@ Target times are Pacific.
 - `README.md`: overview, quick start, what predates the hackathon.
 - `docs/hackathon-brief.md`: the official event brief, with access codes removed.
 - `docs/baselines.md`: the no-mitigation numbers and what the earlier runs showed.
+- `docs/TASKS.md`: one card per task, with steps, open questions and options to try.
 - `docs/harness.md`: harness reference.
 - `docs/background/`: literature review and field overviews.
