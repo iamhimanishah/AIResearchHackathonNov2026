@@ -39,9 +39,13 @@ def config_from_spec(spec: RunSpec, output_dir: str | None = None) -> RunConfig:
     raw["train"]["seed"] = spec.seed
     raw["data"]["domains"] = [d.model_dump() for d in spec.stream]
     raw["optim"].update(spec.optim)
+    raw["techniques"] = [t.model_dump() for t in spec.techniques]
     if output_dir is not None:
         raw["train"]["output_dir"] = output_dir
-    return RunConfig.model_validate(raw)
+    from clharness.techniques import apply_config_overrides
+
+    # last, so a technique's own settings win (lr_rewarm switches on the per-domain schedule)
+    return apply_config_overrides(RunConfig.model_validate(raw))
 
 
 def _now() -> str:
@@ -85,7 +89,7 @@ def _train_and_measure(spec: RunSpec, gpu_type: str | None, output_dir: str | No
     from clharness.train.measure import default_hooks
 
     cfg = config_from_spec(spec, output_dir)
-    technique_hooks = build_hooks(spec.techniques)
+    technique_hooks = build_hooks(cfg.techniques)
     run_dir = (REPO_ROOT / cfg.train.output_dir / cfg.name).resolve()
     if run_dir.exists():  # a retry or a rerun: never mix two attempts' files
         shutil.rmtree(run_dir)
@@ -107,6 +111,7 @@ def _train_and_measure(spec: RunSpec, gpu_type: str | None, output_dir: str | No
         gpu_type=gpu_type,
         update_bytes=trainable * 4,  # the trained parameters as an fp32 delta
         trainable_params=trainable,
+        extra_forward_tokens=int(trainer.ctx.state.get("extra_forward_tokens", 0)),
         est_usd=round(wall / 3600 * price, 2) if price else None,
     )
     return measured, cost, Path(trainer.out_dir)

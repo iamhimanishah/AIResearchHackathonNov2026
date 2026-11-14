@@ -9,7 +9,7 @@ from clharness.config import REPO_ROOT
 from clharness.executor.rows import half_indices, measure_run
 from clharness.executor.run import config_from_spec, run_name, run_spec
 from clharness.spec import RunSpec, load_spec
-from clharness.techniques import REGISTRY, build_hooks, register
+from clharness.techniques import build_hooks
 from clharness.train.measure import default_hooks
 
 SPECS = REPO_ROOT / "configs" / "bench" / "specs"
@@ -48,19 +48,17 @@ def test_unknown_bench_and_unknown_technique_become_failed_rows():
     assert row.status == "failed" and "unknown technique" in row.reason
 
 
-def test_registry_builds_hooks_in_order_with_params():
-    @register("_test_a")
-    class A:
-        def __init__(self, x: int = 1):
-            self.x = x
-
-    try:
-        spec = RunSpec(name="x", seed=0, stream=[{"name": "code", "tokens": 1}],
-                       techniques=[{"name": "_test_a", "params": {"x": 5}}])
-        (hook,) = build_hooks(spec.techniques)
-        assert isinstance(hook, A) and hook.x == 5
-    finally:
-        del REGISTRY["_test_a"]
+def test_techniques_reach_the_config_with_their_overrides():
+    spec = RunSpec(name="x", seed=0, stream=[{"name": "code", "tokens": 4096}],
+                   techniques=[{"name": "replay"}, {"name": "lr_rewarm"}])
+    assert spec.technique_names() == ["lr_rewarm", "replay"]  # sorted, so order never matters
+    flipped = RunSpec(name="x", seed=0, stream=[{"name": "code", "tokens": 4096}],
+                      techniques=[{"name": "lr_rewarm"}, {"name": "replay"}])
+    assert spec.spec_hash() == flipped.spec_hash()
+    cfg = config_from_spec(spec)
+    assert [t.name for t in cfg.techniques] == ["lr_rewarm", "replay"]
+    assert cfg.optim.schedule_scope == "per_domain"  # lr_rewarm's own config override
+    assert [h.name for h in build_hooks(cfg.techniques)] == ["lr_rewarm", "replay"]
 
 
 def test_halves_are_disjoint_stable_and_cover_everything():

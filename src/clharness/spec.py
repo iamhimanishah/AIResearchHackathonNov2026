@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -64,9 +64,16 @@ class RunSpec(_Strict):
     bench: str = "fast"  # which frozen bench config: configs/bench/<bench>.yaml
     stream: list[StreamDomain] = Field(min_length=1)  # domains in presentation order
     optim: dict[str, Any] = Field(default_factory=dict)  # overrides of the bench optimizer
-    techniques: list[TechniqueSpec] = Field(default_factory=list)  # applied in this order
+    # Stored sorted by name: the order techniques are listed in carries no meaning, so two
+    # orderings of one set are the same experiment and get the same hash.
+    techniques: list[TechniqueSpec] = Field(default_factory=list)
     notes: str = ""  # free text; not part of the hash
     parent_spec_hash: str | None = None  # the spec this one follows up on; not part of the hash
+
+    @field_validator("techniques")
+    @classmethod
+    def _sorted(cls, v: list[TechniqueSpec]) -> list[TechniqueSpec]:
+        return sorted(v, key=lambda t: t.name)
 
     @model_validator(mode="after")
     def _check(self) -> RunSpec:
