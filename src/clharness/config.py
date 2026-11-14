@@ -15,6 +15,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from clharness.spec import TechniqueSpec
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -146,6 +148,10 @@ class RunConfig(Strict):
     optim: OptimCfg
     train: TrainCfg
     wandb: WandbCfg
+    # Optional, and empty means no mitigation. It must keep its default because
+    # `clh reeval` re-validates the frozen pilot config.resolved.json files, which predate it.
+    # Same {name, params} entries as RunSpec.techniques, so a spec's list passes straight through.
+    techniques: tuple[TechniqueSpec, ...] = ()
 
     def dump(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

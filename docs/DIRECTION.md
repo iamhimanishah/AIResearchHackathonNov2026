@@ -118,7 +118,7 @@ Each has one owner and one deliverable. Put a name in the owner column when you 
 |---|---|---|---|
 | 1 | Bench core | The harness changes listed below, a frozen fast bench, and the run-spec and result-row formats | Member A |
 | 2 | Executor | One command that runs a spec on a cloud GPU and returns a result row; many in parallel | Member A |
-| 3 | Techniques | Each technique as a plugin with a sanity run, including example selection with random and loss-based controls, and the reference arm | Member B |
+| 3 | Techniques | Each technique as a plugin with a sanity run, including example selection with random and loss-based controls, and the reference arm | peter |
 | 4 | Design and analysis | Grid plan, noise floor, seed policy, attribution math, comparison against the reference arm | Member C |
 | 5 | Agent and page | The loop that launches and tracks runs, and the live results page | Member D |
 
@@ -138,7 +138,7 @@ Members A to D are placeholders: replace each with a name when someone claims th
 - Add a Tinker backend that emits the same result row.
 - Add `make reproduce`.
 
-**Member B: techniques (3).** In this order, each with a sanity run at matched gradient tokens:
+**Member B (peter): techniques (3).** In this order, each with a sanity run at matched gradient tokens:
 1. The reference arm (replay plus per-domain LR re-warm).
 2. Replay.
 3. Example selection: random and loss-based controls, then the activation-based signal.
@@ -244,7 +244,9 @@ team confirms them; once confirmed, change them only with everyone's agreement.
 - name and seed
 - stream: domains in order, tokens per domain
 - optimizer settings that differ from the bench default
-- techniques: which are on, with their parameters
+- techniques: which are on, with their parameters. In the harness config this is
+  `techniques: [{name, params}]`, optional, where an empty list means no mitigation. Each name
+  is a plugin in `src/clharness/techniques/`, which validates its own `params`
 
 **Result row** (output of one run):
 
@@ -337,4 +339,5 @@ Target times are Pacific.
 - `docs/baselines.md`: the no-mitigation numbers and what the earlier runs showed.
 - `docs/TASKS.md`: one card per task, with steps, open questions and options to try.
 - `docs/harness.md`: harness reference.
+- `docs/TECHNIQUES.md`: how a technique plugs in, the technique table and the open decisions.
 - `docs/background/`: literature review and field overviews.

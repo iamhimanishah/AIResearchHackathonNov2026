@@ -341,6 +341,7 @@ def cmd_reeval(args) -> int:
 def cmd_train(args) -> int:
     from clharness.config import load_run_config
     from clharness.data.manifest import read_manifest
+    from clharness.techniques import apply_config_overrides, build_hooks
     from clharness.train.loop import Trainer
     from clharness.train.measure import default_hooks
 
@@ -352,7 +353,13 @@ def cmd_train(args) -> int:
     if cfg.eval.lm_eval_tasks and eval_manifest is None:
         print(f"missing {p.relative_to(REPO_ROOT)}; run: clh build-eval-manifest {args.config}", file=sys.stderr)
         return 2
-    Trainer(cfg, default_hooks(), eval_manifest).run()
+    try:
+        cfg = apply_config_overrides(cfg)  # e.g. lr_rewarm switches on the per-domain schedule
+        technique_hooks = build_hooks(cfg.techniques)
+    except ValueError as e:
+        print(f"{args.config}: {e}", file=sys.stderr)
+        return 2
+    Trainer(cfg, default_hooks() + technique_hooks, eval_manifest).run()
     return 0
 
 
