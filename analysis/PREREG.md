@@ -527,6 +527,23 @@ The track is **exploratory**. It tests whether the main result generalizes; it i
 confirmatory claim. If joint − naive < 0.03, gap closed is reported with a warning that its
 denominator is unstable.
 
+**Settings** (decided by himani on 2026-11-14 at 19:25 PT, before any C5 data; amendment 6):
+- **Model and training:** LoRA rank 32 on `Qwen/Qwen3-8B`. Learning rate 3e-4, constant. Batch
+  32 examples, max length 256 tokens, 2 epochs per stage. The loss is on the label words only.
+- **LR check:** 3e-4 is within the LoRA limit in the agent catalog, 1e-3 × √(8/32) = 5e-4.
+- **Data:** frozen in `manifests/tinker-c5.json`: 5,000 train and 1,000 eval per task.
+  - SST-2's eval set is its 872 validation examples plus 128 training examples outside the
+    5,000-example training subsample.
+  - MNLI uses `validation_matched`; AG News uses `test`.
+- **Scoring:** label-word log-likelihood (the sum over its tokens), argmax over the labels.
+- **Arms:**
+  - replay-200: a fixed buffer of 200 examples per earlier task, mixed in by replacement, so
+    each stage keeps the same number of examples as naive (tokens match only approximately,
+    and the realized share is recorded);
+  - joint: the same total number of examples as naive.
+- **Rows:** smoke-test rows (50/50 per task) are pipeline checks only and never enter a metric.
+- **Code:** `src/clharness/tinker/` (PR #13); `clh tinker-run`, `clh tinker-analyze`.
+
 ## 11. Amendment protocol
 
 This file will change, and the rules for how keep the results honest:
@@ -550,6 +567,7 @@ This file will change, and the rules for how keep the results honest:
 | 3 | 2026-11-14 17:46 | Section 7: the main fit adds the alias partners of replay × lr_rewarm (lora × distill, freeze × wavg) | Review simulation: planting only lora × distill showed up as replay × lr_rewarm. The halves make the partners estimable | No |
 | 4 | 2026-11-14 17:46 | Section 9: the cost ranking divides by extra forward tokens, not extra GPU-hours | Wall-clock differences between runs are noise; for example, the lower-LR controls scored about 300 points per "extra GPU-hour" | No |
 | 5 | 2026-11-14 17:46 | Sections 5 and 0.2, made explicit: rule 4 fails when the lower-LR rows are absent (it still holds trivially when they are present and fail the gate); a configuration missing an acquisition domain fails rule 3 | The code waived rule 4 when its rows were left out, and passed a configuration with a domain missing | No |
+| 6 | 2026-11-14 19:25 | Section 10: C5 settings fixed (LoRA rank 32, LR 3e-4 constant, batch 32, length 256, 2 epochs, the data manifest and SST-2 eval mix, scoring, arm definitions) | Section 10 named the model and arms but not the training settings; fixed here before any C5 run | No: no C5 rows existed |
 | — | 2026-11-14 | Implementation fixes, with no rule change (PR #9, independent review): screen-time decisions (promotion, selection screen, lower-LR control, margins) use seed-0 rows only; rows are de-duplicated by spec hash; σ_noise is pinned at the frozen 1.15 points; finished rows from non-real backends are excluded unless explicitly allowed | Make the code do what sections 0, 3, 5 and 6.3 already say | No |
 
 ---
