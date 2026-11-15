@@ -35,8 +35,10 @@ Known limits:
   - The EMA's memory is about 1 / (1 - ema_decay) steps. With ~150 steps per domain an EMA at
     0.999 would still be ~86% base weights at the domain end (0.999^150 ~ 0.86), which is why
     the default is 0.99.
-  - With LoRA the averaged parameters are the adapter factors A and B. Averaging the factors is
-    not the same as averaging the weight delta B @ A (the product is not linear in the factors).
+  - With LoRA, modes boundary and final average only the B factors (which start at zero) and
+    leave the A factors alone, so the adapter's weight change B @ A is scaled by exactly
+    (1 - alpha), as for full weights. Mode ema averages both factors, which is not the same as
+    averaging the weight change.
 """
 
 from __future__ import annotations
@@ -77,6 +79,11 @@ class WeightAveraging(BaseHook):
         self.params = {
             n: p for n, p in ctx.model.named_parameters() if p.requires_grad and p.is_floating_point()
         }
+        if self.p.mode != "ema":
+            # LoRA's weight change is B @ A with B starting at zero. Scaling B alone by
+            # (1 - alpha) scales that change by exactly (1 - alpha); averaging A as well would
+            # shrink it further and make alpha mean something else on adapter runs.
+            self.params = {n: p for n, p in self.params.items() if ".lora_A." not in n}
         with torch.no_grad():
             if self.p.mode == "ema":
                 self.base = {}

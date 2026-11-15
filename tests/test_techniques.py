@@ -159,3 +159,11 @@ def test_conflicting_overrides_are_an_error(tmp_path: Path):
             apply_config_overrides(cfg)
     finally:
         del REGISTRY["_clash"]
+
+
+def test_resolved_config_records_every_param_with_its_default(tmp_path: Path):
+    # a spec may leave params at their defaults; the saved config must still say what they were
+    cfg = apply_config_overrides(_with(_cfg(tmp_path, "tiny-full"), {"name": "lr_rewarm", "params": {"rewarm_steps": 2}}))
+    (t,) = cfg.dump()["techniques"]
+    assert t == {"name": "lr_rewarm", "params": {"rewarm_steps": 2, "min_lr_ratio": 0.1, "schedule": "cosine"}}
+    assert apply_config_overrides(cfg) == cfg  # applying it twice changes nothing

@@ -68,8 +68,9 @@ draws k x `pool` candidates from the source, scores them under the current model
 **Distilling on replayed rows** is `distill` with `rows: replay`, together with `replay`: the
 model is free to move on new-domain text and is held to the base model's predictions on the
 replayed text. The teacher runs only on those rows, so at a 5% share it costs 5% of a full
-teacher pass. Sanity spec: `configs/bench/specs/sanity/replay-distill-on-replay.json` (not yet
-run on a GPU).
+teacher pass. The term is weighted per token like the language-model loss, so a distilled token
+is pulled as hard as under `rows: all` at the same `weight`, whatever the share. Sanity spec:
+`configs/bench/specs/sanity/replay-distill-on-replay.json`.
 
 The SAE-feature signal (`sae_rare`) is not built: it needs SAE weights on the GPU, and
 activation-based selection is fourth in the cut order.
@@ -78,6 +79,9 @@ activation-based selection is fourth in the cut order.
 
 - **Gradient tokens match the no-mitigation run.** A technique may change which sequences are
   trained on, never how many tokens a step or a run spends.
+- **What ran is recorded in full.** `apply_config_overrides` writes every parameter of every
+  technique into the run config, defaults included, so `config.resolved.json` says exactly
+  what ran even if a default changes later.
 - **Extra compute is counted.** Forward-only passes (a scoring pass, a teacher pass) add their
   tokens to `ctx.state["extra_forward_tokens"]`; the executor copies that into
   `cost.extra_forward_tokens` (see decision 3).
@@ -95,12 +99,12 @@ activation-based selection is fourth in the cut order.
 | Piece | State |
 |---|---|
 | Registry, `RunConfig.techniques`, config overrides, `clh train` wiring | done, with tests |
-| `replay` (B2), `wavg` (B6), `lr_rewarm` | done, with tiny-model tests; no real-model run yet |
-| Selection (B3): `random`, `loss`, `act_nov` on `replay` | done, with tiny-model tests; `sae_rare` not built |
-| `lora`, `freeze` (B4), `distill` (B5) | done, with tiny-model tests; no real-model run yet |
+| `replay` (B2), `wavg` (B6), `lr_rewarm` | done, with tiny-model tests and a GPU sanity run each |
+| Selection (B3): `random`, `loss`, `act_nov` on `replay` | done, with tiny-model tests and GPU sanity runs; `sae_rare` not built |
+| `lora`, `freeze` (B4), `distill` (B5) | done, with tiny-model tests and GPU sanity runs, including LoRA at rank 256 and freeze top half |
 | Reference arm (B1) | run at seeds 0 to 2 on the frozen bench; see Results so far |
-| Combinations | every run of the screening design trains on the tiny model (`tests/test_screen_combos.py`); only single techniques and replay plus distil-on-replay have run on a GPU |
-| Sanity runs on a GPU | all eight specs in `configs/bench/specs/sanity/` finished on Modal H100s at commit 314150a; rows in `results/rows.sanity.jsonl` (four steps per domain, so only status and cost mean anything) |
+| Combinations | every run of the screening design trains on the tiny model (`tests/test_screen_combos.py`); on a GPU, the all-six-on arm and replay plus distil-on-replay have run for four steps |
+| Sanity runs on a GPU | every row in `results/rows.sanity.jsonl` finished on a Modal H100; see Results so far (four steps per domain, so only status and cost mean anything) |
 
 Sanity results will be added to this file from result rows only, never typed in.
 
@@ -115,18 +119,22 @@ The analysis behind `make reproduce-figures` is the authority; this table is for
 
 Four optimizer steps per domain on a Modal H100. Only status and cost mean anything here.
 
-| Spec | Status | Wall clock (s) | Est. cost ($) | Gradient tokens | Forward-only tokens | Trainable parameters |
-|---|---|---|---|---|---|---|
-| `plumbing` | finished | 305 | 0.33 | 524,288 | 0 | 999,885,952 |
-| `sanity-distill` | finished | 342 | 0.38 | 524,288 | 524,288 | 999,885,952 |
-| `sanity-freeze` | finished | 309 | 0.34 | 524,288 | 0 | 348,948,608 |
-| `sanity-lora` | finished | 390 | 0.43 | 524,288 | 0 | 6,522,880 |
-| `sanity-lr-rewarm` | finished | 438 | 0.48 | 524,288 | 0 | 999,885,952 |
-| `sanity-replay` | finished | 323 | 0.35 | 524,288 | 0 | 999,885,952 |
-| `sanity-replay-distill-on-replay` | finished | 315 | 0.35 | 524,288 | 25,600 | 999,885,952 |
-| `sanity-replay-select-actnov` | finished | 343 | 0.38 | 524,288 | 102,400 | 999,885,952 |
-| `sanity-replay-select-loss` | finished | 341 | 0.37 | 524,288 | 102,400 | 999,885,952 |
-| `sanity-wavg` | finished | 297 | 0.33 | 524,288 | 0 | 999,885,952 |
+| Spec | Techniques | Status | Wall clock (s) | Est. cost ($) | Gradient tokens | Forward-only tokens | Trainable parameters |
+|---|---|---|---|---|---|---|---|
+| `plumbing-extra-evals` | none | finished | 413 | 0.45 | 524,288 | 0 | 999,885,952 |
+| `sanity-distill` | distill | finished | 342 | 0.38 | 524,288 | 524,288 | 999,885,952 |
+| `sanity-freeze` | freeze | finished | 309 | 0.34 | 524,288 | 0 | 348,948,608 |
+| `sanity-freeze-top` | freeze | finished | 358 | 0.39 | 524,288 | 0 | 348,948,608 |
+| `sanity-lora` | lora | finished | 390 | 0.43 | 524,288 | 0 | 6,522,880 |
+| `sanity-lora-r256` | lora | finished | 464 | 0.51 | 524,288 | 0 | 208,732,160 |
+| `sanity-lr-rewarm` | lr_rewarm | finished | 438 | 0.48 | 524,288 | 0 | 999,885,952 |
+| `sanity-replay` | replay | finished | 323 | 0.35 | 524,288 | 0 | 999,885,952 |
+| `sanity-replay-select-actnov` | replay | finished | 343 | 0.38 | 524,288 | 102,400 | 999,885,952 |
+| `sanity-replay-select-loss` | replay | finished | 341 | 0.37 | 524,288 | 102,400 | 999,885,952 |
+| `sanity-wavg` | wavg | finished | 297 | 0.33 | 524,288 | 0 | 999,885,952 |
+| `sanity-replay-distill-on-replay` | distill, replay | finished | 315 | 0.35 | 524,288 | 25,600 | 999,885,952 |
+| `sanity-replay-distill-topk256` | distill, replay | finished | 394 | 0.43 | 524,288 | 25,600 | 999,885,952 |
+| `sanity-all-on` | distill, freeze, lora, lr_rewarm, replay, wavg | finished | 343 | 0.38 | 524,288 | 524,288 | 3,261,440 |
 
 ### First full runs on the frozen bench
 
@@ -207,6 +215,16 @@ them in name order; `RunSpec` now sorts them too.
   because adapters trained at the full fine-tuning rate barely learn. It is recorded in the
   resolved config; compare LoRA runs with that in mind.
 - Distillation keeps a frozen copy of the model in memory and holds the teacher's full logits
-  for each micro-batch (about 2 GB in bf16 on the real model). Not yet run on a GPU.
-- Weight averaging leaves the optimizer's moments untouched, and averaging LoRA factors is not
-  the same as averaging the weight change they produce.
+  for each micro-batch (about 2 GB in bf16 on the real model), plus what autograd keeps of the
+  KL computation until backward. It fits on an H100 in the sanity runs.
+- Weight averaging leaves the optimizer's moments untouched. With LoRA it scales only the B
+  factors, so `alpha` is exact on the adapter's weight change; the EMA mode averages both
+  factors, which is not the same thing.
+- Activation-novelty selection scores candidates against everything trained so far in the
+  run. Its statistics are not reset at a domain boundary, so code rows still count while
+  training legal. That matches the definition in `train/signals.py`.
+- The sanity and reference rows above were produced before two fixes of 14 November: replay
+  runs no longer pay for an unused per-sequence loss pass (their wall clock was a few percent
+  high), and `distill` with `rows: replay` is now weighted per token (it was 4 times stronger
+  per replayed token at a micro-batch of 4). Retention numbers of the reference arm are not
+  affected by either.

@@ -68,6 +68,12 @@ class Replay(BaseHook):
         keep: Literal["high", "low"] = "high"  # keep the highest- or the lowest-scoring candidates
         layer: int = Field(13, ge=0)  # residual layer for act_nov
 
+    def __new__(cls, params: Params):
+        # Activation-novelty selection needs the training forward's residuals, so it lives in a
+        # subclass. The loop computes a per-sequence loss for every micro-batch as soon as any
+        # hook overrides on_micro_batch; plain replay must not make every run pay for that.
+        return super().__new__(_ReplayActNov if cls is Replay and params.select == "act_nov" else cls)
+
     def __init__(self, params: Params):
         self.p = params
         self.active = False
@@ -186,21 +192,6 @@ class Replay(BaseHook):
         self._n_kept += k
         return cand[chosen]
 
-    def wants_activations(self) -> list[int]:
-        return [self.p.layer] if self.p.select == "act_nov" else []
-
-    @torch.no_grad()
-    def on_micro_batch(self, ctx: RunContext, step: int, domain_index: int, chunk_ids, batch, logits, seq_loss, acts):
-        """act_nov: add this forward's trained, non-replayed rows to the running statistics
-        (after the rows were used, so no candidate is ever scored against itself)."""
-        if self.stats is None:
-            return
-        replayed = getattr(batch, "replay_mask", None)
-        trained = torch.ones(batch.shape[0], dtype=torch.bool) if replayed is None else ~replayed.cpu()
-        if trained.any():
-            a = acts[self.p.layer]
-            self.stats.update(pool_residual(a[trained.to(a.device)], batch[trained, :-1], self.bos))
-
     # -- logging ----------------------------------------------------------------------------
     def _stats(self) -> dict[str, float]:
         share = self.rows_replayed / self.rows_seen if self.rows_seen else 0.0
@@ -218,3 +209,23 @@ class Replay(BaseHook):
 
     def on_run_end(self, ctx: RunContext):
         return {**self._stats(), "source_epochs": float(self.source_epochs)}
+
+
+class _ReplayActNov(Replay):
+    """Replay with `select: act_nov`: also keeps running statistics of the trained rows'
+    residuals at `layer`. Built by `Replay(params)`; not registered under a name of its own."""
+
+    def wants_activations(self) -> list[int]:
+        return [self.p.layer] if self.p.select == "act_nov" else []
+
+    @torch.no_grad()
+    def on_micro_batch(self, ctx: RunContext, step: int, domain_index: int, chunk_ids, batch, logits, seq_loss, acts):
+        """act_nov: add this forward's trained, non-replayed rows to the running statistics
+        (after the rows were used, so no candidate is ever scored against itself)."""
+        if self.stats is None:
+            return
+        replayed = getattr(batch, "replay_mask", None)
+        trained = torch.ones(batch.shape[0], dtype=torch.bool) if replayed is None else ~replayed.cpu()
+        if trained.any():
+            a = acts[self.p.layer]
+            self.stats.update(pool_residual(a[trained.to(a.device)], batch[trained, :-1], self.bos))

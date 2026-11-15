@@ -102,21 +102,27 @@ def build_hooks(techniques: Iterable[Any]) -> list[BaseHook]:
 
 
 def apply_config_overrides(cfg: RunConfig) -> RunConfig:
-    """The config with every listed technique's `config_overrides` merged in. Call it on the
+    """The config with every listed technique's `config_overrides` merged in, and with each
+    technique's params written out in full (defaults included), so the resolved config that is
+    saved with a run says exactly what ran even if a default changes later. Call it on the
     final config, after any other overrides: a technique's settings win. Two techniques that
     set the same field to different values are an error."""
     from clharness.config import RunConfig, _deep_merge
 
+    if not cfg.techniques:
+        return cfg
     merged: dict[str, Any] = {}
     owner: dict[str, str] = {}
+    full: list[dict[str, Any]] = []
     for cls, params in _validated(cfg.techniques):
+        full.append({"name": cls.name, "params": params.model_dump(mode="json")})
         overrides = cls.config_overrides(params) if hasattr(cls, "config_overrides") else {}
         for path, value in _leaves(overrides):
             if path in owner and _get(merged, path) != value:
                 raise ValueError(f"techniques {owner[path]!r} and {cls.name!r} both set {'.'.join(path)}")
             owner[path] = cls.name
         merged = _deep_merge(merged, overrides)
-    return RunConfig.model_validate(_deep_merge(cfg.dump(), merged)) if merged else cfg
+    return RunConfig.model_validate({**_deep_merge(cfg.dump(), merged), "techniques": full})
 
 
 def _leaves(d: dict[str, Any], prefix: tuple[str, ...] = ()) -> Iterable[tuple[tuple[str, ...], Any]]:

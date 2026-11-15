@@ -206,9 +206,10 @@ def test_rows_distils_only_the_chosen_rows(tmp_path, rows, kept):
     batch.replay_mask = torch.tensor([False, True, False, True])
     logits = lm.model(input_ids=batch[:, :-1], use_cache=False).logits
     term = hook.extra_loss(ctx, batch, logits, batch[:, 1:])
-    # the same term, computed the long way on the chosen rows alone
+    # the mean KL of the chosen rows alone, times the share of the batch's positions they hold
+    # (2 of 4 rows), so a token is weighted as it would be under rows: all
     teacher = hook.teacher(input_ids=batch[kept, :-1], use_cache=False).logits
-    assert float(term) == pytest.approx(float(distill_kl(logits[kept], teacher, top_k=8)), rel=1e-5)
+    assert float(term) == pytest.approx(0.5 * float(distill_kl(logits[kept], teacher, top_k=8)), rel=1e-5)
     assert float(term) > 0
     assert ctx.state["extra_forward_tokens"] == len(kept) * 16  # the teacher saw only those rows
 
@@ -246,3 +247,28 @@ def test_rows_in_a_real_run_with_replay(tmp_path, monkeypatch, rows, expected_ro
     assert trainer.ctx.state["extra_forward_tokens"] == expected_rows * 32
     distill = next(h for h in hooks if h.name == "distill")
     assert all(math.isfinite(k) and k >= 0 for k in distill.kl_history)
+
+
+@pytest.mark.parametrize("mask", [[False, True, False, False], [False, True, False, True], [True, True, True, False]])
+def test_a_distilled_token_is_pulled_equally_hard_in_every_rows_mode(tmp_path, mask):
+    # the gradient on a replayed row's logits must not depend on how many replayed rows share
+    # the micro-batch, nor on whether the other rows are distilled too
+    lm, ctx = _ctx_and_moved_student(tmp_path, techniques=["replay"])
+    with torch.no_grad():
+        for p in lm.model.parameters():
+            p.add_(0.05 * torch.randn_like(p))
+    batch = torch.randint(3, VOCAB, (4, 17))
+    batch.replay_mask = torch.tensor(mask)
+    grads = {}
+    for rows in ("all", "replay"):
+        hook = _distill(top_k=8, rows=rows)
+        hook.teacher = None
+        hook.on_run_start(ctx)
+        # the teacher is a copy of the moved student, so move the student again to get a non-zero term
+        logits = (lm.model(input_ids=batch[:, :-1], use_cache=False).logits + 0.3 * torch.sin(torch.arange(VOCAB))).detach().requires_grad_()
+        hook.extra_loss(ctx, batch, logits, batch[:, 1:]).backward()
+        grads[rows] = logits.grad
+    replayed = batch.replay_mask
+    assert grads["all"][replayed].abs().sum() > 0
+    assert torch.allclose(grads["replay"][replayed], grads["all"][replayed], rtol=1e-4, atol=1e-9)
+    assert grads["replay"][~replayed].abs().sum() == 0  # the other rows are left alone

@@ -27,8 +27,16 @@ Parameters
                The teacher runs only on the chosen rows, so `replay` at a 5% share costs 5%
                of a full teacher pass.
 
-Logged: `distill/kl`, the mean of the term before `weight` (so including T^2) over the step's
-micro-batches; `train/extra_loss/distill` is `weight` times it.
+Scale: the term is weighted like the language-model loss, per token of the micro-batch. With
+`rows: all` that is `weight` times the mean KL. With `new` or `replay` the mean KL over the chosen
+rows is also multiplied by the share of the micro-batch's positions those rows hold, so one
+distilled token is pulled exactly as hard as under `rows: all` at the same `weight`, however
+many chosen rows share a micro-batch.
+
+Logged: `distill/kl`, the mean KL over the distilled positions (including T^2, before `weight`
+and before that share), averaged over the step's micro-batches that had any; and
+`train/extra_loss/distill`, the term actually added, averaged over all of the step's
+micro-batches. With `rows: all` the second is `weight` times the first.
 
 Cost with `rows: all`: one extra forward-only pass per micro-batch (about 1.3x the compute of a
 plain step, since a training step is one forward plus a backward of about twice that). With
@@ -90,8 +98,10 @@ def distill_kl(
     """T^2 * mean over positions where `mask` is True of KL(teacher || student) at temperature T.
 
     Logits are [..., V] in any dtype; the probability math is float32, `chunk` positions at a
-    time, so no float32 copy of the whole [B, T, V] tensor is ever alive (at a 262k vocabulary
-    one chunk of 512 positions is 0.5 GB per float32 temporary). Gradient flows into
+    time (at a 262k vocabulary one chunk of 512 positions is 0.5 GB per float32 temporary).
+    That bounds the temporaries of the forward computation; autograd still keeps what the
+    backward pass needs for every chunk, a few float32 copies of [B, T, V] in total, until
+    backward has run. Gradient flows into
     `student_logits` only. Returns a float32 scalar; 0 if no position is valid."""
     V = student_logits.shape[-1]
     if teacher_logits.shape != student_logits.shape:
@@ -159,7 +169,14 @@ class Distill(BaseHook):
             keep = (replayed if self.p.rows == "replay" else ~replayed).to(logits.device)
             if not keep.any():
                 return None  # nothing to distil in this micro-batch, so no teacher pass either
+            n_all = int((labels != -100).sum())
             ids, logits, labels = ids[keep], logits[keep], labels[keep]
+            # The language-model loss is a mean over every position of the micro-batch. Scale
+            # the term the same way, so `weight` is the pull on one token relative to its LM
+            # loss whichever rows are chosen and however many of them share a micro-batch.
+            coverage = int((labels != -100).sum()) / max(n_all, 1)
+        else:
+            coverage = 1.0
         with torch.no_grad(), ctx.ac():
             teacher_logits = self.teacher(input_ids=ids, use_cache=False).logits
         ctx.state["extra_forward_tokens"] = ctx.state.get("extra_forward_tokens", 0) + ids.numel()
@@ -167,7 +184,7 @@ class Distill(BaseHook):
         del teacher_logits
         self._kl_sum += float(kl.detach())
         self._kl_n += 1
-        return self.p.weight * kl
+        return self.p.weight * coverage * kl
 
     def on_step_end(self, ctx: RunContext, stats: StepStats):
         if self._kl_n == 0:

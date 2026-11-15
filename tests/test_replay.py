@@ -362,3 +362,17 @@ def test_bad_selection_params_raise():
     for params in ({"select": "loss", "pool": 0}, {"select": "nope"}, {"keep": "middle"}, {"layer": -1}):
         with pytest.raises(ValueError, match="replay"):
             build_hooks([TechniqueSpec(name="replay", params=params)])
+
+
+def test_plain_replay_does_not_ask_the_loop_for_per_sequence_losses():
+    # the loop computes a full-vocabulary per-sequence loss on every micro-batch as soon as one
+    # hook overrides on_micro_batch; only activation-novelty selection needs that
+    def hook(**params):
+        return build_hooks([TechniqueSpec(name="replay", params=params)])[0]
+
+    for params in ({}, {"select": "loss"}):
+        h = hook(**params)
+        assert type(h).on_micro_batch is BaseHook.on_micro_batch and h.wants_activations() == []
+    h = hook(select="act_nov", layer=1)
+    assert type(h).on_micro_batch is not BaseHook.on_micro_batch and h.wants_activations() == [1]
+    assert h.name == "replay" and isinstance(h, type(hook()))

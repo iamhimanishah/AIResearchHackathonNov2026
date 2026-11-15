@@ -184,3 +184,37 @@ def test_bf16_weights_stay_bf16():
 def test_bad_params_are_rejected(params, match):
     with pytest.raises(ValueError, match=match):
         build_hooks([TechniqueSpec(name="wavg", params=params)])
+
+
+def test_with_lora_alpha_scales_the_adapter_weight_change_exactly(tmp_path, monkeypatch):
+    # LoRA's weight change is B @ A. Averaging must scale that product by (1 - alpha), which
+    # means scaling B and leaving A alone; averaging both factors would shrink it further.
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+
+    class Spy(BaseHook):
+        name = "spy"
+
+        def __init__(self):
+            self.before, self.after = {}, {}
+
+        def on_domain_end(self, ctx, domain):  # listed before wavg, so this is pre-averaging
+            self.before = {n: p.detach().clone() for n, p in ctx.model.named_parameters() if "lora_" in n}
+
+        def on_checkpoint(self, ctx, ckpt):
+            self.after = {n: p.detach().clone() for n, p in ctx.model.named_parameters() if "lora_" in n}
+
+    techniques = [TechniqueSpec(name="lora", params={"rank": 4, "lr": 1e-2}),
+                  TechniqueSpec(name="wavg", params={"alpha": 0.25, "mode": "final"})]
+    lora, wavg = build_hooks(techniques)
+    spy = Spy()
+    cfg = _cfg(tmp_path, "wavg-lora", lr=1e-2)
+    Trainer(cfg, [lora, spy, wavg], eval_manifest=None, model_override=_tiny_model(vocab=VOCAB, dtype=torch.float32)).run()
+
+    a_names = [n for n in spy.before if ".lora_A." in n]
+    assert a_names and all(".lora_A." not in n for n in wavg.params)
+    for a in a_names:
+        b = a.replace(".lora_A.", ".lora_B.")
+        assert torch.equal(spy.after[a], spy.before[a])  # A untouched
+        assert spy.before[b].abs().sum() > 0  # the adapter did train
+        delta_before, delta_after = spy.before[b] @ spy.before[a], spy.after[b] @ spy.after[a]
+        assert torch.allclose(delta_after, 0.75 * delta_before, rtol=1e-5, atol=1e-8)
