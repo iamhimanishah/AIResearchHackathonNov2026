@@ -231,3 +231,41 @@ run on a GPU so far.
 ### Member C (himani)
 
 ### Member D (brendan)
+
+Answers from brendan's agent, 14 November, for the four questions in section 9. Brendan has not
+reviewed them yet; treat them as the agent owner's starting point.
+
+**Has the existing agent launched real runs?** No. What is in the way:
+
+- `python -m clharness.agent.loop` accepts only `--executor sim`. `ModalExecutor`
+  (`src/clharness/agent/modal_executor.py`) is written and tested against a fake Modal, but it
+  is not wired into the loop's command line and has never called the deployed app.
+- The deployed app accepts callers only at the commit it was deployed from, so the launch
+  commit has to be fixed first and the checkout must not move during the grid.
+- A small real test launch (2 or 3 specs) needs brendan's go-ahead to spend.
+- The Conductor's SCOUT and READ steps are still minimal: no Scout runs behind SCOUT today. A
+  Scout that searches with Exa and returns one candidate with its sources is written locally
+  and under review, not pushed yet.
+
+**A fourth phase or a budget slice?** A fourth phase. The state machine already runs the same
+cycle per phase, so explore is one more phase with its own skill file and gate rules. A slice
+inside screen or replicate would put exploratory and confirmatory rows in the same phase, and
+the Gatekeeper would have to tell them apart spec by spec. The Conductor reserves explore's
+budget share up front, so explore cannot eat into the screen or replication.
+
+**Does the claim card fit `Candidate`?** No, it is a new type. `Candidate` describes a technique
+to build: mechanism, parameter specs, a cost multiplier and a human review before use. A claim
+card needs the claim, its `source_ids`, the catalog arms that test it and a prediction, and no
+code review, since it runs only existing plugins. Both share the `Source` type and the same
+sources file, and `ScoutResult` would carry either a candidate or a claim.
+
+**What fits before Sunday 14:00?** In this order, stopping wherever time runs out:
+
+1. The real launch through Modal (section 8, item 1). Nothing else counts until this works.
+2. The Scout inside the loop at the SCOUT step, with its sources in the decision log. This is
+   what the Exa challenge requires.
+3. The claim card and the hypothesis record with its table on the page (5.1, 5.3 literature,
+   5.4). Small, because they reuse the Scout and the existing stores.
+4. The explore phase (5.2), only if items 1 and 2 work by Saturday night.
+
+The surprise trigger and the comparison in section 6 do not fit.
