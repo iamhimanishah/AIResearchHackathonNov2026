@@ -132,6 +132,10 @@ changing context (rows, findings), then the output schema.
 | `results/agent/veto.jsonl` | a human | Conductor | Vetoes |
 | past.dev | Memory (mirror) | Planner, Analyst | Shared copy of `findings`, `failures`, `lessons` |
 
+One writer is enforced, not only agreed: `loop`, `launch_design` and `explore` each hold
+`<out>/.agent.lock` (`clharness.agent.lock`, an `flock` the kernel drops when the process dies)
+for as long as they run, and a second process on the same `--out` exits 2 with `refused:`.
+
 ## 6. Self-improvement, and where it shows
 
 1. **Within a run.** The Planner states a predicted effect for every spec. After the rows land,

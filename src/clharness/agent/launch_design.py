@@ -50,6 +50,7 @@ from pathlib import Path
 from .. import spec as a1
 from ..analysis import design
 from .contracts import DecisionLog, a1_row_hash
+from .lock import lock_or_exit
 from .modal_executor import ModalBackend, ModalExecutor, ModalFunctionBackend
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -255,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.go:
         print("dry run: nothing launched. Add --go to launch.")
         return 0
+    lock_or_exit(args.out)  # RT-15/17: one writer per --out (clharness.agent.lock)
     try:
         counts = launch(specs, args.out, ModalFunctionBackend(), code_version(), have=args.have,
                         concurrency=args.concurrency, cap_usd=args.cap_usd, gpu=args.gpu,

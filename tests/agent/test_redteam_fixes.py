@@ -159,3 +159,91 @@ def test_rt30_one_constant_for_retryable_failures():
         text = path.read_text()
         assert '("infra", "timeout")' not in text, path.name
         assert 'failure_kind == "infra"' not in text, path.name
+
+
+# ---- RT-15 + RT-17: one writer per --out ------------------------------------------------------
+
+_HOLD = """
+import sys, time
+from clharness.agent.lock import single_writer
+with single_writer(sys.argv[1]):
+    print("held", flush=True)
+    time.sleep(60)
+"""
+
+
+def _holder(out):
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen([sys.executable, "-c", _HOLD, str(out)], stdout=subprocess.PIPE,
+                            text=True)
+    assert proc.stdout.readline().strip() == "held"
+    return proc
+
+
+def test_rt15_a_held_lock_refuses_the_loop_and_writes_nothing(tmp_path, capsys):
+    from clharness.agent.loop import main
+
+    out = tmp_path / "out"
+    proc = _holder(out)
+    try:
+        assert main(["--executor", "sim", "--out", str(out)]) == 2
+    finally:
+        proc.kill()
+        proc.wait()
+    assert "refused:" in capsys.readouterr().out
+    assert sorted(p.name for p in out.iterdir()) == [".agent.lock"]
+
+
+def test_rt15_the_lock_is_released_when_the_holder_is_killed(tmp_path):
+    from clharness.agent.lock import single_writer
+
+    proc = _holder(tmp_path)
+    proc.kill()
+    proc.wait()
+    with single_writer(tmp_path) as path:
+        assert path.name == ".agent.lock" and path.exists()
+    assert path.exists()  # never unlinked
+
+
+def test_rt15_the_lock_is_reentrant_in_one_process_and_per_directory(tmp_path):
+    from clharness.agent.lock import AlreadyRunning, single_writer
+
+    with single_writer(tmp_path / "a") as first, single_writer(tmp_path / "a") as again, \
+            single_writer(tmp_path / "b") as other:
+        assert first == again != other
+    proc = _holder(tmp_path / "a")
+    try:
+        with pytest.raises(AlreadyRunning, match="pid"), single_writer(tmp_path / "a"):
+            pass
+        with single_writer(tmp_path / "b"):
+            pass
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_rt15_launch_design_and_explore_take_the_lock(tmp_path, capsys):
+    from clharness.agent import explore, launch_design
+
+    out = tmp_path / "out"
+    proc = _holder(out)
+    try:
+        with pytest.raises(SystemExit) as stop:
+            launch_design.main(["--go", "--only", "screen", "--out", str(out), "--have"])
+        assert stop.value.code == 2
+        with pytest.raises(SystemExit) as stop:
+            explore.main(["--out", str(out), "--have"])
+        assert stop.value.code == 2
+    finally:
+        proc.kill()
+        proc.wait()
+    assert capsys.readouterr().err.count("refused:") == 2
+
+
+def test_rt15_the_lock_file_is_git_ignored_and_uv_lock_is_not():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / ".gitignore").read_text().splitlines()
+    assert "results/**/.agent.lock" in text and "*.lock" not in text

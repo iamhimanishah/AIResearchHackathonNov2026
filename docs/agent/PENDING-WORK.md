@@ -116,3 +116,37 @@ requeued, so the next tick tries again. The gate's reason reads "infrastructure 
 
 **Out of scope.** Charging a timeout the 50-minute cost (RT-16 already charges the estimate);
 the ARCHITECTURE "unreachable 3 times -> HALTED" rule.
+
+**Result.** Commit `ef29554`. `make test`: 531 passed, 2 skipped, 1 deselected.
+
+## Item 4: RT-15 + RT-17 (lock part), one writer per `--out`
+
+**Goal.** Two processes can never write the same `--out` at once: a single-writer lock (stdlib
+`fcntl.flock`) that the loop takes, and that justin's `launch_design` and `explore` take with
+one line each (justin said yes to both call sites).
+
+**Acceptance criteria.**
+- While another process holds `<out>/.agent.lock`, `loop.main` prints `refused:` and returns
+  2, and writes no state, decision log or model ledger.
+- The lock is released when the holder exits, even by SIGKILL (flock is dropped by the kernel).
+- Nested use in one process is a no-op (the kill tests build several Conductors in one
+  process); different `--out` directories do not block each other.
+- `launch_design.main --go` and `explore.main` take the same lock on their `--out` with one
+  added line each, and exit 2 when it is held.
+- The lock file is never unlinked and is git-ignored.
+
+**Design.** New `src/clharness/agent/lock.py`: `AlreadyRunning(ContractError)`,
+`single_writer(out_dir)` (context manager), `lock_or_exit(out_dir)` (holds the lock for the
+life of the process, prints `refused:` and raises `SystemExit(2)` when held). A per-process
+registry of held paths makes nesting a no-op. The holder's pid is written into the file for a
+person to read. `loop.main` wraps everything after argument parsing in `single_writer`.
+`.gitignore` gets `results/**/.agent.lock` (not a bare `*.lock`, which would hide `uv.lock`).
+
+**Tests** (`tests/agent/test_redteam_fixes.py`).
+- `test_rt15_a_held_lock_refuses_the_loop_and_writes_nothing` (holder in a subprocess).
+- `test_rt15_the_lock_is_released_when_the_holder_is_killed`.
+- `test_rt15_the_lock_is_reentrant_in_one_process_and_per_directory`.
+- `test_rt15_launch_design_and_explore_take_the_lock` (a held lock makes each main exit 2).
+
+**Out of scope.** `--resume` and the `~r{n}` decision-key suffix; the rows-file lock inside
+`launch()` (the `--out` lock in `launch_design.main` covers the same rows file).

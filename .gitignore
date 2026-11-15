@@ -37,6 +37,9 @@ wandb/
 # claude code local settings
 .claude/settings.local.json
 
+# agent single-writer locks (clharness.agent.lock); not a bare *.lock, which would hide uv.lock
+results/**/.agent.lock
+
 # dry-run artifacts
 results/baselines/*_dryrun.json
 manifests/eval-*-dryrun.json

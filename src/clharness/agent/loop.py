@@ -40,11 +40,12 @@ from .catalog_real import (
 )
 from .catalog_real import stream as bench_stream
 from .conductor import Conductor
-from .config import load_agent_config
+from .config import AgentConfig, load_agent_config
 from .contracts import Prereg, PreregError, load_prereg, read_jsonl
 from .explore import INBOX_NAME
 from .gatekeeper import Gatekeeper
 from .llm import BudgetedLLM, LLMClient, OpenAIClient
+from .lock import AlreadyRunning, single_writer
 from .operator import Operator
 from .roles import Clock, FakeClock, Scout, StubAnalyst, StubPlanner, SystemClock
 from .search import ExaSearch
@@ -155,7 +156,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.scout == "exa" and args.llm != "openai":
         parser.error("--scout exa needs --llm openai (the Scout is a model step)")
-    llm = None
     if args.llm == "openai" and args.config is None:
         parser.error("--llm openai needs --config")
     cfg = load_agent_config(args.config) if args.config else None
@@ -169,6 +169,16 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--executor real needs --compute-cap-usd or a --config with "
                          "compute_budget_usd")
     args.reserve_fraction = cfg.compute_reserve_fraction if cfg is not None else 0.3
+    try:  # one writer per --out (RT-15): before any state, log or ledger is touched
+        with single_writer(args.out):
+            return _main_locked(args, cfg)
+    except AlreadyRunning as exc:
+        print(f"refused: {exc}")
+        return 2
+
+
+def _main_locked(args: argparse.Namespace, cfg: AgentConfig | None) -> int:
+    llm = None
     if args.llm == "openai":
         agents = ("planner", "analyst") + (("scout",) if args.scout == "exa" else ())
         models = cfg.require_models(agents)
