@@ -1,0 +1,145 @@
+{
+ "suite": "protected-v1",
+ "what": "fragile core: selection-half questions the base model answers correctly and the no-mitigation run at lr 1e-4 forgets in at least 4 of 5 seeds",
+ "status": "exploratory; derived after the pre-registration, not part of the confirmatory analysis",
+ "derived_by": "scripts/make_core_items.py",
+ "derived_on": "2026-11-14",
+ "rule": {
+  "half": "selection",
+  "base_correct": "checkpoint 0 score > 0.5 in every source run",
+  "forgotten": "base-correct and last-checkpoint score <= 0.5",
+  "min_seeds": 4,
+  "of_seeds": 5
+ },
+ "rows_file": "results/rows.phase0.remeasured.jsonl",
+ "source_runs": [
+  {
+   "name": "no-mitigation-s0",
+   "seed": 0,
+   "spec_hash": "4086e2135782afb95e740ed93a5797a1a3b350de8fc49c424eae9292a57cf809",
+   "items_path": "results/items/4086e2135782afb9/checkpoints"
+  },
+  {
+   "name": "no-mitigation-s1",
+   "seed": 1,
+   "spec_hash": "2e1cee9fcd98ef7d87581c2b9952f9897f61d5567e600889e670b9bcdae51f12",
+   "items_path": "results/items/2e1cee9fcd98ef7d/checkpoints"
+  },
+  {
+   "name": "no-mitigation-s2",
+   "seed": 2,
+   "spec_hash": "cc55bed4f8d5207f6b10f403c7aa72f77d9c3e2e5f3815bf1ebb46bbe279bb38",
+   "items_path": "results/items/cc55bed4f8d5207f/checkpoints"
+  },
+  {
+   "name": "no-mitigation-s3",
+   "seed": 3,
+   "spec_hash": "7ff9749259cfa57647b0a67d5272b2dc1425ec8103e4dc9fd19f7bc4a98aa5b1",
+   "items_path": "results/items/7ff9749259cfa576/checkpoints"
+  },
+  {
+   "name": "no-mitigation-s4",
+   "seed": 4,
+   "spec_hash": "5a4291a9a4a40228eee0639576e861b56a35256da867936970b9a2dec77d0729",
+   "items_path": "results/items/5a4291a9a4a40228/checkpoints"
+  }
+ ],
+ "split": "manifests/eval-protected-v1-split.json",
+ "split_sha256": "4c441b18325800cf3211caa8a02e6cfae29250ec7acda28930d1956f14b67b53",
+ "caveat": "the source runs define the set, so their own core-forgetting rate is inflated by construction; do not use the no-mitigation arm at lr 1e-4 as a control for it",
+ "n_core": 58,
+ "n_base_correct": 683,
+ "n_noncore_base_correct": 625,
+ "tasks": {
+  "arc_easy": {
+   "n_items": 500,
+   "n_selection": 250,
+   "n_base_correct": 178,
+   "n_core": 23,
+   "core_positions": [
+    18,
+    31,
+    44,
+    49,
+    87,
+    88,
+    92,
+    108,
+    109,
+    179,
+    213,
+    218,
+    293,
+    341,
+    354,
+    362,
+    371,
+    372,
+    384,
+    405,
+    432,
+    434,
+    499
+   ]
+  },
+  "hellaswag": {
+   "n_items": 500,
+   "n_selection": 250,
+   "n_base_correct": 159,
+   "n_core": 18,
+   "core_positions": [
+    18,
+    33,
+    132,
+    169,
+    173,
+    181,
+    193,
+    234,
+    267,
+    278,
+    279,
+    294,
+    298,
+    331,
+    335,
+    373,
+    427,
+    477
+   ]
+  },
+  "piqa": {
+   "n_items": 500,
+   "n_selection": 250,
+   "n_base_correct": 184,
+   "n_core": 5,
+   "core_positions": [
+    21,
+    85,
+    304,
+    362,
+    428
+   ]
+  },
+  "pubmedqa_pqal": {
+   "n_items": 500,
+   "n_selection": 250,
+   "n_base_correct": 162,
+   "n_core": 12,
+   "core_positions": [
+    73,
+    122,
+    153,
+    234,
+    252,
+    268,
+    285,
+    306,
+    446,
+    476,
+    485,
+    495
+   ]
+  }
+ }
+}

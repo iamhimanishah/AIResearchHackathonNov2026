@@ -121,6 +121,12 @@ class PastMemory:
             if legal:
                 text += (f" Held-out legal perplexity right after legal training was "
                          f"{sum(legal.values()) / len(legal):.3f} times the base model's (below 1 = learned).")
+            core, other = getattr(arm, "core_forgotten_by_seed", {}), getattr(arm, "noncore_forgotten_by_seed", {})
+            if core and other:
+                text += (f" It forgot {sum(core.values()) / len(core):.0f}% of the 58 fragile-core questions and "
+                         f"{sum(other.values()) / len(other):.1f}% of the other questions the base model knows.")
+                if getattr(arm, "defines_core", False):
+                    text += " (This arm's seeds define the core, so its core figure is inflated by construction.)"
             n += self.remember(f"arm-{arm.name}", text, "analyst")
         return n
 
@@ -137,11 +143,19 @@ class PastMemory:
         """explorer: a hypothesis, and its verdict once there is one. Exploratory, selection half."""
         text = (f"Exploratory hypothesis {h.id} ({h.origin}, proposed by {h.author}): {h.claim} "
                 f"Question: {h.question} Control arm: '{h.control}'. Prediction made before any run: "
-                f"{h.prediction.direction} by about {h.prediction.size_points:g} points. Status: {h.status}.")
+                f"{h.prediction.direction} by about {h.prediction.size_points:g} points"
+                f"{'' if getattr(h, 'outcome', 'retention') == 'retention' else ' on outcome ' + h.outcome}. "
+                f"Status: {h.status}.")
         if h.status == "rejected":
             text += f" The gate refused it: {h.reason}"
         elif h.effect_points is not None:
-            text += (f" Measured effect against the control on the selection half: {h.effect_points:+.2f} "
+            outcome = getattr(h, "outcome", "retention")
+            measured = {"retention": "retention change, test minus control",
+                        "core_forgotten": "share of the 58 fragile-core questions forgotten, control minus test",
+                        "noncore_forgotten": "share of the other known questions forgotten, control minus test",
+                        }[outcome]
+            text += (f" Outcome used for the verdict: {outcome} ({measured}; positive = the test arm forgot "
+                     f"less). Measured effect against the control on the selection half: {h.effect_points:+.2f} "
                      f"points (threshold {h.threshold_points:g}). {h.reason}")
         if h.source:
             text += f" Source: {h.source}."

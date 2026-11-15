@@ -22,7 +22,9 @@ The cycle:
                a control that already has rows at the same seeds, is new, and fits the budget.
   4. LAUNCH    the accepted specs run on Modal through `launch_design.launch`.
   5. RESOLVE   a fixed rule gives each hypothesis a verdict from the paired difference against
-               its control on the selection half.
+               its control on the selection half, on the outcome it named before the run: the
+               retention score, or the share forgotten of the frozen "fragile core" questions or
+               of the other known questions (per-item files, fetched after each launch).
 
 Everything from this file is EXPLORATORY. Its specs carry `notes` starting "exploratory:", its
 rows go to their own file (`<out>/rows.jsonl`), and nothing here may be passed to the
@@ -46,6 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import spec as a1
 from ..analysis import design
+from ..analysis.item_profile import item_profile, set_sizes
 from .contracts import DecisionLog, a1_row_hash
 from .launch_design import DEFAULT_HAVE, MINUTES_PER_RUN, REPO_ROOT, Halt, code_version, launch
 from .llm import LLMClient, LLMError
@@ -77,6 +80,9 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+Outcome = Literal["retention", "core_forgotten", "noncore_forgotten"]
+
+
 class Prediction(_Model):
     direction: Literal["less_forgetting", "more_forgetting", "no_difference"]
     size_points: float = Field(ge=0, le=20)  # expected size of the retention difference, in points
@@ -103,6 +109,9 @@ class ProposedHypothesis(_Model):
     lr: float | None = None  # run-level learning rate; None keeps the bench's 1e-4
     control: str  # name of an arm in the table it was shown
     new_technique: NewTechnique | None = None  # optional: a technique that is not in the catalog
+    # What the verdict is read from: the retention score, or the share forgotten of the fragile
+    # core / of the other known questions (per-item files; analysis/item_profile.py).
+    outcome: Outcome = "retention"
 
 
 class Proposal(_Model):
@@ -121,6 +130,7 @@ class Hypothesis(_Model):
     source: str | None = None
     prediction: Prediction
     control: str
+    outcome: Outcome = "retention"  # which measurement the verdict is read from
     card_id: str | None = None  # the Scout claim card it came from (origin `literature`)
     new_technique: NewTechnique | None = None  # the agent-written technique it tests, with its source
     checks: list[str] = Field(default_factory=list)  # what the technique passed before any full run
@@ -129,7 +139,9 @@ class Hypothesis(_Model):
     decision_rule: str = ""
     status: Literal["accepted", "rejected", "running", "confirmed", "refuted", "inconclusive"]
     reason: str = ""  # why the gate refused it, or how the verdict was reached
-    effect_points: float | None = None  # test minus control, selection half, mean over paired seeds
+    # Selection half, mean over paired seeds, positive = less forgetting: test minus control
+    # retention change, or (forgetting outcomes) control minus test share forgotten, in points.
+    effect_points: float | None = None
     threshold_points: float | None = None
     acquisition_ok: bool | None = None
     evidence_row_hashes: list[str] = Field(default_factory=list)
@@ -150,10 +162,23 @@ class Arm(_Model):
     retention_by_seed: dict[int, float]  # selection-half mean delta, in points
     legal_ratio_by_seed: dict[int, float]
     hashes_by_seed: dict[int, str]
+    # Percent of the fragile core / of the other known questions now wrong, selection half, for
+    # the seeds whose per-item files are on this machine (analysis/item_profile.py).
+    core_forgotten_by_seed: dict[int, float] = Field(default_factory=dict)
+    noncore_forgotten_by_seed: dict[int, float] = Field(default_factory=dict)
 
     @property
     def mean(self) -> float:
         return statistics.mean(self.retention_by_seed.values())
+
+    @property
+    def defines_core(self) -> bool:
+        """The plain run at the bench learning rate: its seeds define the fragile core."""
+        return not self.techniques and self.lr is None
+
+    def outcome_by_seed(self, outcome: str) -> dict[int, float]:
+        return {"core_forgotten": self.core_forgotten_by_seed,
+                "noncore_forgotten": self.noncore_forgotten_by_seed}[outcome]
 
 
 def _arm_key(spec: a1.RunSpec) -> str:
@@ -167,8 +192,9 @@ def _arm_name(spec: a1.RunSpec) -> str:
     return f"{base}@lr{lr:g}" if lr is not None else base
 
 
-def read_arms(paths: Sequence[str | Path]) -> list[Arm]:
-    """Group finished rows on the frozen bench into arms. Only selection-half fields are kept."""
+def read_arms(paths: Sequence[str | Path], repo_root: Path = REPO_ROOT) -> list[Arm]:
+    """Group finished rows on the frozen bench into arms. Only selection-half fields are kept;
+    the per-item shares are read from the selection-half positions of each run's item files."""
     stream = [a1.StreamDomain(name=n, tokens=t) for n, t in design.STREAM]
     grouped: dict[str, dict[str, Any]] = {}
     for path in paths:
@@ -178,7 +204,12 @@ def read_arms(paths: Sequence[str | Path]) -> list[Arm]:
             if row.status != "finished" or row.retention is None or list(row.spec.stream) != stream:
                 continue
             key = _arm_key(row.spec)
-            arm = grouped.setdefault(key, {"spec": row.spec, "ret": {}, "legal": {}, "hash": {}})
+            arm = grouped.setdefault(key, {"spec": row.spec, "ret": {}, "legal": {}, "hash": {},
+                                           "core": {}, "noncore": {}})
+            profile = item_profile(row, repo_root)
+            if profile is not None:
+                arm["core"][row.spec.seed] = profile["core_forgotten"] * 100
+                arm["noncore"][row.spec.seed] = profile["noncore_forgotten"] * 100
             arm["ret"][row.spec.seed] = row.retention.selection.mean_delta * 100
             ratios = (row.acquisition.own_boundary_ppl_ratio or row.acquisition.ppl_ratio) if row.acquisition else {}
             if "legal" in ratios:
@@ -191,7 +222,8 @@ def read_arms(paths: Sequence[str | Path]) -> list[Arm]:
             name += "'"
         used.add(name)
         arms.append(Arm(name=name, key=key, techniques=list(g["spec"].techniques), lr=g["spec"].optim.get("lr"),
-                        retention_by_seed=g["ret"], legal_ratio_by_seed=g["legal"], hashes_by_seed=g["hash"]))
+                        retention_by_seed=g["ret"], legal_ratio_by_seed=g["legal"], hashes_by_seed=g["hash"],
+                        core_forgotten_by_seed=g["core"], noncore_forgotten_by_seed=g["noncore"]))
     return sorted(arms, key=lambda a: a.name)
 
 
@@ -204,11 +236,20 @@ def noise_sd_points(arms: Sequence[Arm]) -> float | None:
 
 
 def arm_table(arms: Sequence[Arm]) -> str:
-    lines = ["arm | seeds | retention change, selection half (points) | legal perplexity ratio | techniques"]
+    lines = ["arm | seeds | retention change, selection half (points) | legal perplexity ratio | "
+             "core forgotten (%) | other known forgotten (%) | techniques"]
+    starred = False
     for a in arms:
         legal = statistics.mean(a.legal_ratio_by_seed.values()) if a.legal_ratio_by_seed else float("nan")
         techs = json.dumps([t.model_dump() for t in a.techniques]) if a.techniques else "none"
-        lines.append(f"{a.name} | {sorted(a.retention_by_seed)} | {a.mean:+.2f} | {legal:.3f} | {techs}")
+        star = "*" if a.defines_core and a.core_forgotten_by_seed else ""
+        starred = starred or bool(star)
+        core, other = (f"{statistics.mean(d.values()):.1f}{star}" if d else "no item files"
+                       for d in (a.core_forgotten_by_seed, a.noncore_forgotten_by_seed))
+        lines.append(f"{a.name} | {sorted(a.retention_by_seed)} | {a.mean:+.2f} | {legal:.3f} | {core} | {other} | {techs}")
+    if starred:
+        lines.append("* these seeds define the fragile core, so this arm's core figure is inflated and its "
+                     "other-known figure deflated by construction; it cannot be a control for those two outcomes.")
     return "\n".join(lines)
 
 
@@ -217,16 +258,53 @@ def arm_table(arms: Sequence[Arm]) -> str:
 # --------------------------------------------------------------------------------------------
 
 SYSTEM = """You are the hypothesis step of a research loop on catastrophic forgetting.
-A small language model is trained on code text and then legal text. "Retention change" is the
-change in a four-task multiple-choice score against the untrained model: closer to zero is
-better. "Legal perplexity ratio" is held-out legal perplexity after training divided by before:
-lower means it learned more.
+A small language model (Gemma 3 1B) is trained on code text and then legal text. "Retention
+change" is the change in a four-task multiple-choice score against the untrained model: closer
+to zero is better. "Legal perplexity ratio" is held-out legal perplexity after training divided
+by before: lower means it learned more.
 
-Propose hypotheses that would teach us something we cannot already read off the table. Each one
-is tested by ONE new configuration, run at two seeds and compared with ONE control arm that is
-already in the table. State your prediction before the run. Prefer questions raised by a
-surprise in the table or by a published claim you are given. Do not propose a configuration
-that is already in the table.
+THE GOAL is to learn WHAT BLOCKS learning a new domain without forgetting, not to find the best
+setting. Five accounts of the forgetting on this bench are open. Each hypothesis should be an
+experiment whose result would favour one account over another, and its `claim` must name the
+account it tests and say which result would count against it.
+
+  1. displacement: forgetting is set by how far the weights move from the base model, whatever
+     the direction. Anything that keeps the total movement small protects equally.
+  2. directional interference: only movement along particular directions that old knowledge
+     depends on does harm. Two runs that move equally far can forget very differently.
+  3. localized damage: the harm is done in particular layers or modules. Protecting or
+     restoring those is enough; protecting others does nothing.
+  4. readout drift: the knowledge is still represented inside the model, and what moved is the
+     last layers or the output side that turns it into an answer. Protecting or restoring only
+     the top of the model recovers it.
+  5. capacity: the model has no spare room, so new knowledge overwrites old. Giving the new
+     domain its own extra parameters removes the conflict.
+
+Established on this bench. Treat these as facts; do NOT spend a hypothesis re-testing them:
+  - A lower learning rate forgets less, and below about 3e-5 it also learns less.
+  - Forgetting is concentrated. Of the questions the base model answers correctly, {n_core} form a
+    "fragile core": plain training at 1e-4 forgets them in most seeds, and they account for
+    about half of all forgetting. Two thirds of the known questions are never forgotten.
+  - Lowering the learning rate removes the diffuse forgetting but still loses about half of the
+    core (48% at 3e-5). Freeze + weight averaging and LoRA lose about as much elsewhere but
+    protect the core better (21% to 34% lost).
+  - Weight distance from the base model (L2 norm of the effective weight change, one seed
+    each): full fine-tuning at 1e-5, 3e-5 and 1e-4 moved 7.1, 19.2 and 58.1 with retention
+    change -0.1, -1.2 and -4.8 points; LoRA rank 256 at 1e-4 moved 21.6 with +0.2. So LoRA moved
+    slightly further than full fine-tuning at 3e-5 and forgot less.
+
+Each hypothesis is tested by ONE new configuration, run at two seeds and compared with ONE
+control arm that is already in the table. State your prediction before the run. Do not propose
+a configuration that is already in the table. Choose `outcome`, the measurement the verdict is
+read from, per hypothesis:
+  - "retention": the retention change score. Its noise between seeds is large.
+  - "core_forgotten": the share of the {n_core} fragile-core questions the run gets wrong at the end.
+  - "noncore_forgotten": the share forgotten of the other {n_noncore} questions the base model knows.
+For the two forgetting outcomes, "less_forgetting" means the test arm forgets a smaller share
+than its control, and `size_points` is in percentage points of that share. Use them when the
+accounts disagree about WHERE forgetting falls, which is usually more telling than the total.
+They need a control whose "core forgotten" column holds a number, and the arm marked * cannot
+be that control: its seeds define the core.
 
 You are not limited to tuning the listed settings. Use what you know about optimisation,
 representation learning and continual learning. If the most informative experiment needs a
@@ -269,6 +347,7 @@ def build_prompt(arms: Sequence[Arm], prior: Sequence[Hypothesis], sources: str 
     ranges = json.dumps({t: {p: list(v) for p, v in ps.items()} for t, ps in RANGES.items()})
     seen = "\n".join(
         f"- [{h.status}] {h.claim}" + (f" [own technique: {h.new_technique.title}]" if h.new_technique else "")
+        + (f" [outcome: {h.outcome}]" if h.outcome != "retention" else "")
         + f" ({h.reason})" for h in prior) or "none yet"
     parts = [
         "## Results so far\n" + arm_table(arms),
@@ -349,8 +428,8 @@ def read_inbox(path: Path, prior: Sequence[Hypothesis]) -> tuple[list[tuple[str,
 
 
 OWN_EVERY_CYCLE = ("\n\nIn this answer, exactly one hypothesis must test a mechanism of your own through "
-                   "`new_technique`: pick the idea you think most likely to cut forgetting without "
-                   "cutting learning, given the table.")
+                   "`new_technique`: pick the mechanism whose result would best tell two of the five "
+                   "accounts apart, and say in the claim which two.")
 
 
 def propose(arms: Sequence[Arm], prior: Sequence[Hypothesis], llm: LLMClient | None,
@@ -360,7 +439,8 @@ def propose(arms: Sequence[Arm], prior: Sequence[Hypothesis], llm: LLMClient | N
     if llm is None:
         return fixed_proposals(arms), "fixed-list"
     try:
-        system = SYSTEM.format(max_n=max_n) + (OWN_EVERY_CYCLE if own_technique == "every" else "")
+        sizes = set_sizes()
+        system = SYSTEM.format(max_n=max_n, n_core=sizes["core_forgotten"], n_noncore=sizes["noncore_forgotten"]) + (OWN_EVERY_CYCLE if own_technique == "every" else "")
         if focus:  # several instances run at once; each is given its own part of the question
             system += ("\n\nOther instances of this loop are running in parallel on other parts of the "
                        "problem, and what they find appears under \"Shared memory\". Do not repeat "
@@ -449,6 +529,13 @@ def gate_one(h: ProposedHypothesis, hyp_id: str, arms: Sequence[Arm], taken: set
         return [], f"control {h.control!r} is not an arm in the table"
     if not set(EXPLORE_SEEDS) <= set(control.retention_by_seed):
         return [], f"control {h.control!r} has no rows at seeds {list(EXPLORE_SEEDS)}"
+    if h.outcome != "retention":
+        if control.defines_core:
+            return [], (f"outcome {h.outcome!r} cannot use {h.control!r} as its control: that arm's seeds "
+                        "define the fragile core, so its figure is biased by construction")
+        if not set(EXPLORE_SEEDS) <= set(control.outcome_by_seed(h.outcome)):
+            return [], (f"outcome {h.outcome!r} needs per-item files for control {h.control!r} at seeds "
+                        f"{list(EXPLORE_SEEDS)}, and they are not on this machine")
     if h.lr is not None and not LR_RANGE[0] <= h.lr <= LR_RANGE[1]:
         return [], f"lr {h.lr:g} is outside {LR_RANGE[0]:g} to {LR_RANGE[1]:g}"
     if not h.techniques and h.lr is None and h.new_technique is None:
@@ -505,34 +592,69 @@ RULE = ("Selection half. effect = mean over paired seeds of (test - control) ret
         "threshold = 2 x noise SD x sqrt(2 / seeds). confirmed if the effect has the predicted "
         "sign and exceeds the threshold (for no_difference: stays inside it); refuted if it "
         "exceeds the threshold the other way (for no_difference: exceeds it either way); else inconclusive.")
+RULE_ITEMS = ("Selection half, per-item files. Outcome {outcome}: the share of {n} questions ({which}) "
+              "answered wrong at the end of the run. effect = mean over paired seeds of (control - test) "
+              "share, in percentage points, so positive means the test arm forgot less. threshold = "
+              "2 x sqrt(p(1-p)/n x 2/seeds) x 100, with p the pooled share over the paired runs: binomial "
+              "item noise. confirmed if the effect has the predicted sign and exceeds the threshold (for "
+              "no_difference: stays inside it); refuted if it exceeds the threshold the other way (for "
+              "no_difference: exceeds it either way); else inconclusive. Inconclusive when item files are missing.")
+_WHICH = {"core_forgotten": "the frozen fragile core, manifests/eval-protected-v1-core.json",
+          "noncore_forgotten": "the other questions the base model answers correctly"}
+
+
+def rule_for(outcome: str) -> str:
+    if outcome == "retention":
+        return RULE
+    return RULE_ITEMS.format(outcome=outcome, n=set_sizes()[outcome], which=_WHICH[outcome])
+
+
+def _verdict(effect: float, threshold: float, direction: str) -> str:
+    if direction == "no_difference":
+        return "confirmed" if abs(effect) <= threshold else "refuted"
+    want = 1 if direction == "less_forgetting" else -1
+    return "confirmed" if effect * want > threshold else "refuted" if effect * want < -threshold else "inconclusive"
 
 
 def resolve_one(h: Hypothesis, arms: Sequence[Arm], sd_points: float | None) -> Hypothesis:
+    """The verdict for one hypothesis, read from the outcome it named before the run. In every
+    outcome a positive effect means the test arm forgot less than its control."""
     by_hash = {hash_: (arm, seed) for arm in arms for seed, hash_ in arm.hashes_by_seed.items()}
     test = [by_hash[x] for x in h.test_spec_hashes if x in by_hash]
     control = next((a for a in arms if a.name == h.control), None)
-    if len(test) < len(h.test_spec_hashes) or control is None or sd_points is None:
+    items = h.outcome != "retention"
+    if len(test) < len(h.test_spec_hashes) or control is None or (sd_points is None and not items):
         missing = "rows not in yet" if len(test) < len(h.test_spec_hashes) else "control or noise floor missing"
         return h.model_copy(update={"status": "running" if h.status == "running" else h.status, "reason": missing})
-    diffs = [arm.retention_by_seed[seed] - control.retention_by_seed[seed] for arm, seed in test
-             if seed in control.retention_by_seed]
-    if len(diffs) < 2:
-        return h.model_copy(update={"status": "inconclusive", "reason": "fewer than two paired seeds"})
-    effect = statistics.mean(diffs)
-    threshold = 2 * sd_points * (2 / len(diffs)) ** 0.5
-    d = h.prediction.direction
-    if d == "no_difference":
-        status = "confirmed" if abs(effect) <= threshold else "refuted"
+    if items:
+        n_items = set_sizes()[h.outcome]
+        ctl = control.outcome_by_seed(h.outcome)
+        pairs = [(arm.outcome_by_seed(h.outcome)[seed], ctl[seed]) for arm, seed in test
+                 if seed in arm.outcome_by_seed(h.outcome) and seed in ctl]
+        if len(pairs) < 2:
+            return h.model_copy(update={
+                "status": "inconclusive",
+                "reason": f"outcome {h.outcome}: per-item files are missing for the test runs or the control, "
+                          f"so only {len(pairs)} paired seeds could be read (two are needed)"})
+        diffs = [c - t for t, c in pairs]  # control minus test: positive = the test arm forgot less
+        pooled = statistics.mean(x for pair in pairs for x in pair) / 100
+        threshold = 2 * (pooled * (1 - pooled) / n_items * 2 / len(diffs)) ** 0.5 * 100
+        what = f"outcome {h.outcome} (share of {n_items} questions, control minus test)"
     else:
-        want = 1 if d == "less_forgetting" else -1
-        status = ("confirmed" if effect * want > threshold
-                  else "refuted" if effect * want < -threshold else "inconclusive")
+        diffs = [arm.retention_by_seed[seed] - control.retention_by_seed[seed] for arm, seed in test
+                 if seed in control.retention_by_seed]
+        if len(diffs) < 2:
+            return h.model_copy(update={"status": "inconclusive", "reason": "fewer than two paired seeds"})
+        threshold = 2 * sd_points * (2 / len(diffs)) ** 0.5
+        what = "outcome retention"
+    effect = statistics.mean(diffs)
+    status = _verdict(effect, threshold, h.prediction.direction)
     test_arm = test[0][0]
     acq_ok = None
     if test_arm.legal_ratio_by_seed and control.legal_ratio_by_seed:
         acq_ok = (statistics.mean(test_arm.legal_ratio_by_seed.values())
                   <= ACQUISITION_MARGIN * statistics.mean(control.legal_ratio_by_seed.values()))
-    note = f"effect {effect:+.2f} points over {len(diffs)} paired seeds, threshold {threshold:.2f}"
+    note = f"{what}: effect {effect:+.2f} points over {len(diffs)} paired seeds, threshold {threshold:.2f}"
     if acq_ok is False:
         note += "; learns legal worse than its control by more than the 5% margin"
     return h.model_copy(update={
@@ -577,11 +699,17 @@ def cycle(
     tiny_check: Callable[[str, dict[str, Any]], dict[str, Any]] | None = tiny_check_subprocess,
     own_technique: str = "allow",
     focus: str = "",
+    fetch_items: Callable[[Sequence[Path]], Any] | None = None,
+    repo_root: Path = REPO_ROOT,
 ) -> list[Hypothesis]:
     """One explore cycle. Returns every hypothesis on file afterwards.
 
     `memory` is an optional `pastdev.PastMemory`: the shared memory the agents write to and
-    recall from. The files stay the truth; a memory that is down changes nothing here."""
+    recall from. The files stay the truth; a memory that is down changes nothing here.
+
+    `fetch_items` copies the per-item files of the rows in a rows file from the Modal volume to
+    `repo_root`/results/items, so the forgetting outcomes can be read. None (the default, and
+    what the tests use) skips it; a fetch that fails is reported and never stops the cycle."""
     out.mkdir(parents=True, exist_ok=True)
     rows_path, hyp_path = out / "rows.jsonl", out / "hypotheses.jsonl"
     log = DecisionLog(out / "decisions.jsonl")
@@ -592,7 +720,7 @@ def cycle(
         return datetime.now(UTC).isoformat(timespec="seconds")
 
     if not resolve_only:
-        arms = read_arms(inputs)
+        arms = read_arms(inputs, repo_root)
         # Literature first: a claim card comes with its source and was already checked against
         # the catalog by the Scout. The proposer fills what is left of this cycle's allowance.
         cards, problems = read_inbox(out / INBOX_NAME, stored)
@@ -645,11 +773,11 @@ def cycle(
             record = Hypothesis(
                 id=hyp_id, created_at=now(), author=who, origin=p.origin, question=p.question,
                 claim=p.claim, source=p.source, prediction=p.prediction, control=p.control,
-                card_id=card_id, new_technique=p.new_technique,
+                outcome=p.outcome, card_id=card_id, new_technique=p.new_technique,
                 checks=["static allow-list", "tiny-model training"] if own else [],
                 test_spec_hashes=[s.spec_hash() for s in specs],
                 control_spec_hashes=[control.hashes_by_seed[s] for s in EXPLORE_SEEDS] if specs and control else [],
-                decision_rule=RULE, status="accepted" if specs else "rejected", reason=why)
+                decision_rule=rule_for(p.outcome), status="accepted" if specs else "rejected", reason=why)
             fresh.append(record)
             say(f"{hyp_id} {'ACCEPT' if specs else 'REJECT'} [{p.origin}] {p.claim}" + (f"  ({why})" if why else ""))
             if specs:
@@ -716,7 +844,14 @@ def cycle(
             launch(accepted_specs, out, backend, git_sha, have=(), concurrency=concurrency,
                    cap_usd=cap_usd, say=say, tag=f"explore/{fresh[0].id}", **kwargs)
 
-    arms = read_arms(inputs)
+    if fetch_items is not None and (go or resolve_only) and rows_path.exists():
+        try:  # the forgetting outcomes are read from these files; retention does not need them
+            missing = fetch_items([rows_path])
+            if missing:
+                say(f"per-item files: {missing} runs could not be fetched; their forgetting outcomes stay unread")
+        except Exception as exc:  # noqa: BLE001 - a download problem must not lose the cycle
+            say(f"per-item files: fetch failed ({type(exc).__name__}: {str(exc)[:160]})")
+    arms = read_arms(inputs, repo_root)
     sd = noise_sd_points(arms)
     resolved = [resolve_one(h, arms, sd) if h.status == "running" else h for h in stored]
     # A test run that ended without finishing can never resolve its hypothesis by the rule.
@@ -737,9 +872,11 @@ def cycle(
         rows = {r.spec_hash: r for r in (a1.read_rows(rows_path) if rows_path.exists() else [])}
         log.append(
             key=f"explore/resolve#{len(log.entries())}", state="explore/read", actor="explore", ts=now(),
-            reason=f"{len(done)} hypotheses resolved by the fixed rule on the selection half.",
+            reason=f"{len(done)} hypotheses resolved by the fixed rule for their outcome, selection half.",
             input_row_hashes=[a1_row_hash(rows[x]) for h in done for x in h.test_spec_hashes if x in rows],
-            data={"verdicts": [{"id": h.id, "status": h.status, "claim": h.claim, "note": h.reason} for h in done]},
+            data={"verdicts": [{"id": h.id, "status": h.status, "claim": h.claim, "outcome": h.outcome,
+                                "effect_points": h.effect_points, "threshold_points": h.threshold_points,
+                                "note": h.reason} for h in done]},
         )
     for h in resolved:
         if h.status in ("confirmed", "refuted", "inconclusive"):
@@ -787,6 +924,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="names this instance when several run at once; default: AGENTCHAT_NAME. "
                              "With a name, --out defaults to results/agent/explore-<name>")
     parser.add_argument("--focus", default="", help="this instance's part of the question, one sentence")
+    parser.add_argument("--no-fetch-items", action="store_true",
+                        help="do not copy new runs' per-item files from the Modal volume after a launch; "
+                             "hypotheses on the two forgetting outcomes then resolve as inconclusive")
+    parser.add_argument("--volume", default="clh-work", help="the Modal volume the per-item files are read from")
     parser.add_argument("--memory", choices=["none", "pastdev"], default="none",
                         help="pastdev: write to and recall from the shared memory (needs PAST_API_KEY)")
     args = parser.parse_args(argv)
@@ -820,6 +961,12 @@ def main(argv: list[str] | None = None) -> int:
         args.out.mkdir(parents=True, exist_ok=True)
         sources = _search_sources(args.search, args.out) if args.search else ""
         backend, sha = (ModalFunctionBackend(), code_version()) if args.go else (None, None)
+        fetch = None
+        if (args.go or args.resolve) and not args.no_fetch_items:
+            from ..executor.fetch import fetch_items as _fetch
+
+            def fetch(files: Sequence[Path]) -> int:
+                return _fetch(files, args.volume, REPO_ROOT)
         total_cap = args.total_cap_usd
         if total_cap is None and args.config is not None:
             from .config import load_agent_config as _load
@@ -830,7 +977,7 @@ def main(argv: list[str] | None = None) -> int:
             after = cycle(args.out, args.have, llm=llm, backend=backend, git_sha=sha, go=args.go,
                           resolve_only=args.resolve, sources=sources, max_hypotheses=args.max_hypotheses,
                           cap_usd=args.cap_usd, memory=memory, total_cap_usd=total_cap,
-                          own_technique=args.own_technique, focus=args.focus)
+                          own_technique=args.own_technique, focus=args.focus, fetch_items=fetch)
             new = [h for h in after if h.id not in before]
             if args.cycles > 1:
                 print(f"cycle {n + 1}/{args.cycles}: {len(new)} new hypotheses, "

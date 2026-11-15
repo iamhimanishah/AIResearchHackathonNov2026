@@ -14,6 +14,7 @@
   clh export-schema [--out DIR]             JSON Schemas of the run spec and result row
   clh run SPEC... [--modal] [--out F]       run specs, append one result row each
   clh fetch-items FILE...                   per-item files of finished runs, from Modal to results/items/
+  clh item-profile FILE...                  per arm: fragile-core and other forgetting, selection half
   clh tinker-manifest                       draw the frozen C5 subsample into manifests/tinker-c5.json
   clh tinker-run --arm A --seed N [--smoke] [--dry-run]
                                             one C5 arm on Tinker; --smoke is 50/50 per task
@@ -511,35 +512,24 @@ def cmd_run(args) -> int:
 def cmd_fetch_items(args) -> int:
     """Download the per-item checkpoint files of every finished run in the given row files from
     the Modal work volume into results/items/, and point the rows at them."""
-    import subprocess
+    from clharness.executor.fetch import fetch_items
 
-    from clharness.executor.run import items_path, run_name
-    from clharness.spec import read_rows, write_rows
+    return 1 if fetch_items(args.files, args.volume, REPO_ROOT) else 0
 
-    missing = 0
+
+def cmd_item_profile(args) -> int:
+    """Per arm, on the selection half: share of the fragile core forgotten, share of the other
+    known questions forgotten, share of unknown questions gained (analysis/item_profile.py)."""
+    from clharness.analysis.item_profile import arm_profiles, format_table
+    from clharness.spec import read_rows
+
+    rows = {}
     for path in args.files:
-        rows, changed = read_rows(path), False
-        for i, row in enumerate(rows):
-            if row.retention is None or row.backend != "modal":
-                continue
-            local = REPO_ROOT / items_path(row.spec)
-            if not list(local.glob("ckpt_*/items_*.npy")):
-                local.parent.mkdir(parents=True, exist_ok=True)
-                remote = f"runs/{run_name(row.spec)}/checkpoints"
-                res = subprocess.run(["modal", "volume", "get", "--force", args.volume, remote, str(local.parent)],
-                                     capture_output=True, text=True)
-                if res.returncode != 0 or not list(local.glob("ckpt_*/items_*.npy")):
-                    missing += 1
-                    print(f"MISSING {row.spec.name} {row.spec_hash[:12]}: {res.stderr.strip()[-200:]}", file=sys.stderr)
-                    continue
-                print(f"fetched {row.spec.name} -> {items_path(row.spec)}")
-            if row.items_path != items_path(row.spec):  # older rows pointed into the cloud volume
-                rows[i] = row.model_copy(update={"items_path": items_path(row.spec)})
-                changed = True
-        if changed:
-            write_rows(path, rows)
-            print(f"updated items_path in {path}")
-    return 1 if missing else 0
+        for row in read_rows(path):
+            rows[row.spec_hash] = row
+    profiles = arm_profiles(list(rows.values()), REPO_ROOT)
+    print(format_table(profiles))
+    return 0 if any(p["seeds"] for p in profiles) else 1
 
 
 def cmd_tinker_manifest(args) -> int:
@@ -711,6 +701,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("files", nargs="+", help="JSONL files of result rows")
     p.add_argument("--volume", default="clh-work")
     p.set_defaults(fn=cmd_fetch_items)
+    p = sub.add_parser("item-profile", help="per arm: share of the fragile core and of other known questions forgotten")
+    p.add_argument("files", nargs="+", help="JSONL files of result rows whose item files are under results/items/")
+    p.set_defaults(fn=cmd_item_profile)
     p = sub.add_parser("export-schema", help="write the run-spec and result-row JSON Schemas")
     p.add_argument("--out", default=str(REPO_ROOT / "configs" / "schema"))
     p.set_defaults(fn=cmd_export_schema)
