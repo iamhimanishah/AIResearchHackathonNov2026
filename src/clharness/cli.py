@@ -425,6 +425,47 @@ def cmd_spec_hash(args) -> int:
     return 0
 
 
+def cmd_plan_replication(args) -> int:
+    """Write the replication run specs (PREREG 6.3/6.3b): the promoted factorial configs and the
+    promoted selection variant per signal, at the replication seeds. Selection half only — safe
+    to run as soon as the screen rows exist. Specs already finished are left out, so running
+    this again after part of the replication has landed lists only what is missing."""
+    import json
+
+    from clharness.analysis.replication import replication_specs
+    from clharness.spec import read_rows
+
+    rows = [r for path in args.files for r in read_rows(path)]
+    plan = replication_specs(rows, allow_simulated=args.allow_simulated)
+    specs = plan["specs"]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    rel = []
+    for sp in specs:
+        p = out / f"{sp.name}.json"
+        payload = sp.model_dump(mode="json", exclude_none=True)
+        if not payload.get("optim"):
+            payload.pop("optim", None)
+        p.write_text(json.dumps(payload, indent=2) + "\n")
+        try:
+            rel.append(p.resolve().relative_to(REPO_ROOT))
+        except ValueError:
+            rel.append(p)
+    lst = out / "list.txt"
+    try:
+        lst_rel = lst.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        lst_rel = lst
+    lst.write_text(
+        "# Replication specs (PREREG 6.3/6.3b), promoted on the selection half only.\n"
+        f"#   clh run --modal $(grep -v '^#' {lst_rel})"
+        " --out results/rows.replication.jsonl\n" + "".join(f"{p}\n" for p in rel))
+    print(f"promoted {plan['promoted']} + selection {plan['promoted_selection']}"
+          f" ({plan['already_finished']} already finished)")
+    print(f"wrote {len(rel)} specs and {lst}")
+    return 0
+
+
 def cmd_fake_rows(args) -> int:
     from clharness.fake import PLANTED, fake_rows
     from clharness.spec import write_rows
@@ -527,6 +568,13 @@ def main(argv: list[str] | None = None) -> int:
                         "is to exclude them so simulator output cannot reach the tables")
     p.add_argument("--out", default="results/analysis")
     p.set_defaults(fn=cmd_grid_analysis)
+    p = sub.add_parser("plan-replication", help="write the replication spec JSON files "
+                       "(PREREG 6.3/6.3b) promoted on the selection half of the screen rows")
+    p.add_argument("files", nargs="+", help="JSONL files of screen result rows")
+    p.add_argument("--allow-simulated", action="store_true",
+                   help="let rows from non-real backends (local, fake) into the analysis")
+    p.add_argument("--out", default=str(REPO_ROOT / "configs" / "bench" / "specs" / "replication"))
+    p.set_defaults(fn=cmd_plan_replication)
     p = sub.add_parser("figures", help="the five pitch/report SVGs from a grid-analysis JSON")
     p.add_argument("analysis", help="the JSON file written by clh grid-analysis")
     p.add_argument("--out", default=str(REPO_ROOT / "results" / "figures"))
