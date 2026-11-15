@@ -391,7 +391,11 @@ def cmd_grid_analysis(args) -> int:
     from clharness.spec import read_rows
 
     rows = [r for path in args.files for r in read_rows(path)]
-    report = analyze(rows, confirmatory=args.confirmatory, n_boot=args.n_boot, seed=args.seed)
+    report = analyze(rows, confirmatory=args.confirmatory, n_boot=args.n_boot, seed=args.seed,
+                     allow_simulated=args.allow_simulated)
+    if report["rows"]["excluded_backend"]:
+        print(f"excluded {report['rows']['excluded_backend']} non-real-backend rows: "
+              + ", ".join(report["excluded_backend_rows"]))
     if args.planted:
         planted = json.loads(Path(args.planted).read_text())
         checks = check_planted(report, planted) + check_planted_selection(rows, planted)
@@ -508,6 +512,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--n-boot", type=int, default=10_000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--planted", help="planted_effects.json, to check recovery on fake rows")
+    p.add_argument("--allow-simulated", action="store_true",
+                   help="let rows from non-real backends (local, fake) into the analysis; default "
+                        "is to exclude them so simulator output cannot reach the tables")
     p.add_argument("--out", default="results/analysis")
     p.set_defaults(fn=cmd_grid_analysis)
     p = sub.add_parser("spec-hash", help="print the idempotency key of run spec JSON files")
