@@ -64,6 +64,7 @@ from .contracts import (
     from_a1_row,
     load_rows,
     passes_acquisition_floor,
+    retryable,
     spec_hash,
     technique_map,
     technique_names,
@@ -595,7 +596,7 @@ class SimExecutor:
     def _may_launch(self, key: str, last: ResultRow | None) -> bool:
         if key in self.in_flight():
             return False
-        return last is None or last.failure_kind in ("infra", "timeout")
+        return last is None or retryable(last)
 
     def _finish_time(self, spec: RunSpec) -> datetime:
         """Start when one of the `concurrency` slots is free, finish one run length later."""

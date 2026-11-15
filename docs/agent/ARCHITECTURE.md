@@ -82,7 +82,7 @@ PLAN..ADVANCE      -> FREEZE              on budget exhausted or deadline reache
 | FALLBACK_PLAN | code | Deterministic plan for the phase (see Planner section). Real mode, replicate: exactly `design.replication_specs(rows)["specs"]` (PREREG 6.3) from blinded rows, with the ranking in the decision; PLAN skips the model and comes here | Always | never fails |
 | GATE | Gatekeeper | Verdict `ACCEPT`, `REJECT(reasons)` or `TRIM(kept, dropped, reasons)` | Verdict | A fallback plan rejected only as duplicates -> next phase's PLAN (or FREEZE after combine); rejected for any other rule -> HALTED (a bug) |
 | LAUNCH | Operator | Submit accepted specs not already in rows (idempotent by `spec_hash`) | Submitted | Executor unreachable 3 times -> HALTED |
-| WAIT | Operator | Poll until every spec has a row or times out; re-queue an infrastructure failure once | All resolved, or phase timeout | Timeout: missing specs recorded as `failed: timeout`, continue |
+| WAIT | Operator | Poll until every spec has a row or times out; re-queue an infrastructure failure or a timeout once (`contracts.RETRYABLE_KINDS`, PREREG 8) | All resolved, or phase timeout | Timeout: missing specs recorded as `failed: timeout`, continue |
 | READ | Analyst | Findings from the new rows; checker verifies citations; write memory | Findings stored (may be empty) | Model error twice -> deterministic findings only, continue |
 | ADVANCE | Conductor | Deterministic rule: next phase, repeat this phase once (too many failures), or FREEZE | Decided | never fails |
 | SCOUT | Scout | One candidate technique with sources; a human review gate (logged) before it enters the catalog | Candidate card written, or skipped | Any failure -> skip, logged. Never blocks |

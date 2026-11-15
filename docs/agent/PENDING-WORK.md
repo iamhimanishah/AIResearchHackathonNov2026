@@ -83,3 +83,36 @@ out: it changes what the launcher writes on the grid's money path tonight.
 
 **Out of scope.** Keeping the measured cost on the launcher's wrong-spec and git-sha refusals
 (modal_executor; after the confirmatory rows).
+
+**Result.** Commit `b220349`. `make test`: 526 passed, 2 skipped, 1 deselected.
+
+## Item 3: RT-30, a timed-out run is re-queued once
+
+**Goal.** The Operator re-queues a `timeout` failure once, as it does an `infra` failure
+(PREREG 8: "re-queued once by the executor"), and every place that treats a failure as
+retryable reads one shared constant.
+
+**Acceptance criteria.**
+- A timeout is re-submitted once and its spec settles on attempt 2.
+- Two timeouts settle the spec (no third run), and the gate then drops it as exhausted.
+- An infra failure then a timeout share the same cap of 2 attempts.
+- A re-queue submit that raises `ExecutorUnreachable` does not kill the wait; it is retried on
+  the next poll.
+- One constant `contracts.RETRYABLE_KINDS` (and `retryable(row)`), used by the Operator,
+  `Conductor._retry_exhausted`, `gatekeeper.duplicate`, `ModalExecutor.submit`, the simulator
+  and the stub operator in roles.py. A static test finds no other `("infra", "timeout")` literal.
+
+**Design.** `contracts.RETRYABLE_KINDS = frozenset({"infra", "timeout"})`, `retryable(row)`.
+`operator._settled` uses it with `MAX_INFRA_ATTEMPTS` (kept as the one cap). The re-queue
+`submit` in `Operator.wait` is wrapped in `except ExecutorUnreachable` and is not marked
+requeued, so the next tick tries again. The gate's reason reads "infrastructure or timeout".
+
+**Tests** (`tests/agent/test_redteam_fixes.py`).
+- `test_rt30_a_timeout_is_retried_once_and_settles_on_attempt_two`.
+- `test_rt30_two_timeouts_settle_and_the_gate_drops_the_spec`.
+- `test_rt30_infra_then_timeout_share_the_cap`.
+- `test_rt30_a_requeue_survives_an_unreachable_executor`.
+- `test_rt30_one_constant_for_retryable_failures` (static).
+
+**Out of scope.** Charging a timeout the 50-minute cost (RT-16 already charges the estimate);
+the ARCHITECTURE "unreachable 3 times -> HALTED" rule.

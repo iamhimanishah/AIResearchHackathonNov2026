@@ -31,6 +31,7 @@ from .contracts import (
     from_a1_row,
     latest_by_spec,
     load_rows,
+    retryable,
     spec_hash,
     technique_names,
 )
@@ -121,7 +122,7 @@ class ModalExecutor:
         for spec in specs:
             key = spec_hash(spec)
             last = latest.get(key)
-            if key in self._calls or (last and last.failure_kind not in ("infra", "timeout")):
+            if key in self._calls or (last and not retryable(last)):
                 continue
             try:
                 call_id = self.backend.spawn(spec.model_dump_json(), self.git_sha, self.gpu)

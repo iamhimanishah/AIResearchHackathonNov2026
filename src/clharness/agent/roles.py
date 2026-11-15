@@ -51,6 +51,7 @@ from .contracts import (
     config_hash,
     finding_id,
     passes_acquisition_floor,
+    retryable,
     spec_hash,
     technique_map,
     technique_names,
@@ -478,7 +479,7 @@ class StubGatekeeper:
         if self._script:
             item = self._script.pop(0)
             return item(proposal, request) if callable(item) else item
-        known = {r.spec_hash for r in request.rows if r.failure_kind not in ("infra", "timeout")}
+        known = {r.spec_hash for r in request.rows if not retryable(r)}
         known |= set(request.pending_spec_hashes)
         kept, dropped = [], []
         for key in dict.fromkeys(proposal.spec_hashes()):
@@ -522,7 +523,7 @@ class StubOperator:
             self.clock.sleep(self.poll_seconds)
 
     def _settle(self, row: ResultRow, final: dict[str, ResultRow], requeued: list[str]) -> None:
-        retry = row.failure_kind == "infra" and row.spec_hash not in requeued
+        retry = retryable(row) and row.spec_hash not in requeued
         if retry and row.spec_hash in self._specs:
             requeued.append(row.spec_hash)
             self.executor.submit([self._specs[row.spec_hash]])

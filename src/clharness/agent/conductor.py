@@ -64,6 +64,7 @@ from .contracts import (
     mint_freeze_token,
     passes_acquisition_floor,
     read_jsonl,
+    retryable,
     selection_views,
     spec_hash,
     technique_names,
@@ -253,8 +254,7 @@ class Conductor:
         for row in self._rows():
             attempts[row.spec_hash] = attempts.get(row.spec_hash, 0) + 1
         return tuple(sorted(r.spec_hash for r in self._latest()
-                            if r.failure_kind in ("infra", "timeout")
-                            and attempts[r.spec_hash] >= MAX_INFRA_ATTEMPTS))
+                            if retryable(r) and attempts[r.spec_hash] >= MAX_INFRA_ATTEMPTS))
 
     def _explore_used(self, rows: Sequence[ResultRow]) -> float:
         """Spent on exploratory rows plus committed to exploratory specs still in flight."""
