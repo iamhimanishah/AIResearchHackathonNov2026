@@ -21,6 +21,7 @@ Imports only the spec module, so the agent can build the grid from it without to
 from __future__ import annotations
 
 import itertools
+from collections.abc import Iterable
 from typing import Any
 
 from clharness.spec import RunSpec, StreamDomain, TechniqueSpec
@@ -77,7 +78,8 @@ def label(techniques: frozenset[str], selection: tuple[str, str] | None = None) 
 
 def spec(techniques: frozenset[str], seed: int, selection: tuple[str, str] | None = None,
          stream: tuple[tuple[str, int], ...] = STREAM, lr: float | None = None,
-         params: dict[str, dict[str, Any]] | None = None, name: str | None = None) -> RunSpec:
+         params: dict[str, dict[str, Any]] | None = None, name: str | None = None,
+         notes: str | None = None) -> RunSpec:
     """One run spec. `selection=(signal, keep)` sets replay's selection (needs replay on).
     `lr` overrides the bench learning rate; it is only for the lower-LR controls (A13)."""
     if selection and "replay" not in techniques:
@@ -96,7 +98,9 @@ def spec(techniques: frozenset[str], seed: int, selection: tuple[str, str] | Non
         name=f"{name}-s{seed}", seed=seed,
         stream=[StreamDomain(name=n, tokens=t) for n, t in stream],
         optim={"lr": lr} if lr is not None else {},
-        techniques=techs, notes="screen (analysis/PREREG.md 6.2)" if lr is None else "LR control (PREREG A13)",
+        techniques=techs,
+        notes=(notes if notes is not None
+               else "screen (analysis/PREREG.md 6.2)" if lr is None else "LR control (PREREG A13)"),
     )
 
 
@@ -150,6 +154,49 @@ def alias_chains() -> list[list[tuple[str, str]]]:
         col = tuple(((a in r) == (b in r)) for r in runs)  # +1 when both on or both off
         chains.setdefault(col, []).append((a, b))
     return sorted(chains.values())
+
+
+# ---------------------------------------------------------------------------------------------
+# Replication (PREREG 6.3/6.3b): what runs after the screen — the promoted factorial
+# configurations and the promoted selection variant per signal, at the replication seeds.
+# ---------------------------------------------------------------------------------------------
+
+REPLICATION_SEEDS = (1, 2)  # the screen is seed 0; replication adds these
+
+
+def replication_specs(promotion: list[dict[str, Any]],
+                      selection_screen: list[dict[str, Any]],
+                      seeds: Iterable[int] = REPLICATION_SEEDS) -> list[RunSpec]:
+    """The post-screen run specs: each promoted configuration and each promoted selection
+    variant, at `seeds`. Takes `analyze(...)["promotion"]` and `["selection_screen"]` — both
+    selection-half objects, so this function never sees report-half data. Promoted entries are
+    always frozen-parameter design specs, so `spec()` reproduces the screen spec's hash at the
+    new seed. Output is de-duplicated by spec hash, in promotion-rank then signal order."""
+    specs: list[RunSpec] = []
+    seen: set[str] = set()
+    for d in promotion:
+        if not d["promoted"]:
+            continue
+        if "techniques" not in d:
+            raise ValueError("promotion entries need a 'techniques' field — regenerate the "
+                             "analysis with this version of analyze()")
+        for s in seeds:
+            sp = spec(frozenset(d["techniques"]), int(s),
+                      notes="replication (analysis/PREREG.md 6.3)")
+            if sp.spec_hash() not in seen:
+                seen.add(sp.spec_hash())
+                specs.append(sp)
+    for d in selection_screen:
+        if not d.get("promoted"):
+            continue
+        for s in seeds:
+            sp = spec(frozenset(d.get("techniques") or REFERENCE), int(s),
+                      selection=(d["signal"], d["keep"]),
+                      notes="replication (analysis/PREREG.md 6.3b)")
+            if sp.spec_hash() not in seen:
+                seen.add(sp.spec_hash())
+                specs.append(sp)
+    return specs
 
 
 # ---------------------------------------------------------------------------------------------

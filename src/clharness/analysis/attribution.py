@@ -438,6 +438,7 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3,
         ranked.append({
             "config": cfg.label, "key": cfg.key, "selection_primary": float(cfg.primary("selection").mean()),
             "n_seeds": len(cfg.rows), "acquisition": acq,
+            "techniques": sorted(cfg.techniques),
             "passes_acquisition_gate": acquisition_gate(cfg, ref, margins)["passes"],
         })
     ranked.sort(key=lambda d: (not d["passes_acquisition_gate"], -d["selection_primary"]))
@@ -478,6 +479,7 @@ def promote_selection(configs: dict[str, Config], ref: Config | None,
         sel = float(cfg.primary("selection").mean())
         rows.append({"config": cfg.label, "key": cfg.key, "signal": cfg.selection[0], "keep": cfg.selection[1],
                      "selection_primary": sel, "vs_reference": sel - ref_sel, "n_seeds": len(cfg.rows),
+                     "techniques": sorted(cfg.techniques),
                      "acquisition": acq, "passes_acquisition_gate": acquisition_gate(cfg, ref, margins)["passes"]})
     for signal in sorted({r["signal"] for r in rows}):
         options = [r for r in rows if r["signal"] == signal and r["passes_acquisition_gate"]]
