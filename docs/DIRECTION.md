@@ -272,6 +272,11 @@ Schemas in `configs/schema/`. Fake rows with planted effects are in `results/fak
 `results/fake/planted_effects.json` says what was planted. Scores and deltas are fractions
 (a 5-point drop is -0.05). Check any rows file with `clh validate-row FILE`.
 
+Per-item files sit next to the row, not in it (`items_path`; listed in `docs/harness.md`,
+"Mechanism probes"). Since 2026-11-15 every run also writes per-option log-likelihoods, and
+bench `fast-mech` adds per-question representation drift. Both are exploratory instruments for
+the mechanism study and do not change any score or spec hash of the frozen bench.
+
 ## Harness changes needed
 
 The harness in `src/clharness/` runs a domain stream and measures at every checkpoint.

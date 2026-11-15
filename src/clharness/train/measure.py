@@ -5,6 +5,10 @@ EvalHook   – tier-1 at every checkpoint (perplexity slices + loglikelihood MC 
 ProbeHook  – forward the probe set, capture residuals at the configured layers, and compute
              per-SAE-feature aggregates + reconstruction/drift metrics + linear CKA vs the base
              model. Per-feature arrays go to <ckpt>/features_layer{L}.npz; scalars are logged.
+ItemDriftHook – per eval question, how far its last-prompt-token residual moved from the base
+             model's (bench fast-mech only). <ckpt>/drift_<task>.npz.
+
+EvalHook also writes <ckpt>/loglik_<task>.npz (per-option log-likelihoods) for answer margins.
 """
 
 from __future__ import annotations
@@ -48,6 +52,21 @@ def _fit_linear_probe(x: torch.Tensor, y: torch.Tensor, n_classes: int, steps: i
 def _probe_acc(probe: torch.nn.Linear, x: torch.Tensor, y: torch.Tensor) -> float:
     with torch.no_grad():
         return float((probe(x).argmax(1) == y).float().mean())
+
+
+def loglik_arrays(loglik: list) -> tuple[np.ndarray, np.ndarray]:
+    """`run_lm_eval`'s per-item `_loglik` list as two float32 arrays [n_items, max_options]:
+    `raw` log-likelihoods and the `score` the pick is the argmax of (length-normalised for
+    acc_norm tasks). Items with fewer options, or none recorded, are padded with NaN. Written per
+    checkpoint as `loglik_<task>.npz`; the gold-minus-best-wrong margin comes from `score`."""
+    width = max((len(x[0]) for x in loglik if x is not None), default=0)
+    raw = np.full((len(loglik), width), np.nan, dtype=np.float32)
+    score = np.full((len(loglik), width), np.nan, dtype=np.float32)
+    for i, x in enumerate(loglik):
+        if x is not None:
+            raw[i, : len(x[0])] = x[0]
+            score[i, : len(x[1])] = x[1]
+    return raw, score
 
 
 class EvalHook(BaseHook):
@@ -102,6 +121,10 @@ class EvalHook(BaseHook):
                 items = metrics.pop("_items", None)
                 metrics.pop("_item_metric", None)
                 choices, gold = metrics.pop("_choices", None), metrics.pop("_gold", None)
+                loglik = metrics.pop("_loglik", None)
+                if loglik is not None and ckpt.path:  # per-option log-likelihoods: answer margins
+                    raw, score = loglik_arrays(loglik)
+                    np.savez_compressed(Path(ckpt.path) / f"loglik_{task}.npz", raw=raw, score=score)
                 if choices is not None and ckpt.path:  # which option was picked: degenerate-answer alarm
                     np.save(Path(ckpt.path) / f"choices_{task}.npy", np.asarray(choices, dtype=np.int16))
                     np.save(Path(ckpt.path) / f"gold_{task}.npy", np.asarray(gold, dtype=np.int16))
@@ -302,6 +325,114 @@ class ProbeHook(BaseHook):
         return out
 
 
+def item_prompts(tasks: list[Any], manifest: dict[str, Any], include_path: str | None) -> dict[str, list[str | None]]:
+    """The zero-shot prompt (`doc_to_text`) of every frozen item of each multiple-choice task, in
+    manifest order. None where the task's prompt is not a string."""
+    from clharness.evals.lm_eval_runner import get_task_dict, make_task_manager
+
+    names = [t.task for t in tasks]
+    objs = get_task_dict(names, make_task_manager(include_path))
+    out: dict[str, list[str | None]] = {}
+    for n in names:
+        task = objs[n]
+        if getattr(task, "OUTPUT_TYPE", None) != "multiple_choice":
+            continue
+        docs = task.eval_docs
+        prompts = [task.doc_to_text(docs[i]) for i in manifest["tasks"][n]["indices"]]
+        out[n] = [q if isinstance(q, str) else None for q in prompts]
+    return out
+
+
+class ItemDriftHook(BaseHook):
+    """How far each eval question's internal state moves from the base model's.
+
+    At every checkpoint, forward each multiple-choice question's zero-shot prompt and read the
+    residual stream at its last token (where the answer is about to be scored) at the layers in
+    `eval.item_drift_layers`. The first checkpoint (the base model) is the reference. Writes
+    `<ckpt>/drift_<task>.npz` with `layers`, `cos` [n_items, n_layers] (cosine to the base
+    state, 1.0 at base) and `norm_ratio` [n_items, n_layers] (norm over the base norm). NaN where
+    an item has no prompt. The base states are kept in `<run>/item_drift_base.pt` (bf16).
+
+    Read together with `loglik_<task>.npz`: an answer that flips while its state barely moves
+    points at a changed readout; a flip with a large move points at the representation itself.
+    Exploratory instrument (bench `fast-mech`), added after the pre-registration."""
+
+    name = "item_drift"
+
+    def __init__(self, item_tokens: dict[str, list[list[int] | None]] | None = None):
+        self._given = item_tokens  # tests pass token ids directly; runs build them from lm-eval
+
+    def on_run_start(self, ctx: RunContext):
+        cfg = ctx.cfg
+        self.layers = list(cfg.eval.item_drift_layers)
+        if self._given is not None:
+            self.tokens = self._given
+        else:
+            tier1 = [t for t in cfg.eval.lm_eval_tasks if t.tier == 1]
+            prompts = item_prompts(tier1, ctx.eval_manifest, cfg.eval.include_path)
+            cap = cfg.eval.max_length
+            self.tokens = {
+                task: [None if q is None else list(ctx.tokenizer(q, add_special_tokens=True)["input_ids"])[-cap:]
+                       for q in qs]
+                for task, qs in prompts.items()
+            }
+        self.base: dict[str, torch.Tensor] | None = None
+        return {"n_items": float(sum(len(v) for v in self.tokens.values())), "n_layers": float(len(self.layers))}
+
+    def _states(self, ctx: RunContext, seqs: list[list[int] | None]) -> torch.Tensor:
+        """[n_items, n_layers, d] float32 on CPU: the residual at each prompt's last token."""
+        bs = ctx.cfg.eval.batch_size
+        pad = getattr(ctx.tokenizer, "pad_token_id", None) or 0
+        rows: list[torch.Tensor | None] = [None] * len(seqs)
+        todo = [i for i, s in enumerate(seqs) if s]
+        todo.sort(key=lambda i: len(seqs[i]))  # similar lengths per batch: less padding
+        with ResidualCapture(ctx.model, self.layers) as cap:
+            for j in range(0, len(todo), bs):
+                idx = todo[j : j + bs]
+                width = max(len(seqs[i]) for i in idx)
+                ids = torch.full((len(idx), width), pad, dtype=torch.long)
+                mask = torch.zeros((len(idx), width), dtype=torch.long)
+                for r, i in enumerate(idx):  # right padding: positions stay 0..len-1
+                    ids[r, : len(seqs[i])] = torch.tensor(seqs[i])
+                    mask[r, : len(seqs[i])] = 1
+                last = mask.sum(1) - 1
+                with ctx.ac():
+                    ctx.model(input_ids=ids.to(ctx.device), attention_mask=mask.to(ctx.device), use_cache=False)
+                ar = torch.arange(len(idx))
+                h = torch.stack([cap.acts[L][ar, last.to(cap.acts[L].device)].float().cpu() for L in self.layers], 1)
+                for r, i in enumerate(idx):
+                    rows[i] = h[r]
+                cap.clear()
+        d = next((x.shape[-1] for x in rows if x is not None), 1)
+        nan = torch.full((len(self.layers), d), float("nan"))
+        return torch.stack([x if x is not None else nan for x in rows]) if rows else torch.empty(0, len(self.layers), d)
+
+    @torch.no_grad()
+    def on_checkpoint(self, ctx: RunContext, ckpt: CheckpointInfo):
+        was_training = ctx.model.training
+        ctx.model.eval()
+        t0 = time.time()
+        states = {task: self._states(ctx, seqs) for task, seqs in self.tokens.items()}
+        if self.base is None:
+            self.base = states
+            # bf16, not fp16: Gemma residuals exceed fp16's range
+            torch.save({t: x.to(torch.bfloat16) for t, x in states.items()}, Path(ctx.output_dir) / "item_drift_base.pt")
+        out: dict[str, float] = {}
+        ckpt_dir = Path(ckpt.path) if ckpt.path else Path(ctx.output_dir)
+        for task, cur in states.items():
+            base = self.base[task]
+            cos = torch.nn.functional.cosine_similarity(cur, base, dim=-1).numpy().astype(np.float32)
+            ratio = (cur.norm(dim=-1) / base.norm(dim=-1).clamp(min=1e-12)).numpy().astype(np.float32)
+            np.savez_compressed(ckpt_dir / f"drift_{task}.npz", layers=np.asarray(self.layers, dtype=np.int16),
+                                cos=cos, norm_ratio=ratio)
+            for j, L in enumerate(self.layers):
+                out[f"{task}/L{L}/cos_mean"] = float(np.nanmean(cos[:, j])) if cos.size else float("nan")
+        out["wall_s"] = time.time() - t0
+        if was_training:
+            ctx.model.train()
+        return out
+
+
 def default_hooks(cfg: Any = None) -> list[BaseHook]:
     """The measurement hooks. Given a config, leaves out the ones it switches off: the probe
     hook when no layers are captured, the recoverability probe at recover_tokens 0, and the
@@ -316,4 +447,6 @@ def default_hooks(cfg: Any = None) -> list[BaseHook]:
         hooks.append(RecoverabilityHook(ev))
     if cfg.train.signal_log:
         hooks.append(SignalLogHook())
+    if cfg.eval.item_drift_layers:
+        hooks.append(ItemDriftHook())
     return hooks

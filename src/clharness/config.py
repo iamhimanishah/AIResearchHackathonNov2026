@@ -75,6 +75,9 @@ class EvalCfg(Strict):
     batch_size: int
     max_length: int  # lm-eval context cap (left-truncates prompts); logits are [B, T, 262k] fp32
     include_path: str | None = None  # extra lm-eval task dir (custom tasks), repo-relative
+    # Per-question representation drift (train/measure.py ItemDriftHook): residual layers read at
+    # the last prompt token of every multiple-choice eval question. Empty = off (the frozen bench).
+    item_drift_layers: list[int] = []
 
 
 class DomainCfg(Strict):

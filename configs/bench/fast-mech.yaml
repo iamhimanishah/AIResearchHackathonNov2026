@@ -1,0 +1,21 @@
+# The frozen fast bench plus one measurement: per-question representation drift.
+#
+# Why: the fast bench shows that forgetting falls on a small, repeatable set of questions
+# (manifests/eval-protected-v1-core.json), but not why. This bench records, for every protected
+# question, how far the model's internal state at the end of the question moves from the base
+# model's, at three residual layers (train/measure.py, ItemDriftHook). Read with the per-option
+# log-likelihoods every run now saves, it separates "the state moved" from "the state stayed and
+# the readout changed".
+#
+# Rules:
+#   * Training and evals are identical to configs/bench/fast.yaml (checked by a test). Only the
+#     measurement differs: one extra forward pass over the 2,000 questions per checkpoint.
+#   * A spec names this file as `bench: fast-mech`, so its rows have their own spec hash and never
+#     mix with the grid's rows. A test arm on this bench needs its control on this bench too.
+#   * Exploratory, added after the pre-registration. Not part of the confirmatory analysis.
+#   * Not yet run on Modal as of 2026-11-15.
+include:
+  - fast.yaml
+
+eval:
+  item_drift_layers: [7, 13, 22]    # the layers of the model's Gemma Scope SAEs (configs/model/)
