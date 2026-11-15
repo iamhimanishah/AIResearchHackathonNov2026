@@ -27,7 +27,9 @@ state.json. It refuses a rows file of exploratory runs (`rows.explore.jsonl`).
 from __future__ import annotations
 
 import argparse
+import functools
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -85,13 +87,14 @@ def build_real(out: Path, prereg: Prereg, rows_path: Path, *, compute_cap_usd: f
                gpu: str = "H100", clock: Clock | None = None, llm: LLMClient | None = None,
                scout: Scout | None = None, memory: bool = True,
                deadline: datetime | None = None, fault=None,
-               explore_inbox: Path | None = None, reserve_fraction: float = 0.3) -> Conductor:
+               explore_inbox: Path | None = None, reserve_fraction: float = 0.3,
+               context_rows: Sequence[str | Path] | None = None) -> Conductor:
     """The loop on real rows, read-only: a `ReadOnlyExecutor` (refuses every launch), the real
     catalog, the bench check in the gate, the frozen stream. Accepted specs become proposals;
     claim cards go to the explore inbox (`explore_inbox`, default `<out>/explore/literature.jsonl`;
     the file `explore.read_inbox` reads) and this loop tests none of them."""
     from .launch_design import MINUTES_PER_RUN
-    from .prereg_plan import replicate_plan
+    from .prereg_plan import PREREG_CONTEXT_ROWS, replicate_plan
     from .readonly import ReadOnlyExecutor
 
     rows_path = Path(rows_path)
@@ -118,7 +121,10 @@ def build_real(out: Path, prereg: Prereg, rows_path: Path, *, compute_cap_usd: f
         exploratory_configs=design_exploratory_configs(),
         minutes_per_run=MINUTES_PER_RUN, fault=fault, scout=scout,
         design_arms=design_claim_arms(),
-        explore_inbox=inbox, launches=False, replicate_plan=replicate_plan,
+        explore_inbox=inbox, launches=False,
+        replicate_plan=functools.partial(
+            replicate_plan,
+            context=tuple(PREREG_CONTEXT_ROWS if context_rows is None else context_rows)),
     )
 
 
@@ -126,6 +132,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--executor", choices=["sim", "real"], required=True)
     parser.add_argument("--out", type=Path, required=True, help="directory for rows, state, log")
+    parser.add_argument("--context-rows", type=Path, nargs="*", default=None,
+                        help="real: the other pre-registered row files read with --rows (the "
+                             "phase-0 controls and the reference arm; default the Makefile's "
+                             "REPORTED_ROWS list). Never written")
     parser.add_argument("--rows", type=Path, default=None,
                         help="real: the rows file to read, never written "
                              "(default results/agent/rows.jsonl)")
@@ -222,7 +232,8 @@ def _main_real(args: argparse.Namespace, llm: LLMClient | None) -> int:
         conductor = build_real(args.out, prereg, rows, compute_cap_usd=args.compute_cap_usd,
                                gpu=args.gpu, llm=llm, scout=scout,
                                explore_inbox=args.explore_inbox,
-                               reserve_fraction=args.reserve_fraction)
+                               reserve_fraction=args.reserve_fraction,
+                               context_rows=args.context_rows)
     except ValueError as exc:
         print(f"refused: {exc}")
         return 2

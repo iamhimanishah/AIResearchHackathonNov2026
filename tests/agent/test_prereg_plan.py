@@ -47,14 +47,41 @@ def _no_report(monkeypatch):
     monkeypatch.setattr(ReadOnlyExecutor, "submit", lambda self, specs: pytest.fail("submit"))
 
 
+def _context_rows() -> list[a1.ResultRow]:
+    from clharness.agent.prereg_plan import PREREG_CONTEXT_ROWS
+
+    return [r for p in PREREG_CONTEXT_ROWS for r in _a1_rows(REPO / p)]
+
+
+def _replication_hashes() -> set[str]:
+    """Spec hashes of the pre-registered replication set, from the seed-0 rows plus the controls
+    (the same input the reported analysis uses)."""
+    from clharness.analysis.design import replication_specs
+    from clharness.analysis.replication import REPLICATION_SEEDS
+
+    seed0 = [r for r in _a1_rows(AGENT_ROWS) + _context_rows()
+             if r.spec.seed not in REPLICATION_SEEDS]
+    return {s.spec_hash() for s in replication_specs(seed0)["specs"]}
+
+
+def _copy_without(tmp_path: Path, drop: set[str]) -> Path:
+    path = tmp_path / "rows.jsonl"
+    keep = [x for x in AGENT_ROWS.read_text().splitlines()
+            if x.strip() and json.loads(x)["spec_hash"] not in drop]
+    path.write_text("".join(x + "\n" for x in keep))
+    return path
+
+
 def test_real_mode_replicate_proposes_exactly_the_prereg_set(tmp_path, monkeypatch):
+    from clharness.agent.prereg_plan import prereg_rows
     from clharness.analysis.design import replication_specs
 
-    rows, out = _copy(tmp_path), tmp_path / "out"
+    # the agent's rows without their replication runs, so the plan has something to propose
+    rows, out = _copy_without(tmp_path, _replication_hashes()), tmp_path / "out"
     before = rows.read_bytes()
-    plan = replication_specs(_a1_rows(rows))
+    plan = replication_specs(prereg_rows(rows))
     want = [s.spec_hash() for s in plan["specs"]]
-    assert want  # the committed rows promote something to replicate
+    assert sorted(want) == sorted(_replication_hashes()) and want
     _no_report(monkeypatch)
     conductor = build_real(out, c.load_prereg(DEFAULT_PREREG), rows, compute_cap_usd=700.0,
                            clock=FakeClock())
@@ -81,6 +108,29 @@ def test_real_mode_replicate_proposes_exactly_the_prereg_set(tmp_path, monkeypat
     assert advance.data["choice"] == "go to combine"
 
 
+def test_promotion_matches_what_was_replicated_only_with_the_reference_rows():
+    """RT-01 in practice: from the agent's rows alone the gate has no reference arm and
+    promotes other configurations; with the pre-registered context rows the plan is the set
+    that was replicated, and every one of its runs has a row."""
+    from clharness.agent.prereg_plan import PlanInputError, prereg_rows, replicate_plan
+
+    with pytest.raises(PlanInputError, match="RT-01"):
+        replicate_plan(AGENT_ROWS, context=())
+    _, data = replicate_plan(AGENT_ROWS)
+    have = {r.spec_hash for r in prereg_rows(AGENT_ROWS) if r.status == "finished"}
+    assert data["planned"] == data["already_finished"] == len(_replication_hashes())
+    assert _replication_hashes() <= have
+
+
+def test_real_mode_halts_without_the_reference_arm(tmp_path, monkeypatch):
+    rows, out = _copy(tmp_path), tmp_path / "out"
+    _no_report(monkeypatch)
+    state = build_real(out, c.load_prereg(DEFAULT_PREREG), rows, compute_cap_usd=700.0,
+                       clock=FakeClock(), context_rows=()).run(stop_before=REPORT)
+    assert state.state == HALTED
+    assert "reference-arm" in state.halted_reason and "RT-01" in state.halted_reason
+
+
 def test_blinding_hides_the_report_half_and_keeps_the_ranking():
     from clharness.agent.prereg_plan import blind, blinded_rows
     from clharness.analysis.design import replication_specs
@@ -100,28 +150,13 @@ def test_blinding_hides_the_report_half_and_keeps_the_ranking():
         assert json.dumps(open_[key], default=str) == json.dumps(closed[key], default=str)
 
 
-def _finished_replications(rows: list[a1.ResultRow]) -> list[a1.ResultRow]:
-    """A finished row for every replication spec: its seed-0 row with the new spec."""
-    from clharness.analysis.design import replication_specs
-
-    by_hash = {r.spec_hash: r for r in rows}
-    out = []
-    for spec in replication_specs(rows)["specs"]:
-        parent = by_hash[spec.parent_spec_hash]
-        out.append(a1.ResultRow.model_validate(
-            {**parent.model_dump(mode="json"), "spec": spec.model_dump(mode="json"),
-             "spec_hash": spec.spec_hash()}))
-    return out
-
-
 def test_replicate_with_every_run_finished_moves_on_without_repeating(tmp_path, monkeypatch):
     from clharness.agent.prereg_plan import replicate_plan
 
-    done = _finished_replications(_a1_rows(AGENT_ROWS))
-    rows, out = _copy(tmp_path, done), tmp_path / "out"
+    rows, out = _copy(tmp_path), tmp_path / "out"  # the committed rows: replication is in
     specs, data = replicate_plan(rows)
-    assert data["already_finished"] == data["planned"] == len(done)
-    assert sorted(p.spec.spec_hash() for p in specs) == sorted(r.spec_hash for r in done)
+    assert data["already_finished"] == data["planned"] == len(_replication_hashes())
+    assert sorted(p.spec.spec_hash() for p in specs) == sorted(_replication_hashes())
     _no_report(monkeypatch)
     state = build_real(out, c.load_prereg(DEFAULT_PREREG), rows, compute_cap_usd=700.0,
                        clock=FakeClock()).run(stop_before=REPORT)

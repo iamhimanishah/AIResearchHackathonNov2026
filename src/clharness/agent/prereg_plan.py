@@ -54,18 +54,83 @@ def blinded_rows(rows_path: str | Path) -> list[a1.ResultRow]:
     return out
 
 
-def replicate_plan(rows_path: str | Path) -> tuple[list[ProposedSpec], dict[str, Any]]:
+# The other pre-registered row files: the controls of phase 0 and the reference arm, which are
+# not in the agent's rows file. Same list as the Makefile's REPORTED_ROWS. Without the seed-0
+# reference-arm row the acquisition gate passes every configuration (red-team RT-01), so the
+# promotion, and with it the replicate plan, would be wrong.
+PREREG_CONTEXT_ROWS: tuple[str, ...] = (
+    "results/rows.phase0.remeasured.jsonl",
+    "results/rows.phase0.jsonl",
+    "results/rows.reference.remeasured.jsonl",
+)
+
+
+class PlanInputError(ValueError):
+    """The rows cannot support the pre-registered plan (for example no reference-arm row)."""
+
+
+def prereg_rows(rows_path: str | Path,
+                context: Sequence[str | Path] = PREREG_CONTEXT_ROWS) -> list[a1.ResultRow]:
+    """Blinded rows of the context files plus `rows_path`, one per spec hash. A finished row wins
+    over an unfinished one; otherwise the first seen is kept. Relative context paths are read
+    from the repository root; a context file that does not exist is skipped (the reference-arm
+    check below catches the case that matters)."""
+    from clharness.env import REPO_ROOT
+
+    merged: dict[str, a1.ResultRow] = {}
+    for path in [*context, rows_path]:
+        path = Path(path)
+        if not path.is_absolute() and not path.exists():
+            path = REPO_ROOT / path
+        if not path.exists():
+            continue
+        if "explore" in path.name:
+            raise PlanInputError(f"{path.name} holds exploratory runs; the plan reads "
+                                 "pre-registered rows only")
+        for row in blinded_rows(path):
+            have = merged.get(row.spec_hash)
+            if have is None or (have.status != "finished" and row.status == "finished"):
+                merged[row.spec_hash] = row
+    return list(merged.values())
+
+
+def has_reference_seed0(rows: Sequence[a1.ResultRow]) -> bool:
+    """A finished seed-0 run of the reference arm: replay (random selection) plus lr_rewarm."""
+    from clharness.analysis.design import REFERENCE
+
+    for row in rows:
+        if row.status != "finished" or row.spec.seed != 0:
+            continue
+        names = frozenset(t.name for t in row.spec.techniques)
+        replay = next((t for t in row.spec.techniques if t.name == "replay"), None)
+        if names == REFERENCE and (replay is None or
+                                   dict(replay.params).get("select", "random") == "random"):
+            return True
+    return False
+
+
+def replicate_plan(rows_path: str | Path, context: Sequence[str | Path] = PREREG_CONTEXT_ROWS,
+                   ) -> tuple[list[ProposedSpec], dict[str, Any]]:
     """The replicate proposal and the data to log with it.
 
-    The proposal is `replication_specs(rows)["specs"]`. When that is empty because every
-    replication run already has a finished row, the whole planned set is proposed instead (from
-    the seed-0 rows, which rank the same), so the gate drops each one as a duplicate and the loop
-    moves on with "nothing new to run" rather than an empty proposal.
+    The proposal is `replication_specs(rows)["specs"]`, over the agent's rows plus the other
+    pre-registered row files (`context`, the controls and the reference arm), the same input the
+    reported analysis uses. Raises `PlanInputError` when no finished seed-0 reference-arm row is
+    present, because the promotion would then pass every configuration (RT-01).
+
+    When every replication run already has a finished row, the whole planned set is proposed
+    instead (from the seed-0 rows, which rank the same), so the gate drops each one as a
+    duplicate and the loop moves on with "nothing new to run" rather than an empty proposal.
     """
     from clharness.analysis.design import replication_specs
     from clharness.analysis.replication import REPLICATION_SEEDS
 
-    rows = blinded_rows(rows_path)
+    rows = prereg_rows(rows_path, context)
+    if not has_reference_seed0(rows):
+        raise PlanInputError(
+            "no finished seed-0 reference-arm row in the rows read; without it the acquisition "
+            "gate passes every configuration (RT-01) and the replicate plan would be wrong. "
+            f"Pass the pre-registered row files ({', '.join(PREREG_CONTEXT_ROWS)})")
     plan = replication_specs(rows)
     specs: Sequence[RunSpec] = plan["specs"]
     all_done = not specs and plan["planned"] > 0
@@ -92,6 +157,7 @@ def replicate_plan(rows_path: str | Path) -> tuple[list[ProposedSpec], dict[str,
         "ranking": [_slim(d) for d in plan["ranking"]],
         "selection_ranking": [_slim(d) for d in plan["selection"]],
         "halves_read": ["selection"],
+        "rows_read": [str(p) for p in context] + [str(rows_path)],
     }
     return proposed, data
 

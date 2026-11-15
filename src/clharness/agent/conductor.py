@@ -412,7 +412,11 @@ class Conductor:
     def _prereg_replicate(self, phase: Phase) -> Outcome:
         """Propose exactly the pre-registered replication set and log the ranking it came from.
         The rows are read blinded: the report half is never seen (`prereg_plan.blind`)."""
-        specs, data = self.replicate_plan(self.rows_path)
+        try:
+            specs, data = self.replicate_plan(self.rows_path)
+        except ValueError as exc:  # PlanInputError: the rows cannot support the plan
+            return HALTED, {"choice": "halt", "accepted": False,
+                            "reason": f"replicate plan refused: {exc}"[:600]}
         proposal = Proposal(phase=phase, specs=tuple(specs), rationale=(
             f"{data.get('rule', 'PREREG 6.3')} (from {data.get('source', 'the design')})"))
         self.s.proposal, self.s.verdict = proposal, None
