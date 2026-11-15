@@ -49,7 +49,8 @@ reproduce: reproduce-figures   ## what a reader should run: tables and page from
 reproduce-figures:             ## tables, analysis report and results page from committed rows
 	$(UV) run clh validate-row $(REPORTED_ROWS)
 	$(UV) run clh grid-analysis $(REPORTED_ROWS) --out $(REPRO_OUT)
-	@echo "analysis written to $(REPRO_OUT)"
+	$(UV) run clh figures $(REPRO_OUT)/grid_analysis.json --out results/figures
+	@echo "analysis written to $(REPRO_OUT), figures to results/figures"
 
 reproduce-runs:                ## retrain the phase 0 controls on Modal (needs `modal setup` and the huggingface secret)
 	$(UV) run clh run --modal $$(grep -v '^#' configs/bench/phase0.txt) \

@@ -314,7 +314,8 @@ def checkpoint_items(row: ResultRow, task: str, half: Half) -> tuple[np.ndarray,
     if not row.items_path:
         return None
     ckpts = sorted(Path(row.items_path).glob("ckpt_*"))
-    if len(ckpts) < 2 or not (ckpts[0] / f"items_{task}.npy").exists():
+    if (len(ckpts) < 2 or not (ckpts[0] / f"items_{task}.npy").exists()
+            or not (ckpts[-1] / f"items_{task}.npy").exists()):
         return None
     from clharness.executor.rows import half_indices  # numpy-only module
 
@@ -541,6 +542,105 @@ def paired_seed_t(x: dict[int, float], r: dict[int, float]) -> dict[str, Any]:
         return {"delta": m, "lo": m, "hi": m, "n_pairs": len(d)}
     half = T_CRIT_975.get(len(d) - 1, 1.96) * float(d.std(ddof=1)) / math.sqrt(len(d))
     return {"delta": m, "lo": m - half, "hi": m + half, "n_pairs": len(d)}
+def arm_bootstrap(cfg: Config, half: Half, n_boot: int = 10_000, seed: int = 0,
+                  items: ItemLoader | None = checkpoint_items) -> dict[str, Any]:
+    """The single-arm version of `paired_bootstrap`: the mean primary outcome on `half`, with a
+    percentile interval from resampling seeds and, when the run's item files are available,
+    items within each task. Parametric binomial item noise when they are not (PREREG 7)."""
+    rs = cfg.by_seed()
+    seeds = sorted(rs)
+    tasks = sorted(_half(rs[seeds[0]], half).per_task)
+    rng = np.random.default_rng(seed)
+    observed = float(np.mean([_half(rs[s], half).mean_delta for s in seeds]))
+    k = len(seeds)
+
+    loaded = None
+    if items is not None:
+        loaded = {}
+        for s in seeds:
+            for t in tasks:
+                a = items(rs[s], t, half)
+                if a is None:
+                    loaded = None
+                    break
+                loaded[(s, t)] = a
+            if loaded is None:
+                break
+
+    draws = rng.integers(0, k, size=(n_boot, k))
+    if loaded is not None:
+        mode = "items"
+        boot = np.empty(n_boot)
+        for b in range(n_boot):
+            per_seed = []
+            for j in draws[b]:
+                s = seeds[j]
+                per_task = []
+                for t in tasks:
+                    bx, fx = loaded[(s, t)]
+                    idx = rng.integers(0, len(bx), size=len(bx))  # same items for base and final
+                    per_task.append(fx[idx].mean() - bx[idx].mean())
+                per_seed.append(np.mean(per_task))
+            boot[b] = np.mean(per_seed)
+    else:
+        mode = "parametric"
+        d = np.array([[_half(rs[s], half).per_task[t].delta for t in tasks] for s in seeds])
+
+        def var(which: str) -> np.ndarray:
+            return np.array([[max(getattr(_half(rs[s], half).per_task[t], which)
+                                 * (1 - getattr(_half(rs[s], half).per_task[t], which)), 1e-6)
+                             / _half(rs[s], half).per_task[t].n_items for t in tasks]
+                            for s in seeds])
+
+        sd = np.sqrt(var("base") + var("final"))  # delta = final - base
+        boot = (d[draws] + rng.standard_normal((n_boot, k, len(tasks))) * sd[draws]).mean(axis=2).mean(axis=1)
+
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    return {"mean": observed, "lo": float(lo), "hi": float(hi), "mode": mode, "n_seeds": k}
+
+
+def _seed_interval(values: list[float], rng: np.random.Generator, n_boot: int) -> dict[str, float]:
+    """Mean and a seed-resampled percentile interval; a point value alone under 2 seeds."""
+    a = np.asarray(values, dtype=float)
+    if len(a) < 2:
+        return {"mean": float(a.mean()), "lo": float(a.mean()), "hi": float(a.mean())}
+    boot = a[rng.integers(0, len(a), size=(n_boot, len(a)))].mean(axis=1)
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    return {"mean": float(a.mean()), "lo": float(lo), "hi": float(hi)}
+
+
+def config_summaries(configs: dict[str, Config], half: Half, base: Config | None = None,
+                     n_boot: int = 10_000, seed: int = 0,
+                     items: ItemLoader | None = checkpoint_items) -> list[dict[str, Any]]:
+    """Per-configuration numbers the report figures draw: the primary outcome with its
+    interval, per-task deltas, per-domain acquisition ratios, the paired delta against the
+    no-mitigation control (for the cost chart), and collapsed tasks (PREREG 8). The intervals
+    use at most 2000 resamples; a figure does not need the confirmatory 10,000."""
+    nb = min(n_boot, 2000)
+    rng = np.random.default_rng(seed)
+    out = []
+    for cfg in sorted(configs.values(), key=lambda c: c.label):
+        by_dom: dict[str, list[float]] = {}
+        for r in cfg.rows:
+            for d, v in domain_acquisition(r).items():
+                by_dom.setdefault(d, []).append(v)
+        vs_base = None
+        if base is not None and cfg is not base and set(cfg.by_seed()) & set(base.by_seed()):
+            b = paired_bootstrap(cfg, base, half, nb, seed, items)
+            vs_base = {"delta": b["delta"], "lo": b["lo"], "hi": b["hi"], "n_pairs": b["n_pairs"]}
+        out.append({
+            "config": cfg.label, "key": cfg.key, "techniques": sorted(cfg.techniques),
+            "selection": list(cfg.selection) if cfg.selection else None,
+            "lr": cfg.lr, "n_seeds": len(cfg.by_seed()),
+            "retention": arm_bootstrap(cfg, half, nb, seed, items),
+            "per_task": {t: _seed_interval([_half(r, half).per_task[t].delta for r in cfg.rows],
+                                          rng, nb)
+                         for t in sorted(_half(cfg.rows[0], half).per_task)},
+            "acquisition": {d: _seed_interval(v, rng, nb) for d, v in sorted(by_dom.items())},
+            "vs_base": vs_base,
+            "collapsed": sorted({t for r in cfg.rows for t in collapse_flags(r)}),
+        })
+    return out
 
 
 def claims_table(configs: dict[str, Config], half: Half, lr_control: Config | None = None,
@@ -738,6 +838,8 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         "lr_control": choose_lr_control(screen_configs, screen_ref, margins),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),
+        # per-configuration numbers the figures draw (selection half is decision-legal)
+        "configs_selection": config_summaries(configs, "selection", base, n_boot, seed, items),
     }
     if not confirmatory:
         return out
@@ -770,6 +872,7 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     out["sanity_reference_vs_no_mitigation"] = {k: sanity[k] for k in ("delta", "lo", "hi", "p", "n_pairs", "mode")}
     out["pareto_report"] = pareto(configs, "report")
     out["cost_report"] = cost_table(configs, base, "report")
+    out["configs_report"] = config_summaries(configs, "report", base, n_boot, seed, items)
     return out
 
 

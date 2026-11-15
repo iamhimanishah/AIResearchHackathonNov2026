@@ -407,6 +407,16 @@ def cmd_grid_analysis(args) -> int:
     return 0
 
 
+def cmd_figures(args) -> int:
+    """The five pitch/report SVGs from a grid-analysis JSON (analysis/figures.py)."""
+    from clharness.analysis.figures import render_all
+
+    analysis = json.loads(Path(args.analysis).read_text())
+    for p in render_all(analysis, args.out):
+        print(f"wrote {p}")
+    return 0
+
+
 def cmd_spec_hash(args) -> int:
     from clharness.spec import load_spec
 
@@ -517,6 +527,10 @@ def main(argv: list[str] | None = None) -> int:
                         "is to exclude them so simulator output cannot reach the tables")
     p.add_argument("--out", default="results/analysis")
     p.set_defaults(fn=cmd_grid_analysis)
+    p = sub.add_parser("figures", help="the five pitch/report SVGs from a grid-analysis JSON")
+    p.add_argument("analysis", help="the JSON file written by clh grid-analysis")
+    p.add_argument("--out", default=str(REPO_ROOT / "results" / "figures"))
+    p.set_defaults(fn=cmd_figures)
     p = sub.add_parser("spec-hash", help="print the idempotency key of run spec JSON files")
     p.add_argument("files", nargs="+")
     p.set_defaults(fn=cmd_spec_hash)
