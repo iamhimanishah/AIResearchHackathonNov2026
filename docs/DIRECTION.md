@@ -1,6 +1,8 @@
 # Direction
 
 What we are building this weekend and who builds which part. Read this before starting work.
+The project is named **Remember** (decided Saturday evening). The package and command keep their
+names, `clharness` and `clh`.
 If something here turns out to be wrong, change this file in the same commit as the work.
 
 ## Target

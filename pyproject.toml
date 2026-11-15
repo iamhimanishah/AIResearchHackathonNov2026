@@ -1,7 +1,7 @@
 [project]
 name = "clharness"
 version = "0.0.1"
-description = "Continual-learning harness for small open LLMs: streaming fine-tuning, fixed eval suite, Gemma Scope feature tracking."
+description = "Remember: a continual-learning harness for small open LLMs: streaming fine-tuning, fixed eval suite, Gemma Scope feature tracking."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }

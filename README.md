@@ -1,6 +1,9 @@
-# Continual-learning test bench
+# Remember
 
-Built at the SF AI Research Hackathon, November 14–15, 2026.
+A continual-learning test bench. Built at the SF AI Research Hackathon, November 14–15, 2026.
+
+The project is called Remember. The Python package is still `clharness` and its command is
+`clh`; those names predate the project name and are kept so that nothing running breaks.
 
 A framework for running continual-learning experiments on small open language models, and for
 measuring what each forgetting-reduction technique buys: train a model on a stream of new

@@ -230,8 +230,8 @@ def render(out_dir: str | Path, rows_path: str | Path | None = None,
     refresh = f'<meta http-equiv="refresh" content="{refresh_s}">' if refresh_s else ""
     return "".join([
         f'<!doctype html><html><head><meta charset="utf-8">{refresh}',
-        f"<title>clharness agent results</title><style>{STYLE}</style></head><body>",
-        "<h1>Continual-learning agent: results</h1>",
+        f"<title>Remember: results</title><style>{STYLE}</style></head><body>",
+        "<h1>Remember: continual-learning results</h1>",
         f'<p class="muted">Read-only view of <code>{escape(str(out))}</code>.</p>',
         "<h2>Status</h2>", _summary(state, out),
         "<h2>Report (frozen set)</h2>", _report(report),
