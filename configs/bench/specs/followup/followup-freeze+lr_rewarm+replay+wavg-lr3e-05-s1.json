@@ -1,0 +1,49 @@
+{
+  "name": "followup-freeze+lr_rewarm+replay+wavg-lr3e-05-s1",
+  "seed": 1,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 10000000
+    },
+    {
+      "name": "legal",
+      "tokens": 10000000
+    }
+  ],
+  "optim": {
+    "lr": 3e-05
+  },
+  "techniques": [
+    {
+      "name": "freeze",
+      "params": {
+        "bottom_layers": 13
+      }
+    },
+    {
+      "name": "lr_rewarm",
+      "params": {
+        "rewarm_steps": 8,
+        "min_lr_ratio": 0.1,
+        "schedule": "cosine"
+      }
+    },
+    {
+      "name": "replay",
+      "params": {
+        "share": 0.05,
+        "source": "general"
+      }
+    },
+    {
+      "name": "wavg",
+      "params": {
+        "alpha": 0.25
+      }
+    }
+  ],
+  "notes": "Follow-up after the confirmatory analysis (exploratory, not pre-registered): the best 6.3 configuration at the learning rate of the frozen rule-4 control L (3e-5). Asks whether the techniques add anything on top of a lower learning rate. Compared with no-mitigation at 3e-5, seeds 0-2.",
+  "parent_spec_hash": "4a3ac97755d8c0372e51444bed05b2b72f3d75cb08e7bd0155b4281dd132a2c0"
+}
