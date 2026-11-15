@@ -109,6 +109,27 @@ step only when you need to rebuild it. The Modal app uses Python 3.12 in its rem
 The Modal CLI reads the active local profile (`bkbrohon795` above). To use another GPU type,
 change `--gpu` to a type enabled for your Modal workspace.
 
+## Shared memory between agents (past.dev)
+
+The agents keep a shared memory on [past.dev](https://past.dev) next to the repository's own
+files. Which one holds what:
+
+| Store | Holds | Role |
+|---|---|---|
+| Files in this repository (`results/**/rows.jsonl`, `results/agent/explore/hypotheses.jsonl`, the `decisions.jsonl` logs) | Every result row, hypothesis and decision | The truth. Every number in a report comes from here |
+| past.dev | Plain-language statements of what each arm measured, which published claims the Scout found, and what each exploratory hypothesis predicted and concluded | A shared copy the agents recall from by question before they plan |
+
+Who writes: the analyst step (one data point per arm, selection half only), the Scout (one per
+claim card) and the explorer (one per hypothesis, replaced by its verdict). Who reads: the
+explore loop recalls as `explorer` before it proposes hypotheses, so it plans from what the
+analyst and the Scout recorded; the recalled text goes into the model's prompt marked as data,
+and each recall and write is in the explore decision log. Any other agent can recall with
+`python -m clharness.agent.pastdev recall "<question>" --as <agent>`.
+
+Rules: nothing from the report half is ever written there, and the mirror is best effort (if
+past.dev is down the run continues from the files). Code: `src/clharness/agent/pastdev.py`. Turn
+it on with `--memory pastdev` on `clharness.agent.explore`; the key is read from `PAST_API_KEY`.
+
 ## Adding a technique
 
 Techniques plug into the training loop as hooks (`src/clharness/train/hooks.py`). A hook can:

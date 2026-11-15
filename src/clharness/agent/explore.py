@@ -454,8 +454,12 @@ def cycle(
     concurrency: int = 10,
     sleep: Callable[[float], None] | None = None,
     say: Callable[[str], None] = print,
+    memory: Any = None,
 ) -> list[Hypothesis]:
-    """One explore cycle. Returns every hypothesis on file afterwards."""
+    """One explore cycle. Returns every hypothesis on file afterwards.
+
+    `memory` is an optional `pastdev.PastMemory`: the shared memory the agents write to and
+    recall from. The files stay the truth; a memory that is down changes nothing here."""
     out.mkdir(parents=True, exist_ok=True)
     rows_path, hyp_path = out / "rows.jsonl", out / "hypotheses.jsonl"
     log = DecisionLog(out / "decisions.jsonl")
@@ -474,6 +478,20 @@ def cycle(
             say(f"inbox: skipped {problem}")
         cards = cards[:max_hypotheses]
         room = max_hypotheses - len(cards)
+        if memory is not None:
+            from .pastdev import as_prompt_block
+
+            if go:  # a dry run writes nothing anywhere
+                memory.write_arms(arms)  # as the analyst: what each arm measured
+                for card_id, card in cards:  # as the Scout: the claims it found
+                    memory.write_claim_card(card_id, card)
+            recalled = memory.recall(
+                "Which techniques, learning rates and published claims change forgetting or learning "
+                "on the frozen bench, and which hypotheses were already tested or refused?", "explorer")
+            if recalled:
+                say(f"shared memory: recalled {len(recalled)} statements written by "
+                    f"{sorted({w for r in recalled for w in r['writers']})}")
+            sources = "\n\n".join(x for x in (sources, as_prompt_block(recalled)) if x)
         proposal, author = propose(arms, stored, llm, sources, room) if room else (Proposal(), "none")
         candidates = [(cid, p, "scout") for cid, p in cards]
         candidates += [(None, p, author) for p in proposal.hypotheses[:room]]
@@ -516,6 +534,15 @@ def cycle(
         )
         stored += [h.model_copy(update={"status": "running"}) if h.status == "accepted" else h for h in fresh]
         save_hypotheses(hyp_path, stored)
+        if memory is not None:
+            for h in fresh:
+                memory.write_hypothesis(h)
+            log.append(
+                key=f"explore/memory#{len(log.entries())}", state="explore/plan", actor="explore", ts=now(),
+                reason="Shared memory on past.dev: what was recalled before proposing, and what was written.",
+                data={"events": list(memory.events)},
+            )
+            memory.events.clear()
         if accepted_specs:
             if backend is None or git_sha is None:
                 raise Halt("launching needs a Modal backend and the commit to launch from")
@@ -528,6 +555,9 @@ def cycle(
     resolved = [resolve_one(h, arms, sd) if h.status == "running" else h for h in stored]
     save_hypotheses(hyp_path, resolved)
     done = [h for h, old in zip(resolved, stored, strict=True) if h.status != old.status]
+    if memory is not None:
+        for h in done:
+            memory.write_hypothesis(h)  # the verdict replaces the open hypothesis
     if done:
         rows = {r.spec_hash: r for r in (a1.read_rows(rows_path) if rows_path.exists() else [])}
         log.append(
@@ -565,7 +595,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--search", default=None, help="an Exa query whose results are shown to the model")
     parser.add_argument("--max-hypotheses", type=int, default=MAX_HYPOTHESES)
     parser.add_argument("--cap-usd", type=float, default=30.0)
+    parser.add_argument("--memory", choices=["none", "pastdev"], default="none",
+                        help="pastdev: write to and recall from the shared memory (needs PAST_API_KEY)")
     args = parser.parse_args(argv)
+
+    memory = None
+    if args.memory == "pastdev":
+        from .pastdev import PastMemory
+
+        memory = PastMemory()
+        if not memory.configured:
+            parser.error("--memory pastdev needs PAST_API_KEY in the environment")
 
     llm = None
     if args.llm == "openai":
@@ -588,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:
         backend, sha = (ModalFunctionBackend(), code_version()) if args.go else (None, None)
         cycle(args.out, args.have, llm=llm, backend=backend, git_sha=sha, go=args.go,
               resolve_only=args.resolve, sources=sources, max_hypotheses=args.max_hypotheses,
-              cap_usd=args.cap_usd)
+              cap_usd=args.cap_usd, memory=memory)
     except Halt as stop:
         print(f"HALTED: {stop}", file=sys.stderr)
         return 2
