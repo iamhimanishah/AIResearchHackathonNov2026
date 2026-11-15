@@ -27,10 +27,10 @@ DUP = _src(Q2, "https://arxiv.org/abs/1", "Method A again")
 
 
 def _draft(name: str = "sharpness-aware", ids: list[str] | None = None) -> ScoutDraft:
-    return ScoutDraft(candidate=CandidateDraft(
+    return ScoutDraft(candidates=[CandidateDraft(
         name=name, description="d", mechanism="m", why_not_in_catalog="w", expected_effect="e",
         est_cost_multiplier=1.5, source_ids=ids if ids is not None else [A.id],
-    ))
+    )])
 
 
 def _scout(llm: FakeLLM, search: FakeSearch) -> LLMScout:
@@ -47,29 +47,31 @@ def test_scout_searches_every_query_with_its_objective_and_cites_real_sources(tm
     result = _scout(llm, search).scout(_request())
     assert search.calls == [(Q1, O1), (Q2, O2)]
     assert [s.url for s in result.sources] == [A.url, B.url]  # deduplicated by URL
-    assert result.candidate and result.candidate.source_ids == (A.id,)
+    [candidate] = result.candidates
+    assert candidate.source_ids == (A.id,) and result.claims == ()
     assert [s.used for s in result.sources] == [True, False]
     prompt = llm.prompts("scout")[0]
     assert A.url in prompt and B.url in prompt and "EXA_API_KEY" not in prompt
     path = write_scout_result(result, tmp_path)
     saved = json.loads(path.read_text())
-    assert saved["candidate"]["name"] == "sharpness-aware" and len(saved["sources"]) == 2
+    assert saved["candidates"][0]["name"] == "sharpness-aware" and len(saved["sources"]) == 2
 
 
 def test_scout_rejects_invented_sources_and_catalog_names():
     search = FakeSearch({Q1: [A]})
     made_up = _scout(FakeLLM().queue("scout", _draft(ids=["src-nope"])), search).scout(_request())
-    assert made_up.candidate is None and "no returned source" in made_up.skipped_reason
+    assert made_up.candidates == () and "no returned source" in made_up.skipped_reason
+    assert "no returned source" in made_up.rejected[0]
     name = default_catalog().names()[0]
     dup = _scout(FakeLLM().queue("scout", _draft(name=name)), search).scout(_request())
-    assert dup.candidate is None and "already in the catalog" in dup.skipped_reason
+    assert dup.candidates == () and "already in the catalog" in dup.skipped_reason
 
 
 def test_scout_skips_without_raising_when_search_or_model_fails():
     down = _scout(FakeLLM(), FakeSearch(fail=True)).scout(_request())
-    assert down.candidate is None and "fake search failure" in down.skipped_reason
+    assert down.candidates == () and "fake search failure" in down.skipped_reason
     dead_model = _scout(FakeLLM(), FakeSearch({Q1: [A]})).scout(_request())
-    assert dead_model.candidate is None and dead_model.skipped_reason.startswith("model failed")
+    assert dead_model.candidates == () and dead_model.skipped_reason.startswith("model failed")
     skipped = _scout(FakeLLM().queue("scout", ScoutDraft(skip_reason="nothing new")),
                      FakeSearch({Q1: [A]})).scout(_request())
     assert skipped.skipped_reason == "nothing new" and skipped.sources == (A,)
@@ -141,7 +143,7 @@ def test_loop_runs_the_scout_once_after_replicate_and_logs_every_source(tmp_path
     assert {s["url"] for s in decision.data["sources"]} == {A.url, B.url}
     [card_path] = (out / "candidates").glob("*.json")
     card = json.loads(card_path.read_text())
-    assert card["candidate"]["name"] == "sharpness-aware"
+    assert card["candidates"][0]["name"] == "sharpness-aware"
     states = [d.state for d in DecisionLog(out / "decisions.jsonl").entries()]
     assert states.index("replicate/advance") < states.index("scout") < states.index("combine/plan")
     assert len(search.calls) == 2

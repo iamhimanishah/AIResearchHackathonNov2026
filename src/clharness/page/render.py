@@ -1,6 +1,7 @@
 """Render an agent output directory as one HTML page.
 
-Reads `rows.jsonl`, `state.json`, `decisions.jsonl`, `memory/*.jsonl` and `report.json`. It
+Reads `rows.jsonl`, `state.json`, `decisions.jsonl`, `memory/*.jsonl`, `report.json`, the
+Scout's `claim_cards.jsonl` and `candidates/*.json`, and `veto.jsonl` (candidate reviews). It
 computes no statistic: every number shown is in a row or in `report.json`. The report half of a
 row stays sealed until the row appears in `report.json`, which only exists after FREEZE.
 """
@@ -12,6 +13,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from clharness.agent.agents import candidate_queue
 from clharness.agent.contracts import (
     DecisionLog,
     ResultRow,
@@ -130,6 +132,36 @@ def _findings(out: Path) -> str:
          ] for f in records], numeric={5})
 
 
+def _claim_cards(out: Path) -> str:
+    records = read_jsonl(out / "claim_cards.jsonl").records
+    return _table(["Id", "Claim", "Test arm", "Control arm", "Predicted", "Status"], [
+        [f"<code>{escape(str(c.get('id', '')))}</code>", escape(str(c.get("claim", ""))),
+         f"<code>{escape(json.dumps(c.get('test_arm', {}), sort_keys=True))}</code>"
+         + (f" lr={escape(str(c['test_lr']))}" if c.get("test_lr") is not None else ""),
+         f"<code>{escape(json.dumps(c.get('control_arm', {}), sort_keys=True))}</code>"
+         + (f" lr={escape(str(c['control_lr']))}" if c.get("control_lr") is not None else ""),
+         escape(f"{c.get('prediction', {}).get('direction', 0):+d} "
+                f"~{c.get('prediction', {}).get('size_points', '')} pts"),
+         escape(f"repeats PREREG claim {c['duplicate_of']}" if c.get("duplicate_of") is not None
+                else str(c.get("status", ""))),
+         ] for c in records])
+
+
+def _candidates(out: Path) -> str:
+    queue = candidate_queue(out / "candidates", out / "veto.jsonl")
+    cls = {"approved": "ok", "rejected": "bad", "pending": "muted"}
+    note = ('<p class="muted">Review: append <code>{"kind": "approve_candidate" | '
+            '"reject_candidate", "target": "&lt;name&gt;", ...}</code> to '
+            '<code>veto.jsonl</code>. The loop does not wait.</p>')
+    return note + _table(["#", "Candidate", "Status", "What it does", "Sources", "File"], [
+        [str(c["rank"]), escape(c["name"]),
+         f'<span class="{cls[c["status"]]}">{escape(c["status"])}</span>',
+         escape(c["description"]),
+         "<br>".join(f'<a href="{escape(s["url"])}">{escape(s["title"][:80] or s["url"])}</a>'
+                     for s in c["sources"]),
+         f"<code>{escape(c['file'])}</code>"] for c in queue], numeric={0})
+
+
 def _decisions(out: Path) -> str:
     rows = []
     for d in DecisionLog(out / "decisions.jsonl").entries():
@@ -164,6 +196,8 @@ def render(out_dir: str | Path, rows_path: str | Path | None = None,
         f"<h2>Runs ({len(latest)})</h2>", _runs(latest, opened),
         "<h2>Failed and invalid runs</h2>", _failures(all_rows),
         "<h2>Findings</h2>", _findings(out),
+        "<h2>Claim cards (exploratory tests)</h2>", _claim_cards(out),
+        "<h2>Candidate review queue</h2>", _candidates(out),
         "<h2>Decisions</h2>", _decisions(out),
         "</body></html>",
     ])

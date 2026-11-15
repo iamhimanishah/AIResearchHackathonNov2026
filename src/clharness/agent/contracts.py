@@ -742,6 +742,45 @@ class Candidate(Frozen):
     created_at: str
 
 
+class ClaimPrediction(Frozen):
+    """What a claim card expects, stated before any run: test arm minus control arm, retention."""
+
+    direction: Literal[-1, 0, 1]  # +1: the test arm forgets less; 0: no difference
+    size_points: float = Field(ge=0, le=20)  # rough size of the retention difference, in points
+
+
+class ClaimCard(Frozen):
+    """A published claim the plugins we already have can test (docs/agent/SCOUT-HANDOFF.md 3.2).
+
+    The Scout drafts it from search results; code checks every field (`agents.check_claim`).
+    `test_arm` and `control_arm` use catalog techniques only (`{}` is no mitigation); `*_lr` is
+    the run learning rate when the claim is about it (None = the bench rate). Every run made from
+    a card is exploratory: never part of the win rule or a Holm family (analysis/PREREG.md).
+    """
+
+    id: str
+    claim: str  # one sentence, as the paper states it (untrusted text)
+    source_ids: tuple[str, ...] = Field(min_length=1)
+    test_arm: dict[str, dict[str, Any]]
+    control_arm: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    test_lr: float | None = None
+    control_lr: float | None = None
+    prediction: ClaimPrediction
+    duplicate_of: int | None = None  # id of the `design.CLAIMS` entry it repeats
+    status: Literal["proposed", "accepted", "rejected", "tested"] = "proposed"
+    author: str = "scout"
+    created_at: str
+
+    @property
+    def plannable(self) -> bool:
+        return self.status == "accepted" and self.duplicate_of is None
+
+
+def claim_card_id(claim: str, source_ids: Iterable[str]) -> str:
+    """`claim-` + hash of the claim text and the sorted source ids."""
+    return "claim-" + hash_obj([claim.strip(), sorted(source_ids)])[:10]
+
+
 class TriedEntry(Frozen):
     """Memory `tried`: one line per spec hash. Built from a SelectionRow, so no report half."""
 
@@ -782,8 +821,9 @@ class Veto(Frozen):
 
     id: str
     ts: str
-    kind: Literal["halt", "freeze_now", "block_technique", "block_spec", "skip_scout"]
-    target: str = ""  # technique name or spec hash, when the kind needs one
+    kind: Literal["halt", "freeze_now", "block_technique", "block_spec", "skip_scout",
+                  "approve_candidate", "reject_candidate"]
+    target: str = ""  # technique name, spec hash or candidate name, when the kind needs one
     reason: str
     author: str
 

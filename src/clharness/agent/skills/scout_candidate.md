@@ -1,3 +1,6 @@
 Scout step.
-1. Pick at most one candidate from the search results that is not in the catalog.
-2. Describe it in two sentences and name the hook it needs. Otherwise skip.
+1. Rank the claims the catalog can test already: a reported number for a parameter value or a
+   combination of catalog techniques. Write each as a test arm against a control arm.
+2. Rank the techniques that need new plugin code as candidates: two sentences each, naming the
+   hook it needs.
+3. At most five of each. Skip when nothing qualifies.

@@ -25,6 +25,7 @@ from .contracts import (
     Candidate,
     Catalog,
     CitedNumber,
+    ClaimCard,
     Decision,
     Dropped,
     FailureEntry,
@@ -131,6 +132,8 @@ class PlanRequest(Frozen):
     findings: tuple[Finding, ...] = ()
     lessons: tuple[Lesson, ...] = ()
     rejections: tuple[Verdict, ...] = ()  # this turn's rejections, oldest first
+    claim_cards: tuple[ClaimCard, ...] = ()  # accepted, not a PREREG repeat; combine only
+    claim_seeds: tuple[int, ...] = ()  # seeds every claim test runs at; () = first two replicate
 
 
 class GateRequest(Frozen):
@@ -144,6 +147,10 @@ class GateRequest(Frozen):
     estimated_usd: dict[str, float] = Field(default_factory=dict)  # spec hash -> executor estimate
     bench: str = "fast"  # the frozen bench every spec must use
     retry_exhausted: tuple[str, ...] = ()  # spec hashes whose infra retries are used up
+    lr_range: tuple[float, float] | None = None  # optim.lr an exploratory spec may set; None = none
+    explore_usd_left: float | None = None  # what exploratory specs may still spend; None = nothing
+    claim_arms: dict[str, tuple[str, ...]] = Field(default_factory=dict)  # accepted claim id ->
+    # config hashes (seed left out) of its test and control arms
 
 
 class LaunchReport(Frozen):
@@ -167,14 +174,25 @@ class ReadRequest(Frozen):
 
 
 class ScoutRequest(Frozen):
+    """What the Scout's code checks need. Only `catalog` and `findings` reach the model; the
+    rest (hashes, seeds, the stream) is for the deterministic checks of each claim card."""
+
     catalog: Catalog
     findings: tuple[Finding, ...] = ()
+    stream: tuple[StreamDomain, ...] = ()  # the frozen stream claim specs are built on
+    seeds: tuple[int, ...] = (0,)  # seeds a claim test would run at
+    finished_config_hashes: tuple[str, ...] = ()  # configurations (seed left out) with a row
+    design_arms: dict[str, int] = Field(default_factory=dict)  # arm key -> PREREG claim id
 
 
 class ScoutResult(Frozen):
-    candidate: Candidate | None = None
+    """The ranked shortlist: claim cards the loop may test, candidates a person reviews."""
+
+    claims: tuple[ClaimCard, ...] = ()
+    candidates: tuple[Candidate, ...] = ()
+    rejected: tuple[str, ...] = ()  # one line per draft item the checks dropped, with the reason
     sources: tuple[Source, ...] = ()
-    skipped_reason: str | None = None  # set whenever `candidate` is None
+    skipped_reason: str | None = None  # set when both lists are empty
     meta: CallMeta | None = None
 
 
@@ -344,6 +362,8 @@ def _valid_treatments(request: PlanRequest) -> list[SelectionRow]:
     for row in request.rows:
         if not usable(row, request.prereg) or not row.spec.techniques:
             continue
+        if row.spec.notes.startswith("explore:"):  # claim tests never seed the next phase
+            continue
         if set(technique_names(row.spec)) <= controls or row.acquisition_mean is None:
             continue
         delta = request.prereg.acquisition_floor_delta
@@ -421,6 +441,23 @@ class StubPlanner:
         if len(top) >= 2:
             combo = {**technique_map(top[0].spec), **technique_map(top[1].spec)}
             out += [_proposed(request, combo, seed, "combo", "top two together") for seed in seeds]
+        return out + self._claim_tests(request)
+
+    def _claim_tests(self, request: PlanRequest) -> list[ProposedSpec]:
+        """Each claim card's test arm paired with its control at two replicate seeds, labelled
+        `explore:<card id>`. Exploratory: never part of the win rule (SCOUT-HANDOFF 3.5)."""
+        from .catalog_real import claim_specs
+
+        out = []
+        for card in request.claim_cards:
+            expect = card.prediction.direction * card.prediction.size_points / 100
+            seeds = request.claim_seeds or request.prereg.replicate_seeds[:2]
+            for spec, which in claim_specs(card, seeds, request.stream):
+                role = "control" if which == "control" and not spec.techniques else "treatment"
+                out.append(ProposedSpec(
+                    spec=spec, role=role, reason=f"claim {card.id} {which} arm",
+                    predicted=Predicted(retention_mean_delta=expect if which == "test" else 0.0,
+                                        acquisition_ratio=1.0)))
         return out
 
 

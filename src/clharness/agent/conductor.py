@@ -1,8 +1,12 @@
 """The Conductor: the deterministic state machine of docs/agent/ARCHITECTURE.md section 3.
 
 The Planner and Analyst may be model-backed or deterministic. SCOUT runs only when a Scout is
-configured (after replicate, once): it searches the web with Exa, writes at most one candidate
-card for human review and logs every source in the decision. REPORT opens the
+configured (after replicate, once): it searches the web with Exa and returns a ranked shortlist
+(docs/agent/SCOUT-HANDOFF.md). Claim cards that pass the code checks are tested by the loop
+itself, in combine, as exploratory specs (`notes: "explore:<card id>"`) paid from an explore
+share of the compute cap reserved up front; FREEZE never picks an exploratory row. Candidates
+(techniques that need new plugin code) go to the review queue for a person and the loop never
+waits for them. Every source is logged in the decision. REPORT opens the
 report half through a `FreezeToken` and writes the deterministic numbers (`report.json`); the
 Reporter's prose comes later.
 
@@ -20,15 +24,18 @@ A process killed between any two of these redoes the step on restart and ends in
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .agents import write_scout_result
+from .catalog_real import LR_RANGE, claim_specs, is_explore
 from .contracts import (
     BudgetView,
     Catalog,
+    ClaimCard,
     ContractError,
     Decision,
     DecisionLog,
@@ -42,6 +49,7 @@ from .contracts import (
     arm_label,
     arm_of,
     atomic_write_json,
+    atomic_write_text,
     build_spec,
     config_hash,
     frozen_set_hash,
@@ -94,7 +102,9 @@ class Conductor:
         deadline: datetime | None = None, phase_timeout_minutes: float = 240.0,
         concurrency: int = 8, minutes_per_run: float = 30.0, fault: Fault | None = None,
         analyst: Any = None, memory: Any = None, max_gate_rejections: int = 2,
-        bench: str = "fast", scout: Any = None,
+        bench: str = "fast", scout: Any = None, explore_share: float = 0.15,
+        design_arms: dict[str, int] | None = None, explore_inbox: str | Path | None = None,
+        lr_range: tuple[float, float] | None = LR_RANGE,
     ) -> None:
         self.out_dir = Path(out_dir)
         self.rows_path = Path(rows_path)
@@ -104,6 +114,12 @@ class Conductor:
         self.planner, self.gatekeeper, self.operator = planner, gatekeeper, operator
         self.analyst, self.memory, self.scout = analyst, memory, scout
         self.candidates_dir = self.out_dir / "candidates"
+        # Share of the compute cap reserved for claim tests (SCOUT-HANDOFF 3.5). 15% is the
+        # handoff's default: himani has not answered the budget question in section 9.
+        self.explore_share = explore_share if scout is not None else 0.0
+        self.design_arms = dict(design_arms or {})
+        self.explore_inbox = Path(explore_inbox) if explore_inbox else None
+        self.lr_range = lr_range
         self.max_gate_rejections = max_gate_rejections
         self.bench = bench
         self.prereg, self.catalog, self.stream = prereg, catalog, tuple(stream)
@@ -213,6 +229,22 @@ class Conductor:
                             if r.failure_kind in ("infra", "timeout")
                             and attempts[r.spec_hash] >= MAX_INFRA_ATTEMPTS))
 
+    def _explore_used(self, rows: Sequence[ResultRow]) -> float:
+        """Spent on exploratory rows plus committed to exploratory specs still in flight."""
+        have_row = {r.spec_hash for r in rows}
+        explore = set(self.s.extra.get("explore_hashes", []))
+        spent = self._spent([r for r in rows if is_explore(r.spec)])
+        committed = sum(cost for key, cost in self.s.extra.get("pending_usd", {}).items()
+                        if key in explore and key not in have_row)
+        return spent + committed
+
+    def _explore_left(self, rows: Sequence[ResultRow] | None = None) -> float:
+        """What claim tests may still spend: the explore share of the cap minus what they used."""
+        if self.explore_share <= 0:
+            return 0.0
+        used = self._explore_used(self._rows() if rows is None else rows)
+        return max(0.0, self.compute_cap_usd * self.explore_share - used)
+
     def _budget(self) -> BudgetView:
         rows = self._rows()
         have_row = {r.spec_hash for r in rows}
@@ -221,7 +253,8 @@ class Conductor:
             cost for key, cost in self.s.extra.get("pending_usd", {}).items()
             if key not in have_row
         )
-        reserve = self.compute_cap_usd * self.reserve_fraction
+        # the explore share is held back from every other phase until claim tests spend it
+        reserve = self.compute_cap_usd * self.reserve_fraction + self._explore_left(rows)
         now = self.clock.now()
         minutes = (self.deadline - now).total_seconds() / 60 if self.deadline else None
         baseline = build_spec("baseline", 0, self.stream)
@@ -276,7 +309,27 @@ class Conductor:
             findings=tuple(self.memory.findings()) if self.memory else (),
             lessons=tuple(self.memory.lessons()) if self.memory else (),
             rejections=tuple(rejections),
+            claim_cards=self._claim_cards() if phase is Phase.COMBINE else (),
+            claim_seeds=self._claim_seeds(),
         )
+
+    def _claim_seeds(self) -> tuple[int, ...]:
+        """Two of the PREREG's replicate seeds: every claim test is paired with its control."""
+        return tuple(self.prereg.replicate_seeds[:2])
+
+    def _claim_cards(self) -> tuple[ClaimCard, ...]:
+        """Plannable claim cards, read back from the logged SCOUT decision (the log is the truth,
+        so a resumed loop plans from the same cards)."""
+        done = self._logged(SCOUT)
+        if done is None:
+            return ()
+        cards = (ClaimCard.model_validate(c) for c in done.data.get("claim_cards", []))
+        return tuple(c for c in cards if c.plannable)
+
+    def _claim_arms(self) -> dict[str, tuple[str, ...]]:
+        return {c.id: tuple(config_hash(spec) for spec, _ in
+                            claim_specs(c, self._claim_seeds(), self.stream))
+                for c in self._claim_cards()}
 
     def _plan(self, phase: Phase) -> Outcome:
         if getattr(self.planner, "llm", None) is None:
@@ -325,6 +378,9 @@ class Conductor:
             pending_spec_hashes=tuple(self.s.pending_spec_hashes),
             estimated_usd={spec_hash(p.spec): self._estimate(p.spec) for p in proposal.specs},
             bench=self.bench, retry_exhausted=self._retry_exhausted(),
+            lr_range=self.lr_range,
+            explore_usd_left=self._explore_left(latest) if self.explore_share > 0 else None,
+            claim_arms=self._claim_arms() if phase is Phase.COMBINE else {},
         )
         verdict = self.gatekeeper.review(proposal, request)
         self.s.verdict = verdict
@@ -368,9 +424,13 @@ class Conductor:
         specs = accepted_specs(self.s.proposal, self.s.verdict)
         report = self.operator.launch(specs, pending=self.s.pending_spec_hashes)
         pending_usd = dict(self.s.extra.get("pending_usd", {}))
+        explore = set(self.s.extra.get("explore_hashes", []))
         for spec in specs:
             pending_usd[spec_hash(spec)] = self._estimate(spec)
-        self.s.extra = {**self.s.extra, "pending_usd": pending_usd}
+            if is_explore(spec):
+                explore.add(spec_hash(spec))
+        self.s.extra = {**self.s.extra, "pending_usd": pending_usd,
+                        "explore_hashes": sorted(explore)}
         self.s.pending_spec_hashes = sorted({*self.s.pending_spec_hashes, *report.submitted})
         return st(Step.WAIT, phase), {
             "choice": {"submitted": len(report.submitted), "skipped": len(report.skipped)},
@@ -461,11 +521,12 @@ class Conductor:
         }
 
     def _scout(self) -> Outcome:
-        """Search the web (Exa) for one technique not in the catalog and log every source.
+        """Search the web (Exa) and keep a ranked shortlist; log every source.
 
-        The candidate only gets written down: a human reviews it before anyone builds it, so
-        combine still plans from the catalog. Any failure is a skip; the loop never stops here.
-        A step already logged (kill after logging) is not searched again.
+        Claim cards that pass the code checks are planned in combine as exploratory specs.
+        Candidates go to the review queue (`candidates/<ts>.json`) for a person; the loop does
+        not wait. Any failure is a skip; the loop never stops here. A step already logged (kill
+        after logging) is not searched again.
         """
         nxt = st(Step.PLAN, Phase.COMBINE)
         self.s.scout_done = True
@@ -474,26 +535,76 @@ class Conductor:
             return nxt, {"choice": done.data.get("choice"), "reason": done.reason,
                          "data": {k: v for k, v in done.data.items()
                                   if k not in ("choice", "accepted")}}
-        request = ScoutRequest(catalog=self.catalog,
-                               findings=tuple(self.memory.findings()) if self.memory else ())
+        finished = sorted({config_hash(r.spec) for r in self._latest() if r.status == "finished"})
+        request = ScoutRequest(
+            catalog=self.catalog,
+            findings=tuple(self.memory.findings()) if self.memory else (),
+            stream=self.stream, seeds=self._claim_seeds(),
+            finished_config_hashes=tuple(finished), design_arms=self.design_arms,
+        )
         try:
             result = self.scout.scout(request)
         except Exception as exc:  # noqa: BLE001 - a Scout bug must not stop the loop
             result = ScoutResult(skipped_reason=f"scout raised {type(exc).__name__}: {exc}")
         path = write_scout_result(result, self.candidates_dir)
+        self._write_claim_cards(result)
         sources = [{"id": s.id, "url": s.url, "title": s.title[:200], "published": s.published,
                     "query": s.query[:200], "used": s.used} for s in result.sources]
-        candidate = result.candidate
+        planned = [c for c in result.claims if c.plannable]
+        repeats = [c for c in result.claims if c.duplicate_of is not None]
+        if result.claims or result.candidates:
+            reason = (f"{len(planned)} claim card(s) to test in combine, {len(repeats)} repeat a "
+                      f"PREREG claim; {len(result.candidates)} candidate(s) for human review; "
+                      f"{len(result.rejected)} item(s) failed a check")
+        else:
+            reason = f"skipped: {result.skipped_reason}"
         return nxt, {
-            "choice": {"candidate": candidate.name if candidate else None,
+            "choice": {"claims": [c.id for c in planned],
+                       "duplicates": {c.id: c.duplicate_of for c in repeats},
+                       "candidates": [c.name for c in result.candidates],
                        "sources": len(sources),
                        "used_sources": [s["url"] for s in sources if s["used"]]},
-            "reason": (f"candidate {candidate.name!r} written for human review" if candidate
-                       else f"skipped: {result.skipped_reason}"),
+            "reason": reason,
             "meta": result.meta,
             "data": {"candidate_path": str(path), "sources": sources,
-                     "description": candidate.description if candidate else None},
+                     "claim_cards": [c.model_dump(mode="json") for c in result.claims],
+                     "candidates": [{"name": c.name, "description": c.description}
+                                    for c in result.candidates],
+                     "rejected": list(result.rejected)},
         }
+
+    def _write_claim_cards(self, result: ScoutResult) -> None:
+        """`claim_cards.jsonl` next to the log, and the explore inbox when one is configured.
+
+        The inbox line has the fields of justin's `explore.ProposedHypothesis` (origin
+        `literature`, `source` = title and URL) plus the card id; the exact field list is to be
+        agreed with justin (SCOUT-HANDOFF 3.5). Both files are rewritten whole, so a redone step
+        leaves one copy.
+        """
+        lines = "".join(c.model_dump_json() + "\n" for c in result.claims)
+        atomic_write_text(self.out_dir / "claim_cards.jsonl", lines)
+        if self.explore_inbox is None:
+            return
+        by_id = {s.id: s for s in result.sources}
+        direction = {1: "less_forgetting", -1: "more_forgetting", 0: "no_difference"}
+        inbox = []
+        for card in result.claims:
+            if not card.plannable:
+                continue
+            src = by_id.get(card.source_ids[0])
+            inbox.append({
+                "card_id": card.id, "origin": "literature", "claim": card.claim,
+                "question": f"Does the published claim hold on our bench? {card.claim}"[:400],
+                "source": f"{src.title[:200]} {src.url}" if src else card.source_ids[0],
+                "prediction": {"direction": direction[card.prediction.direction],
+                               "size_points": card.prediction.size_points},
+                "techniques": [{"name": n, "params": p} for n, p in sorted(card.test_arm.items())],
+                "lr": card.test_lr,
+                "control": arm_label(card.control_arm) + (
+                    f"-lr{card.control_lr:g}" if card.control_lr is not None else ""),
+            })
+        atomic_write_text(self.explore_inbox,
+                          "".join(json.dumps(x, sort_keys=True) + "\n" for x in inbox))
 
     # ---- the end ---------------------------------------------------------------------------
 
@@ -501,7 +612,7 @@ class Conductor:
         """Pick the best replicated arm on the SELECTION half and fix the set."""
         arms: dict[str, list[ResultRow]] = {}
         for row in self._latest():
-            if usable(row, self.prereg):
+            if usable(row, self.prereg) and not is_explore(row.spec):  # claim tests never win
                 arms.setdefault(config_hash(row.spec), []).append(row)
         need = len(self.prereg.replicate_seeds)
         controls = {e.name for e in self.catalog.controls()}

@@ -34,6 +34,7 @@ from .contracts import (
     BudgetView,
     Candidate,
     Catalog,
+    ClaimCard,
     Decision,
     Finding,
     FirewallError,
@@ -94,7 +95,7 @@ class ContextRow(Frozen):
 CONTEXT_MAP: dict[str, ContextRow] = {
     "planner": ContextRow(
         reads=("phase", "prereg", "catalog", "budget", "rows_selection", "findings", "lessons",
-               "rejections"),
+               "rejections", "claim_cards"),
         never_reads=("rows_report", "item_text", "other_prompts"),
         writes="proposal",
     ),
@@ -106,7 +107,7 @@ CONTEXT_MAP: dict[str, ContextRow] = {
     "scout": ContextRow(
         reads=("catalog_summary", "findings_summary", "search_results"),
         never_reads=("rows_selection", "rows_report", "budget", "secrets"),
-        writes="candidate",
+        writes="shortlist",
     ),
     "reporter": ContextRow(
         reads=("frozen_set", "prereg", "catalog", "rows_report", "findings", "decisions"),
@@ -313,9 +314,21 @@ def render_catalog(catalog: Catalog) -> str:
     return "\n".join(lines)
 
 
+def _range(param: Any) -> str:
+    if param.choices is not None:
+        return "|".join(str(c) for c in param.choices)
+    return f"{param.min:g}..{param.max:g}" if param.min is not None and param.max is not None \
+        else f"default {param.default}"
+
+
 def render_catalog_summary(catalog: Catalog) -> str:
-    """Names and one-line descriptions only (the Scout's view)."""
-    return "\n".join(f"{e.name}: {e.description}" for e in catalog.entries)
+    """Names, one-line descriptions and parameter ranges (the Scout's view: enough to write a
+    claim card's arms, nothing about cost, roles or results)."""
+    lines = []
+    for e in catalog.entries:
+        params = ", ".join(f"{k}={_range(p)}" for k, p in e.params.items())
+        lines.append(f"{e.name}: {e.description}" + (f" | params: {params}" if params else ""))
+    return "\n".join(lines)
 
 
 def render_budget(budget: BudgetView) -> str:
@@ -375,6 +388,21 @@ def render_sources(sources: Sequence[Source]) -> str:
         for s in sources
     ]
     return "\n".join(lines) if lines else "(no search results)"
+
+
+def render_claim_cards(cards: Sequence[ClaimCard]) -> str:
+    """The claim and its arms; never a source snippet. The claim text came from the web."""
+    lines = []
+    for c in cards:
+        test = canonical_json(c.test_arm) + (f" lr={c.test_lr:g}" if c.test_lr is not None else "")
+        control = canonical_json(c.control_arm) + (
+            f" lr={c.control_lr:g}" if c.control_lr is not None else "")
+        lines.append(
+            f"{c.id} claim={quote_inline(c.claim, 300)} test_arm={test} control_arm={control} "
+            f"predicted_direction={c.prediction.direction:+d} "
+            f"predicted_points={c.prediction.size_points:g}"
+        )
+    return "\n".join(lines) if lines else "(no claim cards)"
 
 
 def render_decisions(decisions: Sequence[Decision], limit: int | None = None) -> str:
@@ -472,11 +500,13 @@ def build_planner_prompt(
     findings: Sequence[Finding] = (),
     lessons: Sequence[Lesson] = (),
     rejections: Sequence[Verdict] = (),
+    claim_cards: Sequence[ClaimCard] = (),
     schema: type[BaseModel] = Proposal,
     max_rows: int | None = 300,
 ) -> Prompt:
-    """Planner context: phase, PREREG, catalog, then budget, selection rows, findings, lessons
-    and this turn's rejections. `rows` must be `SelectionRow`; anything else raises."""
+    """Planner context: phase, PREREG, catalog, then budget, selection rows, findings, lessons,
+    this turn's rejections and (in combine) the accepted claim cards, quoted as untrusted text.
+    `rows` must be `SelectionRow`; anything else raises."""
     rows_text = wrap_untrusted(render_selection_rows(rows, max_rows), "rows")
     fixed = [
         ("phase", f"Current phase: {phase.value}"),
@@ -490,6 +520,9 @@ def build_planner_prompt(
         ("lessons", wrap_untrusted(render_lessons(lessons, MAX_PROMPT_LESSONS), "lessons")),
         ("rejections", render_rejections(rejections)),
     ]
+    if claim_cards:
+        changing.append(("claim_cards",
+                         wrap_untrusted(render_claim_cards(claim_cards), "claim_cards")))
     return _assemble("planner", card, skills, fixed, changing, schema)
 
 
