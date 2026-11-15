@@ -272,3 +272,22 @@ def test_a_distilled_token_is_pulled_equally_hard_in_every_rows_mode(tmp_path, m
     assert grads["all"][replayed].abs().sum() > 0
     assert torch.allclose(grads["replay"][replayed], grads["all"][replayed], rtol=1e-4, atol=1e-9)
     assert grads["replay"][~replayed].abs().sum() == 0  # the other rows are left alone
+
+
+def test_teacher_keeps_its_own_weights_when_the_student_forward_was_replaced(tmp_path):
+    # train.compile stores a wrapper bound to the student as the instance attribute `forward`;
+    # a deep copy would carry that wrapper along and the teacher would compute the student
+    lm, ctx = _ctx_and_moved_student(tmp_path)
+    original = lm.model.forward
+    lm.model.forward = lambda *a, **k: original(*a, **k)  # stands in for torch.compile's wrapper
+    hook = _distill(top_k=8)
+    hook.on_run_start(ctx)
+    assert "forward" not in hook.teacher.__dict__
+    with torch.no_grad():  # move the student; a real teacher must not follow
+        for p in lm.model.parameters():
+            p.add_(0.05 * torch.randn_like(p))
+    batch = torch.randint(3, VOCAB, (2, 17))
+    student = lm.model(input_ids=batch[:, :-1], use_cache=False).logits
+    teacher = hook.teacher(input_ids=batch[:, :-1], use_cache=False).logits
+    assert not torch.allclose(student, teacher)
+    assert float(hook.extra_loss(ctx, batch, student, batch[:, 1:])) > 1e-4
