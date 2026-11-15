@@ -294,7 +294,8 @@ def checkpoint_items(row: ResultRow, task: str, half: Half) -> tuple[np.ndarray,
     if not row.items_path:
         return None
     ckpts = sorted(Path(row.items_path).glob("ckpt_*"))
-    if len(ckpts) < 2 or not (ckpts[0] / f"items_{task}.npy").exists():
+    if (len(ckpts) < 2 or not (ckpts[0] / f"items_{task}.npy").exists()
+            or not (ckpts[-1] / f"items_{task}.npy").exists()):
         return None
     from clharness.executor.rows import half_indices  # numpy-only module
 
