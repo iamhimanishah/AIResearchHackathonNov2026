@@ -43,6 +43,10 @@ What we found:
   weight averaging together) beat the published recipe by 2.1 points (95% CI 0.8 to 3.4) but
   was level with simply lowering the learning rate (+0.1 points, 95% CI −1.1 to +1.2). No
   configuration met the pre-registered win rule.
+- Run at the lower learning rate itself (exploratory follow-up, 3 seeds), that combination
+  forgets less than lowering the learning rate alone: +1.3 points (95% CI 0.1 to 2.6). But it
+  learns the legal text less (perplexity ratio 0.816 against 0.754), outside the pre-registered
+  margin. Every gain in retention we found came with less learning of the new domain.
 - Of six published claims tested on the bench, two reproduced (replay plus re-warming beats no
   mitigation; the peak learning rate is the main knob), one reproduced in part (LoRA forgets
   less and learns less, but rank 256 learned the legal text less than rank 8, the opposite of
@@ -80,6 +84,7 @@ So that nothing in it is typed from memory. Check each against its file before s
 | Mean learning rate | reference arm 5.54e-5, no mitigation 9.20e-5, no mitigation at 3e-5 2.76e-5 | computed from the schedule itself (`lr_at` in `src/clharness/train/loop.py`, `configs/bench/fast.yaml`, `lr_rewarm` defaults); matches peter's review. The committed run files do not log `train/lr` |
 | Screen | 14 technique combinations; 2 pass the acquisition gate | `results/analysis/grid_analysis.md`, "Promotion" |
 | Best configuration vs reference arm, report half | +2.13 points (95% CI +0.80 to +3.43), Holm p = 0.006, 3 seeds; vs the 3e-5 control +0.07 (−1.07 to +1.23) | `results/analysis/grid_analysis.md`, "Confirmatory tests" |
+| Best configuration at lr 3e-5 (follow-up, exploratory, not pre-registered) | vs no mitigation at 3e-5, 3 paired seeds, item bootstrap: report half +1.33 points (95% CI +0.10 to +2.63), selection half +1.77 (+0.73 to +2.80); legal perplexity ratio 0.816 vs 0.754 (fails the 1.05 acquisition margin; code 0.990 vs 1.027 passes) | `results/rows.followup.jsonl`, specs in `configs/bench/specs/followup/`; `attribution.paired_bootstrap` |
 | Published claims | 6 tested: 2 reproduced, 1 in part, 3 not; claim 4 not tested (no Reptile plugin) | `results/analysis/grid_analysis.md`, "Published claims" |
 | Second task sequence (C5, Tinker, exploratory) | Qwen3-8B, LoRA rank 32, SST-2 → MNLI → AG News, 3 seeds per arm. Average forgetting: naive 1.8 points (95% CI 1.0 to 2.9), replay-200 3.2 (1.5 to 5.4), joint 0.0. Final average accuracy: 0.896 / 0.882 / 0.908. Gap closed by replay-200 −1.40 (−5.48 to +0.48), with the section 10 warning: joint − naive = 0.012 < 0.03. $8.57 estimated for the 9 runs (`est_usd`; a first attempt that stalled in a network outage is not counted). The top-2 technique arms were dropped before any C5 result (amendment 7) | `results/tinker/analysis.md`, `results/tinker/rows.jsonl`; rebuild with `clh tinker-analyze` |
 | Research agent overnight | 5 hypotheses: 1 refused by the code gate, 1 confirmed (lr 1e-5: +1.80 points vs 3e-5 on the selection half, threshold 1.19; legal ratio 0.777 vs 0.754), 3 inconclusive; 9 runs at 2 seeds; exploratory | `results/agent/explore-justin/hypotheses.jsonl`, `rows.jsonl` (as of commit 4c2039f; TO CHECK with justin for later cycles) |
