@@ -6,7 +6,7 @@ import json
 from types import SimpleNamespace
 
 from clharness.agent.agents import CandidateDraft, LLMScout, ScoutDraft, write_scout_result
-from clharness.agent.contracts import Source
+from clharness.agent.contracts import DecisionLog, Source
 from clharness.agent.llm import FakeLLM
 from clharness.agent.roles import FakeClock, ScoutRequest
 from clharness.agent.search import ExaSearch, FakeSearch, SearchError, source_id
@@ -114,3 +114,81 @@ def test_exa_search_turns_failures_into_search_errors(monkeypatch):
         assert "EXA_KEY_FOR_TEST" in str(exc) or "exa-py" in str(exc)
     else:
         raise AssertionError("expected SearchError")
+
+
+# ---- the Scout inside the loop -------------------------------------------------------------
+
+def _loop_scout(search: FakeSearch, llm: FakeLLM) -> LLMScout:
+    return LLMScout(llm, search, clock=FakeClock(), queries=((Q1, O1), (Q2, O2)))
+
+
+def _scout_decisions(out):
+    return [d for d in DecisionLog(out / "decisions.jsonl").entries() if d.state == "scout"]
+
+
+def test_loop_runs_the_scout_once_after_replicate_and_logs_every_source(tmp_path):
+    from clharness.agent.loop import build_sim
+    from clharness.agent.states import DONE
+
+    search = FakeSearch({Q1: [A], Q2: [B]})
+    out = tmp_path / "run"
+    scout = _loop_scout(search, FakeLLM().queue("scout", _draft()))
+    state = build_sim(out, 0, 700.0, clock=FakeClock(), scout=scout).run()
+    assert state.state == DONE and state.scout_done
+    [decision] = _scout_decisions(out)
+    assert decision.actor == "scout" and decision.model is not None
+    assert decision.data["choice"]["used_sources"] == [A.url]
+    assert {s["url"] for s in decision.data["sources"]} == {A.url, B.url}
+    [card_path] = (out / "candidates").glob("*.json")
+    card = json.loads(card_path.read_text())
+    assert card["candidate"]["name"] == "sharpness-aware"
+    states = [d.state for d in DecisionLog(out / "decisions.jsonl").entries()]
+    assert states.index("replicate/advance") < states.index("scout") < states.index("combine/plan")
+    assert len(search.calls) == 2
+
+
+def test_loop_finishes_when_the_search_fails(tmp_path):
+    from clharness.agent.loop import build_sim
+    from clharness.agent.states import DONE
+
+    out = tmp_path / "run"
+    scout = _loop_scout(FakeSearch(fail=True), FakeLLM())
+    assert build_sim(out, 0, 700.0, clock=FakeClock(), scout=scout).run().state == DONE
+    [decision] = _scout_decisions(out)
+    assert decision.reason.startswith("skipped: search returned nothing")
+
+
+def test_loop_without_a_scout_skips_the_scout_state(tmp_path):
+    from clharness.agent.loop import build_sim
+
+    out = tmp_path / "run"
+    build_sim(out, 0, 700.0, clock=FakeClock()).run()
+    assert _scout_decisions(out) == []
+
+
+def test_scout_is_not_searched_again_after_a_kill_once_logged(tmp_path):
+    from clharness.agent.loop import build_sim
+    from clharness.agent.states import DONE
+
+    class Killed(Exception):
+        pass
+
+    fired = []
+
+    def fault(state_id, point):
+        if (state_id, point) == ("scout", "logged") and not fired:
+            fired.append(1)
+            raise Killed
+
+    search = FakeSearch({Q1: [A]})
+    llm = FakeLLM().on("scout", lambda *a: _draft())
+    out, clock = tmp_path / "run", FakeClock()
+    try:
+        build_sim(out, 0, 700.0, clock=clock, fault=fault,
+                  scout=_loop_scout(search, llm)).run()
+    except Killed:
+        pass
+    state = build_sim(out, 0, 700.0, clock=clock, scout=_loop_scout(search, llm)).run()
+    assert fired and state.state == DONE
+    assert len(search.calls) == 2  # two queries, one search step
+    assert len(_scout_decisions(out)) == 1
