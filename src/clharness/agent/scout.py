@@ -1,11 +1,12 @@
-"""Run the Scout step once, live: Exa search, then a model picks at most one candidate.
+"""Run the Scout step once, live: Exa search, then a model drafts a ranked shortlist.
 
     python -m clharness.agent.scout --search-only                 # Exa only, prints sources
-    python -m clharness.agent.scout --config agent.yaml           # search + model, writes a card
+    python -m clharness.agent.scout --config configs/agent.yaml   # search + model, writes a file
 
-Needs EXA_API_KEY (and OPENAI_API_KEY unless --search-only) in `.env`. The candidate card and
-every source it saw are written to --out as one JSON file; a human reviews the card before
-anyone builds the technique.
+Needs EXA_API_KEY (and OPENAI_API_KEY unless --search-only) in `.env`. Claim cards and candidates
+are checked in code against the real plugin catalog, exactly as in the loop's real mode. The
+shortlist and every source it saw are written to --out as one JSON file; a person reviews a
+candidate before anyone builds the technique. Nothing is launched.
 """
 
 from __future__ import annotations
@@ -15,11 +16,36 @@ from pathlib import Path
 
 from .. import env  # noqa: F401 - loads .env
 from .agents import LLMScout, write_scout_result
+from .catalog_real import bench_problems, design_claim_arms, real_catalog
+from .catalog_real import stream as bench_stream
 from .config import load_agent_config
 from .llm import BudgetedLLM, OpenAIClient
-from .roles import ScoutRequest
+from .roles import ScoutRequest, ScoutResult
 from .search import ExaSearch
-from .sim import default_catalog
+
+
+def real_request() -> ScoutRequest:
+    """The request the loop's real mode sends: real catalog, frozen stream, PREREG claim arms."""
+    return ScoutRequest(catalog=real_catalog(), stream=bench_stream(), seeds=(1, 2),
+                        design_arms=design_claim_arms())
+
+
+def summary(result: ScoutResult) -> str:
+    """What the CLI prints for a result: both lists, what failed a check, the sources used."""
+    lines = []
+    for card in result.claims:
+        repeat = f" (repeats PREREG claim {card.duplicate_of})" if card.duplicate_of else ""
+        lines.append(f"claim {card.id}{repeat}: {card.claim}\n  test {card.test_arm} "
+                     f"vs control {card.control_arm or 'no mitigation'}")
+    for cand in result.candidates:
+        lines.append(f"candidate: {cand.name}\n  {cand.description}")
+    lines += [f"rejected: {why}" for why in result.rejected]
+    if not result.claims and not result.candidates:
+        lines.append(f"skipped: {result.skipped_reason}")
+    used = [s.url for s in result.sources if s.used]
+    if used:
+        lines.append("sources used:\n" + "\n".join(f"  {u}" for u in used))
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,16 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         cap_usd=cfg.model_budget_usd, log_path=args.out / "llm_calls.jsonl",
         prices=cfg.prices, max_output_tokens=cfg.llm_max_output_tokens,
     )
-    result = LLMScout(llm, search).scout(ScoutRequest(catalog=default_catalog()))
+    result = LLMScout(llm, search, runnable=bench_problems).scout(real_request())
     path = write_scout_result(result, args.out)
-    if result.candidate:
-        c = result.candidate
-        print(f"candidate: {c.name}\n  {c.description}\n  sources:")
-        for s in result.sources:
-            if s.used:
-                print(f"    {s.url}")
-    else:
-        print(f"skipped: {result.skipped_reason}")
+    print(summary(result))
     print(f"written: {path}")
     return 0
 
