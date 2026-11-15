@@ -55,3 +55,31 @@ thresholds from a draft `configs/agent/thresholds.yaml` transcribed from PREREG.
 **Out of scope.** The screen phase in real mode still uses the fallback planner (it proposes
 catalog-default single-technique specs that are not `design.screen()`); see "For brendan".
 Budget trimming of PREREG cells (the gate still applies the cap; see "For brendan").
+
+**Result.** Commit `904a019`. `make test`: 520 passed, 2 skipped, 1 deselected. On a copy of
+`results/agent/rows.jsonl` with the `$80` cap of `configs/agent.yaml`, the proposal is the 10
+pre-registered specs and the gate keeps 4 (budget: replicate treatments may spend 70% of what
+is left); with a `$700` cap (the test) all 10 are proposed and logged.
+
+## Item 2: RT-16, unpriced rows are charged the estimate
+
+**Goal.** `Conductor._spent` charges the estimate for every row without a positive, finite
+price, infra failures included, so a lost Modal call cannot make the budget look unspent.
+
+**Acceptance criteria.**
+- An unpriced infra row lowers `compute_usd_left` by the spec's estimate (today: by 0).
+- A NaN, infinite, zero or negative price is charged the estimate.
+- The explore share counts an unpriced exploratory infra row the same way.
+- Existing budget tests pass.
+
+**Design.** One expression in `conductor._spent`: `usd if math.isfinite(usd) and usd > 0 else
+estimate`. Reuses `_estimate`. The plan's optional `cost=` on `ModalExecutor._failed` is left
+out: it changes what the launcher writes on the grid's money path tonight.
+
+**Tests** (`tests/agent/test_redteam_fixes.py`).
+- `test_rt16_an_unpriced_infra_row_is_charged_the_estimate`.
+- `test_rt16_a_nan_or_negative_price_is_charged_the_estimate`.
+- `test_rt16_the_explore_share_counts_an_unpriced_infra_row`.
+
+**Out of scope.** Keeping the measured cost on the launcher's wrong-spec and git-sha refusals
+(modal_executor; after the confirmatory rows).

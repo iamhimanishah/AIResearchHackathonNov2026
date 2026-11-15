@@ -28,6 +28,7 @@ A process killed between any two of these redoes the step on restart and ends in
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Collection, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -237,9 +238,10 @@ class Conductor:
         return self.executor.estimate_cost(spec)
 
     def _spent(self, rows: Sequence[ResultRow]) -> float:
-        """Money the rows cost. A finished or failed run with no price is charged the estimate,
-        so a bench that forgets `est_usd` cannot make the budget look unspent."""
-        return sum(r.cost.usd if r.cost.usd > 0 or r.failure_kind == "infra"
+        """Money the rows cost. Any row without a positive, finite price is charged the
+        estimate, infra failures included (RT-16): a lost call's wall time is unknown, and a
+        bench that forgets `est_usd` must not make the budget look unspent."""
+        return sum(r.cost.usd if math.isfinite(r.cost.usd) and r.cost.usd > 0
                    else self._estimate(r.spec) for r in rows)
 
     def _model_usd_left(self) -> float:
