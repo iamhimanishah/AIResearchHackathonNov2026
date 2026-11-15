@@ -15,8 +15,11 @@ Parameters
   targets  "attn": q_proj, k_proj, v_proj, o_proj. "attn_mlp": those plus gate_proj, up_proj,
            down_proj.
   lr       learning rate for the whole run, set through `config_overrides`; None keeps the
-           bench's. Adapters need roughly 10x the full fine-tuning rate: at the bench's 1e-4
-           LoRA would look like it forgets nothing only because it learns nothing.
+           bench's. The default, 1e-3, suits rank 8. With alpha = 2 * rank the size of a step
+           grows roughly with lr * sqrt(rank), so keep lr <= 1e-3 * sqrt(8 / rank): rank 256
+           diverges at 1e-3 and trains normally at the bench's 1e-4. Rank 8 at 1e-4 learns
+           little of the new domain, so there it forgets little partly because it learns
+           little. The runs are in docs/TECHNIQUES.md, "Exploratory runs".
 
 No dropout and no bias training. If `freeze` ran first (it does: techniques are built in name
 order), the layers it froze get no adapters, since an adapter there would un-freeze the layer in
@@ -32,6 +35,9 @@ Known limits
     the adapter merged first. The fast bench keeps no weights, so it is not affected.
   - The learning-rate override applies to the whole run, including any other technique's
     parameters that train.
+  - The plugin does not enforce the rank and learning-rate limit above, and the default lr does
+    not depend on rank. The explore gate enforces the limit (`lora_lr_limit` in
+    `agent/catalog_real.py`).
 """
 
 from __future__ import annotations

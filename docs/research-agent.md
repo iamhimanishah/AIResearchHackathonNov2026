@@ -195,9 +195,9 @@ schema allows more than this; outside these ranges a run works but is unlikely t
 | | `ema_decay` | 0.9 to 0.995 | At 0.999 the average is still about 86% base after one domain |
 | `freeze` | `bottom_layers`, `top_layers` | sum at most 25 | The plugin refuses a model with nothing left to train |
 | | `embeddings` | true, false | Tied to the output head in Gemma |
-| `lora` | `rank` | 4 to 256 | 256 is being checked for memory now; nothing above it has run |
+| `lora` | `rank` | 4 to 256, jointly with `lr` two rows down | 256 fits on an H100; nothing above it has run |
 | | `targets` | `attn`, `attn_mlp` | |
-| | `lr` | 1e-4 to 3e-3, or null for the bench rate | This sets the learning rate of the whole run |
+| | `lr` | 1e-4 up to 1e-3 x sqrt(8 / `rank`), never above 1e-3; or null for the bench rate | This sets the learning rate of the whole run. Corrected on 14 November: this table first gave `rank` and `lr` independent ranges up to 3e-3, and rank 256 at 1e-3 then diverged on three seeds (`results/agent/rows.jsonl`). With `alpha` at 2 x `rank` the size of a step grows roughly with `lr` x sqrt(`rank`), so the two are bounded together. The explore gate enforces this (`lora_lr_limit` in `agent/catalog_real.py`) |
 | `distill` | `weight` | 0.1 to 10 | |
 | | `temperature` | 0.5 to 2 | |
 | | `top_k` | 32 to 1024 | Below about 25 hurt in the literature; null (full vocabulary) has not run on a GPU |
@@ -219,8 +219,9 @@ schema allows more than this; outside these ranges a run works but is unlikely t
 
 - Anything with `lora` at a learning rate other than the bench's: it differs from its controls
   in learning rate as well as in the technique. The lower-LR controls matter most here.
-- `lora` with `wavg`: the average is taken over the adapter factors, which is not the same as
-  averaging the weight change.
+- `lora` with `wavg`: in modes `boundary` and `final` only the B factors are averaged, so `alpha`
+  scales the adapter's weight change exactly. Mode `ema` averages both factors, which is not the
+  same as averaging the weight change.
 - `freeze` with `lora`: adapters go only into the layers left trainable, so the pair is
   "adapters in the unfrozen half", not two independent effects.
 

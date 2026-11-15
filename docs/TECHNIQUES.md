@@ -112,7 +112,8 @@ Sanity results will be added to this file from result rows only, never typed in.
 
 A snapshot, written by a script that reads the row files and typed by nobody. Sources:
 `results/rows.plumbing.jsonl`, `results/rows.sanity.jsonl`, `results/rows.phase0.remeasured.jsonl`,
-`results/rows.phase0.jsonl` and `results/rows.reference.remeasured.jsonl`, as of 14 November.
+`results/rows.phase0.jsonl`, `results/rows.reference.remeasured.jsonl`, `results/rows.explore.jsonl`
+and the LoRA arms of `results/agent/rows.jsonl`, as of 14 November.
 The analysis behind `make reproduce-figures` is the authority; this table is for orientation.
 
 ### Sanity runs: does each technique run on the real model?
@@ -153,10 +154,62 @@ What the full runs say so far, with replay alone and re-warm alone at one seed e
 
 - The reference arm keeps about 3 points more than no mitigation and learns legal slightly
   better, so it did not buy retention by learning less.
-- Re-warm does most of that. Replay alone is inside the seed noise on the multiple-choice mean,
+- Re-warm alone does most of that, and what it does is lower the average learning rate (see
+  Exploratory runs, below). Replay alone is inside the seed noise on the multiple-choice mean,
   though it shows on general-text perplexity.
 - Lowering the learning rate to 3e-5 with no technique forgets less than the reference arm at
   1e-4, at nearly the same legal perplexity. Any technique at 1e-4 has to beat that control.
+
+### Exploratory runs
+
+These runs are outside the pre-registered screen and claims families. Their specs are in
+`configs/bench/specs/explore/` and carry `explore:` in `notes`. Their rows are in
+`results/rows.explore.jsonl`, which the reported-rows list does not read. The table sets them
+beside the control arms and the two LoRA arms of the claims family. It is printed by
+`scripts/techniques_table.py`. Columns are as in the table above; the code column is code
+perplexity at the end of the stream, after legal training, over the base model's.
+
+| Arm | Seeds | Retention, report half | Retention, selection half | Legal perplexity ratio | Code perplexity ratio, end of stream | General perplexity ratio | Rows in |
+|---|---|---|---|---|---|---|---|
+| no mitigation, lr 0.0001 | 5 | -6.44 (1.15) | -5.72 (0.59) | 0.787 | 1.688 | 1.386 | `rows.phase0.remeasured.jsonl` |
+| no mitigation, lr 6e-05 | 3 | -4.63 (1.20) | -3.30 (1.10) | 0.763 | 1.476 | 1.171 | `rows.explore.jsonl` |
+| no mitigation, lr 5e-05 | 3 | -2.80 (0.46) | -2.43 (0.55) | 0.759 | 1.335 | 1.131 | `rows.phase0.jsonl`, `rows.phase0.remeasured.jsonl` |
+| no mitigation, lr 3e-05 | 3 | -1.07 (0.80) | -1.47 (0.15) | 0.754 | 1.205 | 1.055 | `rows.phase0.jsonl`, `rows.phase0.remeasured.jsonl` |
+| reference arm (lr_rewarm + replay), lr 0.0001 | 3 | -3.13 (0.85) | -3.37 (0.38) | 0.744 | 1.482 | 1.120 | `rows.phase0.jsonl`, `rows.reference.remeasured.jsonl` |
+| lr_rewarm, warmup only (constant schedule), lr 0.0001 | 3 | -6.53 (1.11) | -6.23 (0.72) | 0.790 | 1.471 | 1.407 | `rows.explore.jsonl` |
+| LoRA rank 8, lr 0.001 | 3 | -1.30 (1.05) | -1.00 (0.66) | 0.797 | 1.062 | 1.032 | `agent/rows.jsonl` |
+| LoRA rank 8, lr 0.0001 | 1 | +1.10 | +0.60 | 0.860 | 1.010 | 0.993 | `rows.explore.jsonl` |
+| LoRA rank 256, lr 0.001 | 3 | -19.00 (1.00) | -17.77 (1.12) | 0.944 | 4.779 | 2.444 | `agent/rows.jsonl` |
+| LoRA rank 256, lr 0.0002 | 1 | -1.50 | -2.30 | 0.757 | 1.096 | 1.083 | `rows.explore.jsonl` |
+| LoRA rank 256, lr 0.0001 | 3 | -0.27 (0.81) | -0.13 (1.04) | 0.767 | 1.032 | 1.028 | `rows.explore.jsonl` |
+
+What they say. All of it is exploratory, and an arm with one seed is a lead, not a finding.
+
+- **The reference arm's gain is mostly a lower average learning rate.** Its per-domain cosine
+  schedule averages about 5.5e-5 over a run, against about 9.2e-5 for the bench's constant
+  schedule. No mitigation at a constant 6e-5, which has the same average, matches the reference
+  arm on the selection half. On the report half it is behind by less than three seeds can
+  separate from noise. The reference arm keeps a small edge in legal perplexity.
+- **Warmup alone does nothing for retention.** `lr_rewarm` with a constant schedule, which
+  keeps the 8 warmup steps and drops the decay, matches no mitigation at 1e-4 on the
+  multiple-choice mean and on legal perplexity. It does lose less code perplexity.
+- **The LoRA collapse at rank 256 was the learning rate.** At the plugin's default of 1e-3,
+  rank 256 diverges on three seeds. At 1e-4 and at 2e-4 it trains normally.
+- **LoRA at rank 256 and the bench's own learning rate forgets almost nothing on three seeds and
+  still learns legal.** Its legal and code perplexity at each domain's own boundary are inside
+  the acquisition gate's margins against the reference arm, by this file's reading of the rule;
+  the analysis is the authority. Because it runs at 1e-4, the comparison with no mitigation at
+  1e-4 has no learning-rate confound. Against the strongest control, no mitigation at 3e-5, it
+  is within seed noise on the report half and learns legal a little less well. It loses much
+  less code perplexity and somewhat less general perplexity.
+- **At a matched learning rate, the higher rank learns more, on one seed.** At 1e-4, rank 8
+  learns much less of legal than rank 256. Rank 8 at its default 1e-3 learns more than rank 8
+  at 1e-4 and still less than rank 256 at 1e-4, so the gap is not only the size of the step.
+- **"Learns the new domain" here means legal.** For code, perplexity is a damage guard and not
+  a measure of learning (`analysis/PREREG.md`, A15): training on code does not improve it in
+  these arms.
+- None of this can be a pre-registered win. The rows are exploratory, and rule 4 needs a
+  2.30-point margin over no mitigation at 3e-5, which would mean scoring above the base model.
 
 ## Decisions that cross workstreams
 
@@ -211,9 +264,14 @@ them in name order; `RunSpec` now sorts them too.
 - LoRA adds its adapters in place, so module paths stay as they are and activation capture
   still finds the layers. The checkpoint's state dict does gain adapter keys: reloading a saved
   checkpoint into a plain model needs the adapter merged first. The fast bench keeps no weights.
-- LoRA sets the learning rate for the whole run (default 1e-3, against the bench's 1e-4),
-  because adapters trained at the full fine-tuning rate barely learn. It is recorded in the
-  resolved config; compare LoRA runs with that in mind.
+- LoRA sets the learning rate for the whole run (default 1e-3, against the bench's 1e-4). It
+  is recorded in the resolved config; compare LoRA runs with that in mind. The default suits
+  rank 8 only. With `alpha` at 2 x `rank` the size of a step grows roughly with
+  `lr` x sqrt(`rank`), so a higher rank needs a lower rate: keep `lr` at or under
+  1e-3 x sqrt(8 / `rank`). Rank 256 at the default diverges (Exploratory runs, above). The
+  plugin does not enforce the limit, and its default is unchanged so that the rows already
+  measured keep their meaning. The explore gate enforces it (`lora_lr_limit` in
+  `agent/catalog_real.py`).
 - Distillation keeps a frozen copy of the model in memory and holds the teacher's full logits
   for each micro-batch (about 2 GB in bf16 on the real model), plus what autograd keeps of the
   KL computation until backward. It fits on an H100 in the sanity runs.
