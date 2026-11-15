@@ -160,3 +160,22 @@ def test_remeasure_keeps_the_run_and_replaces_only_measurements(tmp_path):
     assert new.acquisition.ppl_ratio == {"code": pytest.approx(0.8), "biomedical": pytest.approx(0.5)}
     assert new.acquisition.own_boundary_ppl_ratio == {"code": pytest.approx(0.5), "biomedical": pytest.approx(0.5)}
     assert new.retention.selection.mean_delta == pytest.approx(-0.5)
+
+
+def test_extra_eval_bench_trains_identically_and_keeps_the_protected_items():
+    """fast-extra may differ from the frozen bench only in its eval list, and the four protected
+    tasks must be scored on exactly the frozen items."""
+    import json
+
+    base = config_from_spec(load_spec(SPECS / "no-mitigation-s0.json"))
+    extra = config_from_spec(load_spec(SPECS / "plumbing-extra-evals.json").model_copy(
+        update={"stream": load_spec(SPECS / "no-mitigation-s0.json").stream}))
+    for section in ("model", "data", "optim", "train"):
+        assert getattr(base, section) == getattr(extra, section), section
+    assert [t.task for t in extra.eval.lm_eval_tasks][:4] == [t.task for t in base.eval.lm_eval_tasks]
+    assert [t.task for t in extra.eval.lm_eval_tasks][4:] == ["winogrande", "arc_challenge"]
+    frozen = json.loads((REPO_ROOT / "manifests" / "eval-protected-v1.json").read_text())["tasks"]
+    wider = json.loads((REPO_ROOT / "manifests" / "eval-protected-v1-extra.json").read_text())["tasks"]
+    for task in ("arc_easy", "hellaswag", "piqa", "pubmedqa_pqal"):
+        assert wider[task]["indices"] == frozen[task]["indices"], task
+        assert wider[task]["docs_sha256"] == frozen[task]["docs_sha256"], task

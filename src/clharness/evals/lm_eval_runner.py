@@ -62,9 +62,18 @@ def chance_levels(task, indices: list[int]) -> dict[str, float | None]:
         inv.append(1.0 / len(choices))
         t = task.doc_to_target(d)
         if isinstance(t, str):
-            t = int(t) if t.strip().lstrip("-").isdigit() else choices.index(t)
-        golds.append(int(t))
-    maj = Counter(golds).most_common(1)[0][1] / len(golds)
+            if t.strip().lstrip("-").isdigit():
+                t = int(t)
+            elif t in choices:
+                t = choices.index(t)
+            else:
+                # WinoGrande scores the sentence ending given each candidate context: the target
+                # is the ending, and the gold index is what doc_to_text returns.
+                alt = task.doc_to_text(d)
+                t = alt if isinstance(alt, int) else None
+        if t is not None:
+            golds.append(int(t))
+    maj = Counter(golds).most_common(1)[0][1] / len(golds) if golds else None
     return {"chance_uniform": sum(inv) / len(inv), "chance_majority": maj, "n_choices_mean": len(inv) / sum(inv)}
 
 

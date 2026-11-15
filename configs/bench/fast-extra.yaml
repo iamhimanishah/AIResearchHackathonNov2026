@@ -1,0 +1,26 @@
+# The frozen fast bench plus two report-only evals: WinoGrande and ARC-Challenge.
+#
+# Why: "LoRA Learns Less and Forgets Less" (Biderman et al. 2024) measures forgetting on
+# HellaSwag, WinoGrande and ARC-Challenge. Scoring our finalists on the same three lets their
+# table and ours be read side by side (docs/published-claims.md).
+#
+# Rules:
+#   * Training is identical to configs/bench/fast.yaml. Only the eval list differs.
+#   * Used for finalists only, after the pre-registered analysis has chosen them. Nothing is
+#     selected on these two tasks.
+#   * A spec names this file as `bench: fast-extra`, so its rows have their own spec hash and
+#     never mix with the grid's rows. In such a row `retention.*.mean_delta` averages six tasks;
+#     the pre-registered four-task mean has to be recomputed from `per_task`.
+#   * The four protected tasks use the same frozen items as protected-v1 (checked by a test).
+include:
+  - fast.yaml
+
+eval:
+  suite: protected-v1-extra
+  lm_eval_tasks:
+    - { task: arc_easy,      n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: hellaswag,     n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: piqa,          n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: pubmedqa_pqal, n_items: 500, num_fewshot: 0, tier: 1 }
+    - { task: winogrande,    n_items: 500, num_fewshot: 0, tier: 1 }   # report-only
+    - { task: arc_challenge, n_items: 500, num_fewshot: 0, tier: 1 }   # report-only
