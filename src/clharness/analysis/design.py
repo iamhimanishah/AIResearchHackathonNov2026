@@ -28,13 +28,15 @@ from clharness.spec import RunSpec, StreamDomain, TechniqueSpec
 FACTORS = ("replay", "lr_rewarm", "lora", "freeze", "distill", "wavg")
 GENERATORS = {"distill": ("replay", "lr_rewarm", "lora"), "wavg": ("replay", "lr_rewarm", "freeze")}
 
-# Frozen parameters, matching configs/bench/specs/reference-s0.json and sanity/*.json.
+# Frozen parameters, matching configs/bench/specs/reference-s0.json and sanity/*.json, except
+# distill top_k (256, not the sanity spec's 64; PREREG A15). lora keeps its plugin default lr 1e-3:
+# a stated exception to the bench LR (PREREG 0.3, A15).
 PARAMS: dict[str, dict[str, Any]] = {
     "replay": {"share": 0.05, "source": "general"},
     "lr_rewarm": {"rewarm_steps": 8, "min_lr_ratio": 0.1, "schedule": "cosine"},
     "lora": {"rank": 8},
     "freeze": {"bottom_layers": 13},
-    "distill": {"weight": 1.0, "top_k": 64},
+    "distill": {"weight": 1.0, "top_k": 256},  # PREREG A15: 64 under-represents distillation (lit scan)
     "wavg": {"alpha": 0.25},
 }
 SELECTION_PARAMS: dict[str, dict[str, Any]] = {
@@ -74,7 +76,8 @@ def label(techniques: frozenset[str], selection: tuple[str, str] | None = None) 
 
 
 def spec(techniques: frozenset[str], seed: int, selection: tuple[str, str] | None = None,
-         stream: tuple[tuple[str, int], ...] = STREAM, lr: float | None = None) -> RunSpec:
+         stream: tuple[tuple[str, int], ...] = STREAM, lr: float | None = None,
+         params: dict[str, dict[str, Any]] | None = None, name: str | None = None) -> RunSpec:
     """One run spec. `selection=(signal, keep)` sets replay's selection (needs replay on).
     `lr` overrides the bench learning rate; it is only for the lower-LR controls (A13)."""
     if selection and "replay" not in techniques:
@@ -82,12 +85,13 @@ def spec(techniques: frozenset[str], seed: int, selection: tuple[str, str] | Non
     if lr is not None and techniques:
         raise ValueError("a learning-rate override is only for the no-mitigation LR controls")
     techs = []
-    for name in sorted(techniques):
-        params = dict(PARAMS[name])
-        if name == "replay" and selection:
-            params.update(SELECTION_PARAMS[selection[0]], keep=selection[1])
-        techs.append(TechniqueSpec(name=name, params=params))
-    name = f"{label(techniques, selection)}-lr{lr:g}" if lr is not None else label(techniques, selection)
+    for tech in sorted(techniques):
+        p = {**PARAMS[tech], **(params or {}).get(tech, {})}  # `params`: published-claims arms (6.5)
+        if tech == "replay" and selection:
+            p.update(SELECTION_PARAMS[selection[0]], keep=selection[1])
+        techs.append(TechniqueSpec(name=tech, params=p))
+    if name is None:
+        name = f"{label(techniques, selection)}-lr{lr:g}" if lr is not None else label(techniques, selection)
     return RunSpec(
         name=f"{name}-s{seed}", seed=seed,
         stream=[StreamDomain(name=n, tokens=t) for n, t in stream],
@@ -180,3 +184,76 @@ def phase0_new() -> list[RunSpec]:
     return [s for s in phase0()
             if frozenset(s.technique_names()) == REFERENCE
             or (lr_of(s) is not None and (lr_of(s), s.seed) not in reused_seed0_lr)]
+
+
+# ---------------------------------------------------------------------------------------------
+# Published-claims family (PREREG section 6.5): exploratory, 3 seeds, run with the screen.
+# Each claim from docs/published-claims.md is a test of one arm against one comparator.
+# ---------------------------------------------------------------------------------------------
+
+# arm name -> (techniques, parameter overrides on top of PARAMS)
+CLAIM_ARMS: dict[str, tuple[frozenset[str], dict[str, dict[str, Any]]]] = {
+    "replay-5": (frozenset({"replay"}), {}),  # = the reference half replay-only
+    "replay-25": (frozenset({"replay"}), {"replay": {"share": 0.25}}),
+    "replay+distill-on-replay": (frozenset({"replay", "distill"}), {"distill": {"rows": "replay"}}),
+    "lora-r8": (frozenset({"lora"}), {}),
+    "lora-r256": (frozenset({"lora"}), {"lora": {"rank": 256}}),
+    "freeze-bottom": (frozenset({"freeze"}), {}),
+    "freeze-top": (frozenset({"freeze"}), {"freeze": {"bottom_layers": 0, "top_layers": 13}}),
+}
+CLAIM_SEEDS = range(3)
+# comparators that are not claim arms: name -> spec builder for a seed
+_COMPARATORS = {
+    "no-mitigation": lambda s: spec(NO_MITIGATION, s),
+    "reference": lambda s: spec(REFERENCE, s),
+    "lr-3e-05": lambda s: spec(NO_MITIGATION, s, lr=3e-5),
+    "rewarm-only": lambda s: spec(frozenset({"lr_rewarm"}), s),
+}
+
+# outcome: "retention" (primary, report half) or "acq_<domain>" (log own-boundary perplexity
+# ratio, so "learns less" is positive). sign: the published direction of (arm - comparator).
+# kind: "directional" passes or fails; "magnitude" is reported next to the published number.
+CLAIMS: list[dict[str, Any]] = [
+    {"id": 1, "claim": "Replay plus LR re-warm beats no mitigation", "source": "Ibrahim et al. 2024",
+     "tests": [("reference", "no-mitigation", "retention", +1, "directional")]},
+    {"id": 2, "claim": "Peak LR is the main knob; warmup barely matters", "source": "Ibrahim et al. 2024",
+     "tests": [("lr-3e-05", "no-mitigation", "retention", +1, "directional"),
+               ("rewarm-only", "no-mitigation", "retention", 0, "magnitude")]},
+    {"id": 3, "claim": "Replay is worth about 1 to 3 points at 1B", "source": "Abbes et al. 2026",
+     "tests": [("replay-5", "no-mitigation", "retention", +1, "directional"),
+               ("replay-25", "no-mitigation", "retention", +1, "directional"),
+               ("replay-25", "replay-5", "retention", +1, "directional")]},
+    {"id": 5, "claim": "LoRA forgets less and learns less; higher rank learns more", "source": "Biderman et al. 2024",
+     "tests": [("lora-r8", "no-mitigation", "retention", +1, "directional"),
+               ("lora-r8", "no-mitigation", "acq_legal", +1, "directional"),
+               ("lora-r256", "lora-r8", "acq_legal", -1, "directional")]},
+    {"id": 6, "claim": "Distilling on replay tokens beats plain replay", "source": "Beyond One-Hot Replay, 2026",
+     "tests": [("replay+distill-on-replay", "replay-5", "retention", +1, "directional")]},
+    {"id": 7, "claim": "Freezing the top half beats freezing the bottom half", "source": "Freeze Deep, Train Shallow, 2026",
+     "tests": [("freeze-top", "freeze-bottom", "retention", +1, "directional")]},
+]
+# Covered elsewhere or not testable here: 4 (Reptile averaging: no plugin), 8 (selection vs
+# random: the selection family, 6.3b), 9 (averaging vs 10% replay: the wavg and replay main
+# effects of the screen, exploratory).
+CLAIMS_ELSEWHERE = {4: "not tested: no Reptile plugin", 8: "selection family (PREREG 6.3b)",
+                    9: "screen main effects of wavg and replay (exploratory)"}
+
+
+def claim_spec(name: str, seed: int) -> RunSpec:
+    """The spec of a claim arm or comparator at a seed."""
+    if name in CLAIM_ARMS:
+        techs, params = CLAIM_ARMS[name]
+        return spec(techs, seed, params=params, name=name)
+    return _COMPARATORS[name](seed)
+
+
+def claims_specs() -> list[RunSpec]:
+    """Every claim-arm run at seeds 0-2. Comparators come from phase 0 or the screen."""
+    return [claim_spec(n, s) for n in CLAIM_ARMS for s in CLAIM_SEEDS]
+
+
+def claims_new() -> list[RunSpec]:
+    """The claim-arm runs not already scheduled elsewhere (replay-5 at seed 0 is the screen's
+    replay-only half)."""
+    elsewhere = {x.spec_hash() for x in screen() + phase0()}
+    return [x for x in claims_specs() if x.spec_hash() not in elsewhere]

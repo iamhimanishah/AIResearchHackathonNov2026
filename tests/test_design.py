@@ -101,3 +101,18 @@ def test_phase0_list_is_exactly_the_preregistered_controls():
     assert len(gpu) == 7 and len(reuse) == 7
     # no technique other than the reference arm runs in phase 0
     assert all(frozenset(s.technique_names()) in (D.NO_MITIGATION, D.REFERENCE) for s in D.phase0())
+
+
+def test_claims_arms_are_valid_and_reuse_the_replay_half():
+    from clharness.techniques import _validated
+
+    specs = D.claims_specs()
+    assert len(specs) == len(D.CLAIM_ARMS) * 3 and len({s.spec_hash() for s in specs}) == len(specs)
+    for s in specs:
+        _validated(s.techniques)
+    assert D.claim_spec("replay-5", 0).spec_hash() == load_spec("configs/bench/specs/replay-only-s0.json").spec_hash()
+    new = D.claims_new()
+    assert len(new) == 20 and D.claim_spec("replay-5", 0).spec_hash() not in {s.spec_hash() for s in new}
+    names = {t[0] for c in D.CLAIMS for t in c["tests"]} | {t[1] for c in D.CLAIMS for t in c["tests"]}
+    for n in names:
+        D.claim_spec(n, 0)  # every arm and comparator named by a claim can be built

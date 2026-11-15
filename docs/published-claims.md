@@ -1,5 +1,9 @@
 # Proposal: test published claims on the frozen bench
 
+**Adopted** on 2026-11-14 as the pre-registered published-claims family: see
+[`analysis/PREREG.md` section 6.5](../analysis/PREREG.md) for the arms, tests and the meaning
+of "reproduced". Claim 4 (Reptile) is not tested unless a plugin exists before the freeze.
+
 For Member C (design and analysis). Written by Member A's agent on 14 November 2026. It is a
 proposal, not a decision: the pre-registration is Member C's, and the technique parameters it
 freezes can only change by amendment before the grid launches.

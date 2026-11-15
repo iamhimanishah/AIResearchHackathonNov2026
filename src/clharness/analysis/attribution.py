@@ -36,6 +36,7 @@ from typing import Any
 
 import numpy as np
 
+from clharness.analysis import design as D
 from clharness.analysis.design import (
     HALVES,
     alias_chains,
@@ -61,10 +62,14 @@ Half = str  # "selection" | "report"
 # ---------------------------------------------------------------------------------------------
 
 
-def config_key(row: ResultRow) -> str:
+def spec_key(spec: Any) -> str:
     """Everything that defines a configuration except the seed and the labels."""
-    payload = row.spec.model_dump(mode="json", exclude={"name", "notes", "parent_spec_hash", "seed"})
+    payload = spec.model_dump(mode="json", exclude={"name", "notes", "parent_spec_hash", "seed"})
     return hashlib.sha256(canonical_json(payload).encode()).hexdigest()[:12]
+
+
+def config_key(row: ResultRow) -> str:
+    return spec_key(row.spec)
 
 
 @dataclass
@@ -426,7 +431,8 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3,
     excluded = {NO_MITIGATION, REFERENCE, *HALVES}  # controls, and the halves of the reference recipe
     ranked = []
     for cfg in configs.values():
-        if cfg.techniques in excluded or cfg.selection is not None or not is_design_spec(cfg.rows[0].spec):
+        if (cfg.techniques in excluded or cfg.selection is not None or not is_design_spec(cfg.rows[0].spec)
+                or cfg.techniques not in set(factorial())):
             continue
         acq = float(cfg.acquisition().mean())
         ranked.append({
@@ -482,6 +488,66 @@ def promote_selection(configs: dict[str, Config], ref: Config | None,
     return sorted(rows, key=lambda r: (r["signal"], r["keep"]))
 
 
+def paired_seed_bootstrap(x: dict[int, float], r: dict[int, float], n_boot: int = 10_000,
+                          seed: int = 0) -> dict[str, Any]:
+    """Delta = mean(x - r) over paired seeds, with a percentile interval from resampling seeds.
+    Used for per-domain acquisition, which has no item level."""
+    pairs = sorted(set(x) & set(r))
+    if not pairs:
+        return {"delta": float("nan"), "lo": float("nan"), "hi": float("nan"), "n_pairs": 0}
+    d = np.array([x[s] - r[s] for s in pairs])
+    rng = np.random.default_rng(seed)
+    boot = d[rng.integers(0, len(d), size=(n_boot, len(d)))].mean(axis=1)
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    return {"delta": float(d.mean()), "lo": float(lo), "hi": float(hi), "n_pairs": len(pairs)}
+
+
+def claims_table(configs: dict[str, Config], half: Half, lr_control: Config | None = None,
+                 n_boot: int = 10_000, seed: int = 0, items: ItemLoader | None = None) -> list[dict[str, Any]]:
+    """PREREG 6.5, exploratory: each published claim's tests, arm against comparator.
+    A directional test reproduces if its interval excludes 0 in the published direction."""
+    def cfg_of(name: str) -> Config | None:
+        return configs.get(spec_key(D.claim_spec(name, 0)))
+
+    def log_acq(cfg: Config, domain: str) -> dict[int, float]:
+        return {r.spec.seed: math.log(domain_acquisition(r)[domain]) for r in cfg.rows
+                if domain in domain_acquisition(r)}
+
+    out = []
+    for c in D.CLAIMS:
+        for arm, vs, outcome, sign, kind in c["tests"]:
+            x, r = cfg_of(arm), cfg_of(vs)
+            row: dict[str, Any] = {"id": c["id"], "claim": c["claim"], "source": c["source"], "arm": arm,
+                                   "comparator": vs, "outcome": outcome, "published_sign": sign, "kind": kind}
+            if x is None or r is None:
+                out.append({**row, "verdict": "missing runs"})
+                continue
+            if outcome == "retention":
+                if not set(x.seeds) & set(r.seeds):
+                    out.append({**row, "verdict": "missing runs"})
+                    continue
+                b = paired_bootstrap(x, r, half, n_boot, seed, items)
+            else:
+                b = paired_seed_bootstrap(log_acq(x, outcome[4:]), log_acq(r, outcome[4:]), n_boot, seed)
+            row.update(delta=b["delta"], lo=b["lo"], hi=b["hi"], n_pairs=b["n_pairs"])
+            if kind == "magnitude":
+                row["verdict"] = "reported"
+            elif b["n_pairs"] < 2:
+                row["verdict"] = "too few seeds"
+            elif (sign > 0 and b["lo"] > 0) or (sign < 0 and b["hi"] < 0):
+                row["verdict"] = "reproduced"
+            elif (sign > 0 and b["hi"] < 0) or (sign < 0 and b["lo"] > 0):
+                row["verdict"] = "opposite"
+            else:
+                row["verdict"] = "not reproduced (interval includes 0)"
+            # Justin's caution: say whether the arm also beats simply lowering the learning rate
+            if outcome == "retention" and lr_control is not None and x is not lr_control and x.techniques:
+                lb = paired_bootstrap(x, lr_control, half, n_boot, seed, items)
+                row["vs_lr_control"] = {"config": lr_control.label, "delta": lb["delta"], "lo": lb["lo"], "hi": lb["hi"]}
+            out.append(row)
+    return out
+
+
 def pareto(configs: dict[str, Config], half: Half) -> list[str]:
     """Configurations not dominated on (higher retention, lower acquisition ratio)."""
     pts = {c.label: (float(c.primary(half).mean()), float(c.acquisition().mean())) for c in configs.values()}
@@ -526,6 +592,10 @@ def cost_table(configs: dict[str, Config], base: Config | None, half: Half) -> l
 # ---------------------------------------------------------------------------------------------
 
 
+def _claim_keys() -> set[str]:
+    return {spec_key(x) for x in D.claims_specs()}
+
+
 def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_000, seed: int = 0,
             items: ItemLoader | None = checkpoint_items) -> dict[str, Any]:
     """Screening-stage analysis on the selection half; with `confirmatory`, also the
@@ -551,7 +621,8 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         "noise_floor": {"config": base.label if base else None, "n_seeds": len(base.rows) if base else 0,
                         "sigma_selection": sigma_sel},
         "reference": ref.label if ref else None,
-        "off_design_rows": sorted(r.spec.name for r in finished if not is_design_spec(r.spec)),
+        "off_design_rows": sorted(r.spec.name for r in finished
+                                  if not is_design_spec(r.spec) and spec_key(r.spec) not in _claim_keys()),
         # PREREG 7: six main effects plus replay x lr_rewarm, which the reference halves make estimable
         "effects_retention_selection": fit_effects(
             design_rows, lambda r: r.retention.selection.mean_delta, sigma=sigma_sel,
@@ -597,6 +668,8 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         decide(configs[k], ref, sel_boots[configs[k].label], sel_adj[configs[k].label], sigma_rep,
                margins=margins)
         for k in sel_promoted]
+    out["claims"] = claims_table(configs, "report", lr_ctrl, n_boot, seed, items)
+    out["claims_elsewhere"] = D.CLAIMS_ELSEWHERE
     sanity = paired_bootstrap(ref, base, "report", n_boot, seed, items)
     out["sanity_reference_vs_no_mitigation"] = {k: sanity[k] for k in ("delta", "lo", "hi", "p", "n_pairs", "mode")}
     out["pareto_report"] = pareto(configs, "report")
@@ -708,6 +781,21 @@ def to_markdown(report: dict[str, Any]) -> str:
         s = report["sanity_reference_vs_no_mitigation"]
         lines.append(f"\nSanity, reference vs no-mitigation: Δ = {pct(s['delta'])} "
                      f"({pct(s['lo'])} to {pct(s['hi'])}), {s['mode']} bootstrap over {s['n_pairs']} seeds.")
+    if report.get("claims"):
+        lines.append("\n## Published claims (exploratory, report half)\n")
+        lines.append("| # | Claim | Arm vs comparator | Outcome | Δ (95% CI) | Seeds | Verdict | vs lower-LR control |\n"
+                     "|---|---|---|---|---|---|---|---|")
+        for c in report["claims"]:
+            if "delta" not in c:
+                lines.append(f"| {c['id']} | {c['claim']} | {c['arm']} vs {c['comparator']} | {c['outcome']} | — | — | {c['verdict']} | |")
+                continue
+            fmt = pct if c["outcome"] == "retention" else (lambda v: f"{v:+.3f}")
+            vs = c.get("vs_lr_control")
+            vs_cell = f"{pct(vs['delta'])} ({pct(vs['lo'])} to {pct(vs['hi'])})" if vs else ""
+            lines.append(f"| {c['id']} | {c['claim']} | {c['arm']} vs {c['comparator']} | {c['outcome']} | "
+                         f"{fmt(c['delta'])} ({fmt(c['lo'])} to {fmt(c['hi'])}) | {c['n_pairs']} | {c['verdict']} | {vs_cell} |")
+        for k, v in report.get("claims_elsewhere", {}).items():
+            lines.append(f"\nClaim {k}: {v}")
     lines.append(f"\nPareto frontier (selection): {', '.join(report['pareto_selection'])}")
     if report["not_finished"]:
         lines.append("\n## Failed and invalid runs\n")

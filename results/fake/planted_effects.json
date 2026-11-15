@@ -31,6 +31,24 @@
       "log_acquisition": 0.06
     }
   },
+  "claim_arm_effects": {
+    "replay-25": {
+      "retention": 0.04,
+      "log_acquisition": 0.02
+    },
+    "replay+distill-on-replay": {
+      "retention": 0.037,
+      "log_acquisition": 0.015
+    },
+    "lora-r256": {
+      "retention": 0.022,
+      "log_acquisition": 0.05
+    },
+    "freeze-top": {
+      "retention": 0.025,
+      "log_acquisition": 0.02
+    }
+  },
   "retention_selection_effects": {
     "loss/high": 0.004,
     "loss/low": -0.002,

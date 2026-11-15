@@ -251,3 +251,32 @@ def test_acquisition_margin_widens_to_twice_the_noise(rows):
     noisy = A.Config(key=base.key, techniques=base.techniques, rows=noisy_rows, label=base.label)
     m = A.acquisition_margins(noisy)
     assert m["legal"] > A.ACQ_GATE and m["code"] == pytest.approx(A.ACQ_GATE)
+
+
+def test_claims_table_covers_every_test_with_a_verdict(confirmatory):
+    from clharness.analysis import design as D
+
+    tests = [(c["id"], t[0], t[1], t[2]) for c in D.CLAIMS for t in c["tests"]]
+    got = [(c["id"], c["arm"], c["comparator"], c["outcome"]) for c in confirmatory["claims"]]
+    assert got == tests
+    allowed = {"reproduced", "opposite", "not reproduced (interval includes 0)", "too few seeds", "reported"}
+    assert all(c["verdict"] in allowed for c in confirmatory["claims"])
+    assert set(confirmatory["claims_elsewhere"]) == {4, 8, 9}
+
+
+def test_planted_lora_acquisition_claims_reproduce(confirmatory):
+    """Planted: LoRA r8 learns legal less than no-mitigation (+0.09 log ratio) and r256 learns
+    more than r8 (-0.04); both are far outside seed noise, so both must reproduce."""
+    rows = {(c["arm"], c["comparator"], c["outcome"]): c for c in confirmatory["claims"]}
+    assert rows[("lora-r8", "no-mitigation", "acq_legal")]["verdict"] == "reproduced"
+    assert rows[("lora-r256", "lora-r8", "acq_legal")]["verdict"] == "reproduced"
+
+
+def test_claim_arms_are_not_off_design_and_not_promoted(screening):
+    assert screening["off_design_rows"] == ["fake-distill-10.0-s1"]
+    promoted_pool = {d["config"] for d in screening["promotion"]}
+    assert not promoted_pool & {"lora", "freeze"}  # lora-r8 / freeze-bottom alone are claim arms, not screen runs
+
+
+def test_claims_only_in_confirmatory_mode(screening):
+    assert "claims" not in screening
