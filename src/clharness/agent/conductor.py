@@ -1,7 +1,8 @@
 """The Conductor: the deterministic state machine of docs/agent/ARCHITECTURE.md section 3.
 
-Thin first version. It plans with the deterministic fallback only (no model call yet), and the
-READ and SCOUT steps do the minimum: there is no Analyst or Scout behind them. REPORT opens the
+The Planner and Analyst may be model-backed or deterministic. SCOUT runs only when a Scout is
+configured (after replicate, once): it searches the web with Exa, writes at most one candidate
+card for human review and logs every source in the decision. REPORT opens the
 report half through a `FreezeToken` and writes the deterministic numbers (`report.json`); the
 Reporter's prose comes later.
 
@@ -24,6 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .agents import write_scout_result
 from .contracts import (
     BudgetView,
     Catalog,
@@ -56,7 +58,15 @@ from .contracts import (
 )
 from .llm import LLMError
 from .operator import MAX_INFRA_ATTEMPTS
-from .roles import Clock, Executor, GateRequest, PlanRequest, ReadRequest
+from .roles import (
+    Clock,
+    Executor,
+    GateRequest,
+    PlanRequest,
+    ReadRequest,
+    ScoutRequest,
+    ScoutResult,
+)
 from .states import (
     ACTORS,
     DONE,
@@ -64,6 +74,7 @@ from .states import (
     HALTED,
     PREFLIGHT,
     REPORT,
+    SCOUT,
     LoopState,
     State,
     Step,
@@ -83,7 +94,7 @@ class Conductor:
         deadline: datetime | None = None, phase_timeout_minutes: float = 240.0,
         concurrency: int = 8, minutes_per_run: float = 30.0, fault: Fault | None = None,
         analyst: Any = None, memory: Any = None, max_gate_rejections: int = 2,
-        bench: str = "fast",
+        bench: str = "fast", scout: Any = None,
     ) -> None:
         self.out_dir = Path(out_dir)
         self.rows_path = Path(rows_path)
@@ -91,7 +102,8 @@ class Conductor:
         self.log_path = self.out_dir / "decisions.jsonl"
         self.executor, self.clock = executor, clock
         self.planner, self.gatekeeper, self.operator = planner, gatekeeper, operator
-        self.analyst, self.memory = analyst, memory
+        self.analyst, self.memory, self.scout = analyst, memory, scout
+        self.candidates_dir = self.out_dir / "candidates"
         self.max_gate_rejections = max_gate_rejections
         self.bench = bench
         self.prereg, self.catalog, self.stream = prereg, catalog, tuple(stream)
@@ -433,6 +445,12 @@ class Conductor:
             return st(Step.PLAN, phase), {"choice": f"repeat {phase.value}",
                                           "reason": "no run finished", "input_row_hashes": hashes}
         following = next_phase(phase)
+        if phase is Phase.REPLICATE and self.scout is not None and not self.s.scout_done:
+            return SCOUT, {
+                "choice": "go to scout",
+                "reason": f"{len(done)} of {len(wanted)} replicate runs finished; scout enabled",
+                "input_row_hashes": hashes,
+            }
         if following is None:
             return FREEZE, {"choice": "freeze", "reason": "combine done",
                             "input_row_hashes": hashes}
@@ -440,6 +458,41 @@ class Conductor:
             "choice": f"go to {following.value}",
             "reason": f"{len(done)} of {len(wanted)} {phase.value} runs finished",
             "input_row_hashes": hashes,
+        }
+
+    def _scout(self) -> Outcome:
+        """Search the web (Exa) for one technique not in the catalog and log every source.
+
+        The candidate only gets written down: a human reviews it before anyone builds it, so
+        combine still plans from the catalog. Any failure is a skip; the loop never stops here.
+        A step already logged (kill after logging) is not searched again.
+        """
+        nxt = st(Step.PLAN, Phase.COMBINE)
+        self.s.scout_done = True
+        done = self._logged(SCOUT)
+        if done is not None:
+            return nxt, {"choice": done.data.get("choice"), "reason": done.reason,
+                         "data": {k: v for k, v in done.data.items()
+                                  if k not in ("choice", "accepted")}}
+        request = ScoutRequest(catalog=self.catalog,
+                               findings=tuple(self.memory.findings()) if self.memory else ())
+        try:
+            result = self.scout.scout(request)
+        except Exception as exc:  # noqa: BLE001 - a Scout bug must not stop the loop
+            result = ScoutResult(skipped_reason=f"scout raised {type(exc).__name__}: {exc}")
+        path = write_scout_result(result, self.candidates_dir)
+        sources = [{"id": s.id, "url": s.url, "title": s.title[:200], "published": s.published,
+                    "query": s.query[:200], "used": s.used} for s in result.sources]
+        candidate = result.candidate
+        return nxt, {
+            "choice": {"candidate": candidate.name if candidate else None,
+                       "sources": len(sources),
+                       "used_sources": [s["url"] for s in sources if s["used"]]},
+            "reason": (f"candidate {candidate.name!r} written for human review" if candidate
+                       else f"skipped: {result.skipped_reason}"),
+            "meta": result.meta,
+            "data": {"candidate_path": str(path), "sources": sources,
+                     "description": candidate.description if candidate else None},
         }
 
     # ---- the end ---------------------------------------------------------------------------

@@ -1,141 +1,108 @@
-"""PREREG 6.3/6.3b replication planning: promoted configurations and selection variants are
-replicated at seeds 1 and 2. The helper reads the selection-half promotion tables only, and every
-spec it emits is the canonical design.spec at the new seed."""
-
-import json
-import math
-
-import pytest
+"""The replication set follows the pre-registered rule and agrees with the analysis report."""
 
 from clharness.analysis import attribution as A
 from clharness.analysis import design as D
-from clharness.cli import main
-from clharness.executor.run import config_from_spec
+from clharness.analysis.replication import replication_specs
 from clharness.fake import fake_rows
-from clharness.spec import load_spec, write_rows
-from clharness.techniques import _validated
+
+ROWS = fake_rows(seed=0)
+SCREEN = [r for r in ROWS if r.spec.seed == 0]
 
 
-@pytest.fixture(scope="module")
-def screen():
-    return A.analyze(fake_rows(seed=0), confirmatory=False, n_boot=500)
+def test_it_returns_three_factorial_configurations_and_one_direction_per_signal_at_seeds_1_and_2():
+    plan = replication_specs(SCREEN, allow_simulated=True)
+    assert len(plan["promoted"]) == 3 and len(plan["promoted_selection"]) == 2
+    assert len(plan["specs"]) == plan["planned"] == 10
+    assert sorted({s.seed for s in plan["specs"]}) == [1, 2]
+    controls = {D.NO_MITIGATION, D.REFERENCE, *D.HALVES}
+    for s in plan["specs"]:
+        techs = frozenset(s.technique_names())
+        assert D.selection_of(s) is not None or techs not in controls  # no control is replicated
+        assert D.lr_of(s) is None
 
 
-@pytest.fixture(scope="module")
-def specs(screen):
-    return D.replication_specs(screen["promotion"], screen["selection_screen"])
+def test_each_spec_is_the_design_spec_at_that_seed():
+    for s in replication_specs(SCREEN, allow_simulated=True)["specs"]:
+        expected = D.spec(frozenset(s.technique_names()), s.seed, D.selection_of(s))
+        assert s.spec_hash() == expected.spec_hash(), s.name
+        assert s.name == expected.name
 
 
-def _expected_hashes(screen, seeds=D.REPLICATION_SEEDS):
-    """The design.spec hash of every promoted configuration and selection variant, per seed."""
-    out = set()
-    for d in screen["promotion"]:
-        if d["promoted"]:
-            out.update(D.spec(frozenset(d["techniques"]), s).spec_hash() for s in seeds)
-    for d in screen["selection_screen"]:
-        if d.get("promoted"):
-            out.update(
-                D.spec(frozenset(d["techniques"]), s, selection=(d["signal"], d["keep"])).spec_hash()
-                for s in seeds)
-    return out
+def test_the_set_is_the_one_the_analysis_report_calls_promoted():
+    plan = replication_specs(SCREEN, allow_simulated=True)
+    report = A.analyze(SCREEN, n_boot=100, allow_simulated=True)
+    assert plan["promoted"] == [d["config"] for d in report["promotion"] if d["promoted"]]
+    assert plan["ranking"] == report["promotion"]
 
 
-def test_promoted_factorial_configs_replicated_at_seeds_1_and_2(screen, specs):
-    assert D.REPLICATION_SEEDS == (1, 2)
-    assert {s.seed for s in specs} == set(D.REPLICATION_SEEDS)
-    promoted = [d for d in screen["promotion"] if d["promoted"]]
-    for d in promoted:
-        for seed in D.REPLICATION_SEEDS:
-            expected = D.spec(frozenset(d["techniques"]), seed)
-            assert expected.spec_hash() in {s.spec_hash() for s in specs}
-    assert len(promoted) == 3  # the screen promotes its top three factorial configurations
+def test_the_ranking_does_not_move_when_replication_rows_arrive():
+    """Rank on the seed-0 screen only: a configuration that regresses at seed 1 must stay in."""
+    before = replication_specs(SCREEN, allow_simulated=True)
+    after = replication_specs(ROWS, allow_simulated=True)  # includes seeds 1 and 2
+    assert after["promoted"] == before["promoted"]
+    assert after["promoted_selection"] == before["promoted_selection"]
+    assert after["already_finished"] > 0
+    assert {s.spec_hash() for s in after["specs"]} <= {s.spec_hash() for s in before["specs"]}
 
 
-def test_promoted_selection_variants_replicated_at_seeds_1_and_2(screen, specs):
-    promoted = [d for d in screen["selection_screen"] if d.get("promoted")]
-    assert promoted  # each signal promotes one `keep` direction
-    assert {d["signal"] for d in promoted} == {r["signal"] for r in screen["selection_screen"]}
-    for d in promoted:
-        for seed in D.REPLICATION_SEEDS:
-            expected = D.spec(frozenset(d["techniques"]), seed, selection=(d["signal"], d["keep"]))
-            assert expected.spec_hash() in {s.spec_hash() for s in specs}
+def test_duplicate_rows_do_not_change_it_and_simulated_rows_are_refused_by_default():
+    assert replication_specs(SCREEN + SCREEN, allow_simulated=True)["promoted"] == \
+        replication_specs(SCREEN, allow_simulated=True)["promoted"]
+    assert replication_specs(SCREEN)["specs"] == []  # fake rows are not real results
 
 
-def test_every_spec_is_exactly_design_spec(screen, specs):
-    assert {s.spec_hash() for s in specs} == _expected_hashes(screen)
-    assert all(s.notes.startswith("replication") for s in specs)
+def test_design_exposes_it():
+    assert [s.name for s in D.replication_specs(SCREEN, allow_simulated=True)["specs"]] == \
+        [s.name for s in replication_specs(SCREEN, allow_simulated=True)["specs"]]
 
 
-def test_specs_validate_and_build(specs):
-    for sp in specs:
-        _validated(sp.techniques)  # unknown technique or bad params raises
-        cfg = config_from_spec(sp)
-        assert cfg.train.seed == sp.seed
+def test_generated_specs_validate_and_build():
+    """Each emitted spec is runnable: technique params pass plugin validation and
+    config_from_spec builds the run config."""
+    from clharness.executor.run import config_from_spec
+    from clharness.techniques import _validated
+    for sp in replication_specs(SCREEN, allow_simulated=True)["specs"]:
+        _validated(sp.techniques)
+        assert config_from_spec(sp).train.seed == sp.seed
 
 
-def test_only_promoted_entries_produce_specs(screen, specs):
-    not_promoted = [d["config"] for d in screen["promotion"] if not d["promoted"]]
-    names = {s.name for s in specs}
-    for label in not_promoted:
-        assert all(not n.startswith(label) for n in names), label
-    assert D.replication_specs([], []) == []
-    empty = [{"promoted": True, "techniques": ["replay"]}]
-    assert {s.spec_hash() for s in D.replication_specs(empty, [])} == {
-        D.spec(frozenset({"replay"}), s).spec_hash() for s in D.REPLICATION_SEEDS}
-
-
-def test_deduplicated_by_spec_hash():
-    entry = {"promoted": True, "techniques": ["replay"]}
-    specs = D.replication_specs([entry, dict(entry)], [])
-    assert len(specs) == len(D.REPLICATION_SEEDS)
-
-
-def test_promotion_without_techniques_field_is_rejected():
-    with pytest.raises(ValueError, match="techniques"):
-        D.replication_specs([{"promoted": True}], [])
-
-
-def test_report_half_never_read(screen):
-    """Rows whose report half is NaN must still produce the promoted specs — the helper may run
-    as soon as the screen finishes, when no report-half data exists."""
+def test_report_half_is_never_read():
+    """Rows whose report half is NaN must produce the same set — the helper runs before any
+    report-half data exists."""
     nan_rows = []
-    for r in fake_rows(seed=0):
+    for r in SCREEN:
         if r.retention is None:  # failed/invalid rows carry no retention at all
             nan_rows.append(r)
             continue
-        report_half = r.retention.report
+        half = r.retention.report
         ret = r.retention.model_copy(update={
-            "report": report_half.model_copy(
+            "report": half.model_copy(
                 update={"per_task": {t: v.model_copy(update={"delta": float("nan")})
-                                     for t, v in report_half.per_task.items()},
+                                     for t, v in half.per_task.items()},
                         "mean_delta": float("nan")}),
             "boundaries": [b.model_copy(update={"report_mean_delta": float("nan")})
                            for b in r.retention.boundaries],
         })
         nan_rows.append(r.model_copy(update={"retention": ret}))
-    report = A.analyze(nan_rows, confirmatory=False, n_boot=500)
-    assert math.isfinite(report["selection_screen"][0]["vs_reference"])  # still finite
-    specs = D.replication_specs(report["promotion"], report["selection_screen"])
-    assert {s.spec_hash() for s in specs} == _expected_hashes(screen)
+    plan = replication_specs(nan_rows, allow_simulated=True)
+    assert {s.spec_hash() for s in plan["specs"]} == \
+        {s.spec_hash() for s in replication_specs(SCREEN, allow_simulated=True)["specs"]}
 
 
-def test_cli_writes_specs_and_list(tmp_path):
+def test_cli_writes_spec_files_and_a_runner_list(tmp_path):
+    """clh plan-replication writes one spec JSON per run and a list.txt that `clh run --modal`
+    consumes, the same shape as configs/bench/phase0.txt."""
+    from clharness.cli import main
+    from clharness.spec import load_spec, write_rows
     rows_path = tmp_path / "rows.jsonl"
-    write_rows(rows_path, fake_rows(seed=0))
+    write_rows(rows_path, SCREEN)
     out = tmp_path / "replication"
-    assert main(["plan-replication", str(rows_path), "--n-boot", "200", "--out", str(out)]) == 0
-    lines = [ln for ln in (out / "list.txt").read_text().splitlines() if ln and not ln.startswith("#")]
-    assert len(lines) > 0
-    loaded = [load_spec(ln) for ln in lines]
-    # every list.txt path is a spec file the runner accepts, unique by hash
-    assert len({s.spec_hash() for s in loaded}) == len(loaded)
-    for sp in loaded:
-        _validated(sp.techniques)
-        config_from_spec(sp)
-        assert sp.seed in D.REPLICATION_SEEDS
-    # on-disk JSON round-trips to the same spec
-    files = sorted(out.glob("*.json"))
+    assert main(["plan-replication", str(rows_path), "--allow-simulated",
+                 "--out", str(out)]) == 0
+    lines = [ln for ln in (out / "list.txt").read_text().splitlines()
+             if ln and not ln.startswith("#")]
+    expected = {s.spec_hash() for s in replication_specs(SCREEN, allow_simulated=True)["specs"]}
+    assert {load_spec(ln).spec_hash() for ln in lines} == expected
+    files = list(out.glob("*.json"))
     assert len(files) == len(lines)
-    assert {load_spec(f).spec_hash() for f in files} == {s.spec_hash() for s in loaded}
-    header = json.loads(files[0].read_text())
-    assert "selection" not in json.dumps(header.get("notes", ""))  # notes say replication, not screen
+    assert {load_spec(f).spec_hash() for f in files} == expected

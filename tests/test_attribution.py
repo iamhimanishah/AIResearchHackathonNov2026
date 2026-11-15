@@ -16,12 +16,12 @@ def rows():
 
 @pytest.fixture(scope="module")
 def screening(rows):
-    return A.analyze(rows, confirmatory=False, n_boot=500)
+    return A.analyze(rows, confirmatory=False, n_boot=500, allow_simulated=True)
 
 
 @pytest.fixture(scope="module")
 def confirmatory(rows):
-    return A.analyze(rows, confirmatory=True, n_boot=2000)
+    return A.analyze(rows, confirmatory=True, n_boot=2000, allow_simulated=True)
 
 
 def test_retention_main_effects_and_planted_pairs_are_recovered(screening):
@@ -39,7 +39,12 @@ def test_retention_main_effects_and_planted_pairs_are_recovered(screening):
 
 def test_main_fit_is_six_techniques_plus_the_reference_interaction(screening):
     names = set(screening["effects_retention_selection"]["effects"])
-    assert names == {"(baseline)", *PLANTED["retention_main_effects"], "lr_rewarm×replay"}
+    # the reference interaction's alias partners get their own columns: the halves runs make
+    # them separately estimable, so their effects cannot leak into replay x lr_rewarm
+    chain = next(c for c in A.alias_chains() if ("lr_rewarm", "replay") in c)
+    chain_names = {"×".join(sorted(p)) for p in chain}
+    assert {"(baseline)", *PLANTED["retention_main_effects"], "lr_rewarm×replay"} <= names
+    assert names <= {"(baseline)", *PLANTED["retention_main_effects"]} | chain_names
     assert len(screening["alias_chains_retention_selection"]["aliases"]) == 7
 
 
@@ -84,7 +89,10 @@ def test_answer_collapse_is_flagged_but_kept(rows, screening):
 def test_noise_floor_is_the_sd_over_no_mitigation_seeds(rows, screening):
     base = A.find(A.group(rows), A.NO_MITIGATION)
     assert len(base.rows) == 5
-    assert screening["noise_floor"]["sigma_selection"] == pytest.approx(A.noise_sd(base, "selection"))
+    # sigma_noise is FROZEN (PREREG 0.4); the measured value is reported alongside for comparison
+    assert screening["noise_floor"]["sigma_noise"] == pytest.approx(A.SIGMA_NOISE) == 0.0115
+    assert screening["noise_floor"]["sigma_selection_measured"] == pytest.approx(
+        A.noise_sd(base, "selection"))
 
 
 def test_promotion_respects_the_acquisition_gate(screening):
@@ -280,3 +288,121 @@ def test_claim_arms_are_not_off_design_and_not_promoted(screening):
 
 def test_claims_only_in_confirmatory_mode(screening):
     assert "claims" not in screening
+
+
+def test_duplicate_spec_hashes_keep_one_row(rows, screening):
+    """Loading the same run twice (e.g. an old-split noise file next to the remeasured one)
+    must not double a configuration's seeds."""
+    doubled = rows + rows
+    out = A.analyze(doubled, n_boot=200, allow_simulated=True)
+    assert out["rows"]["duplicates_dropped"] == len(rows)
+    assert out["rows"]["finished"] == screening["rows"]["finished"]
+    # and it prefers the row measured the current way when both exist
+    old = next(r for r in rows if r.status == "finished" and A.lr_of(r.spec) is None
+               and r.spec.technique_names() == [])
+    newer = old.model_copy(update={"spec_hash": old.spec_hash})
+    a = newer.acquisition.model_copy()
+    old_v = old.model_copy(update={"acquisition": a.model_copy(
+        update={"own_boundary_ppl_ratio": None, "mean_own_boundary_ppl_ratio": None})})
+    dedup, n = A.dedupe_rows([newer, old_v])  # current first, stale second: stale must lose
+    assert n == 1 and dedup[0].acquisition.mean_own_boundary_ppl_ratio is not None
+    dedup, _ = A.dedupe_rows([old_v, newer])  # order does not decide it
+    assert dedup[0].acquisition.mean_own_boundary_ppl_ratio is not None
+
+
+def test_screen_decisions_use_only_seed_0_rows(rows, screening):
+    """Once replication rows exist, ranking the family on all seeds can pick configurations
+    the screen never promoted — decisions re-derive from the seed-0 rows only (PREREG 6.3)."""
+    screen = A.group([r for r in rows if r.status == "finished" and r.spec.seed == A.SCREEN_SEED])
+    ref = A.find(screen, A.REFERENCE)
+    margins = A.acquisition_margins(A.find(screen, A.NO_MITIGATION))
+    expected = A.promote(screen, ref, margins=margins)
+    assert [(d["config"], d["promoted"]) for d in screening["promotion"]] == [
+        (d["config"], d["promoted"]) for d in expected]
+    assert screening["acquisition_margins"] == margins
+    # and it must actually differ from the all-seeds ranking on this data, or the test is empty
+    all_configs = A.group([r for r in rows if r.status == "finished"])
+    all_rank = A.promote(all_configs, A.find(all_configs, A.REFERENCE), margins=margins)
+    assert [(d["config"], d["rank"]) for d in all_rank] != [(d["config"], d["rank"]) for d in expected]
+
+
+def test_acquisition_gate_fails_when_a_domain_is_missing(rows):
+    """A run that never measured a domain cannot pass the gate on it."""
+    configs = A.group(rows)
+    ref = A.find(configs, A.REFERENCE)
+    x = A.find(configs, frozenset({"distill", "freeze", "replay"}))
+    row = x.rows[0]
+    acq = row.acquisition.model_copy(update={
+        "own_boundary_ppl_ratio": {"code": 0.9}, "mean_own_boundary_ppl_ratio": 0.9})
+    missing = A.Config(key=x.key, techniques=x.techniques,
+                       rows=[row.model_copy(update={"acquisition": acq})], label=x.label)
+    gate = A.acquisition_gate(missing, ref)
+    assert not gate["passes"] and gate["domains"]["legal"]["passes"] is False
+    full = A.acquisition_gate(x, ref)
+    assert full["passes"]  # sanity: the complete run does pass
+
+
+def test_rule4_fails_when_lower_lr_rows_are_missing(rows):
+    """Trivially holding only applies when lower-LR arms ran but all fail the gate; absent rows
+    are missing evidence, and rule 4 must not pass."""
+    no_lr = [r for r in rows if A.lr_of(r.spec) is None]
+    out = A.analyze(no_lr, confirmatory=True, n_boot=300, allow_simulated=True)
+    assert out["lr_control"]["arms"] == [] and out["lr_control"]["chosen"] is None
+    assert out["confirmatory"], "expected a promoted family on the fake rows"
+    assert all(not d["rule4_beats_lr_control"] for d in out["confirmatory"])
+    # present-but-gated-out still holds trivially: 3e-5 fails the gate on the fake rows, so
+    # a world with ONLY 3e-5 rows yields arms-without-a-chosen and rule 4 holds
+    only_bad = [r for r in rows if A.lr_of(r.spec) in (None, 3e-5)]
+    out2 = A.analyze(only_bad, confirmatory=True, n_boot=300, allow_simulated=True)
+    assert out2["lr_control"]["arms"] and out2["lr_control"]["chosen"] is None
+    assert all(d["rule4_beats_lr_control"] for d in out2["confirmatory"])
+
+
+def test_non_real_backend_rows_are_excluded(rows):
+    n_finished = len([r for r in rows if r.status == "finished"])
+    simulated = [r.model_copy(update={"backend": "local"}) for r in rows]
+    out = A.analyze(simulated, n_boot=100)
+    assert out["rows"]["finished"] == 0
+    assert out["rows"]["excluded_backend"] == n_finished
+    assert len(out["excluded_backend_rows"]) == n_finished
+    out = A.analyze(simulated, n_boot=100, allow_simulated=True)
+    assert out["rows"]["finished"] == n_finished
+
+
+def test_sigma_is_pinned_at_the_frozen_value(screening, confirmatory):
+    """2 sigma is the rule-2 size threshold; it must be the frozen 1.15 points, not whatever
+    the rows at hand happen to measure."""
+    assert A.SIGMA_NOISE == pytest.approx(0.0115)
+    assert screening["noise_floor"]["sigma_noise"] == pytest.approx(0.0115)
+    assert all(d["size_threshold"] == pytest.approx(2 * 0.0115) for d in confirmatory["confirmatory"])
+
+
+def test_cost_ranks_by_extra_forward_tokens(screening):
+    cost = screening["cost_selection"]
+    assert "gain_per_extra_forward_token" in cost[0]
+    keyed = [c for c in cost if c["gain_per_extra_forward_token"] is not None]
+    assert [c["gain_per_extra_forward_token"] for c in keyed] == sorted(
+        (c["gain_per_extra_forward_token"] for c in keyed), reverse=True)
+    assert keyed[0]["config"] != "no-mitigation"
+
+
+def test_acquisition_claim_uses_a_paired_t_interval(confirmatory):
+    """3-seed bootstrap intervals reject ~25% of the time under the null; the paired t interval
+    is the honest small-sample one (PREREG 6.5 amendment)."""
+    row = next(c for c in confirmatory["claims"] if c["outcome"].startswith("acq")
+               and math.isfinite(c.get("delta", float("nan"))))
+    pairs = row["n_pairs"]
+    width = row["hi"] - row["delta"]
+    # the half-width must equal t(0.975, n-1) * se, i.e. be a t interval, not a percentile cut
+    assert pairs >= 2 and width > 0
+    assert row["lo"] < row["delta"] < row["hi"]
+
+
+def test_planted_effects_recover_across_fake_seeds():
+    """The recovery check must hold across seeds, not pass on one lucky seed."""
+    ok = 0
+    for s in range(8):
+        rep = A.analyze(fake_rows(seed=s), n_boot=200, allow_simulated=True)
+        checks = A.check_planted(rep, PLANTED)
+        ok += sum(c["inside"] for c in checks) >= math.ceil(0.85 * len(checks))
+    assert ok >= 6, "recovery should hold on most seeds, not 46% of them"
