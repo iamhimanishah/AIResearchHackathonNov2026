@@ -43,9 +43,9 @@ clean-smoke:
 REPORTED_ROWS ?= results/rows.phase0.remeasured.jsonl results/rows.phase0.jsonl \
                  results/rows.reference.remeasured.jsonl $(wildcard results/agent/rows.jsonl)
 REPRO_OUT ?= results/analysis
-# Set to --confirmatory once replication is finished, to also run the pre-registered tests on
-# the report half:  make reproduce-figures CONFIRMATORY=--confirmatory
-CONFIRMATORY ?=
+# Replication is finished (results/agent/rows.jsonl, PREREG 6.3), so the reported tables include
+# the pre-registered tests on the report half. Screening only:  make reproduce-figures CONFIRMATORY=
+CONFIRMATORY ?= --confirmatory
 
 reproduce: reproduce-figures   ## what a reader should run: tables and page from committed rows
 
