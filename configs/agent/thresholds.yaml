@@ -1,0 +1,31 @@
+# DRAFT: himani to confirm.
+#
+# The PREREG thresholds the agent reads in real mode (`python -m clharness.agent.loop --executor
+# real`, its default `--prereg`), loaded by `clharness.agent.contracts.load_prereg`. Every value is
+# transcribed by hand from analysis/PREREG.md (frozen 14 November 2026, amendments 1-5); the
+# comment on each line names the section it comes from. PREREG.md is the authority: if the two
+# disagree, PREREG.md wins and this file is wrong.
+#
+# Units follow src/clharness/spec.py, as PREREG.md does: scores and deltas are fractions (a
+# 5-point drop is -0.05), perplexity ratios are trained / base.
+agent_thresholds:
+  # PREREG 0.1 and 4: the primary metric is the 4-task MC mean change at the end of the stream,
+  # row field retention.<half>.mean_delta. The agent reads the selection half only before FREEZE.
+  primary_metric: mean_delta
+  # PREREG 0.4 (frozen values table) and 5 rule 2: sigma_noise = 1.15 points on the report half.
+  # (The selection-half SD is 0.59 points, PREREG 0.4; himani: confirm which the agent should
+  # use, since every decision it makes before FREEZE is on the selection half.)
+  noise_sd: 0.0115
+  # PREREG 0.2 rule 2 and 5 rule 2: a difference must exceed 2 x sigma_noise.
+  decision_multiplier: 2.0
+  # PREREG 0.2 and 0.4: acquisition margin m_d = max(1.05, exp(2 SD_d)), frozen at 1.05 for both
+  # code and legal, so the allowed relative rise of the perplexity ratio is 0.05. (The agent
+  # applies one margin to the mean ratio; PREREG gates each domain separately.)
+  acquisition_floor_delta: 0.05
+  # PREREG 8 and A9: a row is flagged when any task's answer_share is above 0.90.
+  collapse_share_limit: 0.9
+  # PREREG 6.2: the screen runs at seed 0.
+  screen_seeds: [0]
+  # PREREG 0.2, 5 and 6.3: comparisons are over 3 paired seeds (0-2); replication adds seeds 1
+  # and 2 to the seed-0 screen row.
+  replicate_seeds: [0, 1, 2]

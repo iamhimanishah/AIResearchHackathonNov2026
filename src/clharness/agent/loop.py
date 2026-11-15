@@ -1,7 +1,7 @@
 """Entry point for the agent loop.
 
     python -m clharness.agent.loop --executor sim --out results/agent-sim
-    python -m clharness.agent.loop --executor real --prereg thresholds.yaml \
+    python -m clharness.agent.loop --executor real \
         --rows results/agent/rows.jsonl --out results/agent/loop
 
 `--executor sim` runs the whole loop against the simulator (fake result rows with planted
@@ -13,6 +13,9 @@ human review), every source in the decision log (needs `--llm openai`).
 pre-registered grid filled (`launch_design`), plans and gates against the real plugin catalog
 (`catalog_real.real_catalog`, with the bench check in the Gatekeeper), runs the Scout on that
 catalog, and writes every accepted spec to `<out>/proposed_specs.jsonl` as a proposal. Its
+replicate phase does not plan: it proposes the pre-registered replication set
+(`design.replication_specs`, PREREG 6.3) and logs the ranking, read from blinded rows
+(`prereg_plan`). Thresholds come from `--prereg` (default `configs/agent/thresholds.yaml`). Its
 executor refuses `submit`, so it needs no Modal deploy and cannot spend GPU money: every launch
 goes through `launch_design`. Claim cards go to `--explore-inbox` (default
 `results/agent/explore/literature.jsonl`, the file `explore.read_inbox` reads) for the explore
@@ -49,6 +52,10 @@ from .sim import SimExecutor, World, default_catalog, default_prereg, default_st
 from .states import REPORT
 
 SIM_CAP_USD = 700.0  # the simulator's default cap: fake money, DIRECTION's team-wide number
+REPO_ROOT = Path(__file__).resolve().parents[3]
+# Real mode's thresholds when --prereg is not given: transcribed from analysis/PREREG.md
+# (DRAFT until himani confirms it; see the file's header).
+DEFAULT_PREREG = REPO_ROOT / "configs" / "agent" / "thresholds.yaml"
 
 
 def build_sim(out: Path, seed: int, compute_cap_usd: float, concurrency: int = 8,
@@ -82,12 +89,17 @@ def build_real(out: Path, prereg: Prereg, rows_path: Path, *, compute_cap_usd: f
     claim cards go to the explore inbox (`explore_inbox`, default `<out>/explore/literature.jsonl`;
     the file `explore.read_inbox` reads) and this loop tests none of them."""
     from .launch_design import MINUTES_PER_RUN
+    from .prereg_plan import replicate_plan
     from .readonly import ReadOnlyExecutor
 
     rows_path = Path(rows_path)
     if "explore" in rows_path.name:
         raise ValueError(f"{rows_path.name} holds exploratory runs: the loop reads the "
                          "pre-registered rows only")
+    inbox = Path(explore_inbox or Path(out) / "explore" / INBOX_NAME)
+    if Path(out).resolve().is_relative_to(inbox.parent.resolve()):
+        raise ValueError(f"--out {out} is inside the explore directory {inbox.parent}: the loop "
+                         "writes only the claim-card inbox there")
     clock = clock or SystemClock()
     catalog = real_catalog()
     executor = ReadOnlyExecutor(rows_path, minutes_per_run=MINUTES_PER_RUN, gpu=gpu,
@@ -104,7 +116,7 @@ def build_real(out: Path, prereg: Prereg, rows_path: Path, *, compute_cap_usd: f
         exploratory_configs=design_exploratory_configs(),
         minutes_per_run=MINUTES_PER_RUN, fault=fault, scout=scout,
         design_arms=design_claim_arms(),
-        explore_inbox=explore_inbox or out / "explore" / INBOX_NAME, launches=False,
+        explore_inbox=inbox, launches=False, replicate_plan=replicate_plan,
     )
 
 
@@ -115,9 +127,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rows", type=Path, default=None,
                         help="real: the rows file to read, never written "
                              "(default results/agent/rows.jsonl)")
-    parser.add_argument("--prereg", type=Path, default=None,
+    parser.add_argument("--prereg", type=Path, default=DEFAULT_PREREG,
                         help="real: PREREG thresholds (a .yaml, or a .md with an "
-                             "`agent_thresholds` block)")
+                             "`agent_thresholds` block). Default: configs/agent/thresholds.yaml")
     parser.add_argument("--open-report", action="store_true",
                         help="real: also run REPORT, which opens the report half of the frozen "
                              "set. Off by default: the loop stops after FREEZE")
@@ -173,10 +185,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main_real(args: argparse.Namespace, llm: LLMClient | None) -> int:
-    if args.prereg is None:
-        print("--executor real needs --prereg (analysis/PREREG.md has no machine-readable "
-              "`agent_thresholds` block yet)")
-        return 2
     try:
         prereg = load_prereg(args.prereg)
     except PreregError as exc:

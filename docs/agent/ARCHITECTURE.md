@@ -79,7 +79,7 @@ PLAN..ADVANCE      -> FREEZE              on budget exhausted or deadline reache
 | INIT | Conductor | Load config, load or create `state.json`, verify the decision-log chain | Loaded | HALTED |
 | PREFLIGHT | Conductor | Check: PREREG thresholds parse, noise floor present, selection/report split present, catalog non-empty, executor answers, budgets set, every card and skill hashes | All checks pass | HALTED with the failed check. The grid never launches without PREREG |
 | PLAN | Planner | Propose specs + reason + predicted effect, from selection-half rows, findings, lessons, budget left | A schema-valid proposal exists | Model error or invalid output twice -> FALLBACK_PLAN |
-| FALLBACK_PLAN | code | Deterministic plan for the phase (see Planner section) | Always | never fails |
+| FALLBACK_PLAN | code | Deterministic plan for the phase (see Planner section). Real mode, replicate: exactly `design.replication_specs(rows)["specs"]` (PREREG 6.3) from blinded rows, with the ranking in the decision; PLAN skips the model and comes here | Always | never fails |
 | GATE | Gatekeeper | Verdict `ACCEPT`, `REJECT(reasons)` or `TRIM(kept, dropped, reasons)` | Verdict | A fallback plan rejected only as duplicates -> next phase's PLAN (or FREEZE after combine); rejected for any other rule -> HALTED (a bug) |
 | LAUNCH | Operator | Submit accepted specs not already in rows (idempotent by `spec_hash`) | Submitted | Executor unreachable 3 times -> HALTED |
 | WAIT | Operator | Poll until every spec has a row or times out; re-queue an infrastructure failure once | All resolved, or phase timeout | Timeout: missing specs recorded as `failed: timeout`, continue |

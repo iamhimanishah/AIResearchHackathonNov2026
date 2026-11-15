@@ -44,6 +44,8 @@ from .contracts import (
     DecisionLog,
     Phase,
     Prereg,
+    Proposal,
+    ProposedSpec,
     ResultRow,
     RunSpec,
     StreamDomain,
@@ -94,6 +96,8 @@ from .states import (
     st,
 )
 
+# (rows path) -> (the replicate proposal, data to log with it); see prereg_plan.replicate_plan
+ReplicatePlan = Callable[[Path], tuple[Sequence[ProposedSpec], dict[str, Any]]]
 Fault = Callable[[str, str], None]  # (state id, point) -> may raise; tests use it to kill the loop
 Outcome = tuple[State, dict[str, Any]]
 
@@ -110,6 +114,7 @@ class Conductor:
         design_arms: dict[str, int] | None = None, explore_inbox: str | Path | None = None,
         lr_range: tuple[float, float] | None = LR_RANGE, launches: bool = True,
         exploratory_configs: Collection[str] = (),
+        replicate_plan: ReplicatePlan | None = None,
     ) -> None:
         self.out_dir = Path(out_dir)
         self.rows_path = Path(rows_path)
@@ -134,6 +139,9 @@ class Conductor:
         # Config hashes of arms that are exploratory by design (real mode: the published-claims
         # arms outside the screen). FREEZE never picks one, whatever its name or notes say.
         self.exploratory_configs = frozenset(exploratory_configs)
+        # Real mode: the replicate phase proposes the pre-registered replication set
+        # (`prereg_plan.replicate_plan`, PREREG 6.3) instead of asking a planner.
+        self.replicate_plan = replicate_plan
         self.max_gate_rejections = max_gate_rejections
         self.bench = bench
         self.prereg, self.catalog, self.stream = prereg, catalog, tuple(stream)
@@ -355,6 +363,11 @@ class Conductor:
                 for c in self._claim_cards()}
 
     def _plan(self, phase: Phase) -> Outcome:
+        if phase is Phase.REPLICATE and self.replicate_plan is not None:
+            return st(Step.FALLBACK_PLAN, phase), {
+                "choice": "use the pre-registered replication set",
+                "reason": "PREREG 6.3: the agent applies the replication rule mechanically",
+            }
         if getattr(self.planner, "llm", None) is None:
             return st(Step.FALLBACK_PLAN, phase), {
                 "choice": "use the deterministic plan",
@@ -382,6 +395,8 @@ class Conductor:
         }
 
     def _fallback_plan(self, phase: Phase) -> Outcome:
+        if phase is Phase.REPLICATE and self.replicate_plan is not None:
+            return self._prereg_replicate(phase)
         request = self._plan_request(phase)
         proposal = self.planner.fallback(request)
         self.s.proposal, self.s.verdict = proposal, None
@@ -390,6 +405,21 @@ class Conductor:
             "choice": [p.spec.name for p in proposal.specs],
             "reason": proposal.rationale,
             "input_row_hashes": [r.row_hash for r in request.rows],
+        }
+
+    def _prereg_replicate(self, phase: Phase) -> Outcome:
+        """Propose exactly the pre-registered replication set and log the ranking it came from.
+        The rows are read blinded: the report half is never seen (`prereg_plan.blind`)."""
+        specs, data = self.replicate_plan(self.rows_path)
+        proposal = Proposal(phase=phase, specs=tuple(specs), rationale=(
+            f"{data.get('rule', 'PREREG 6.3')} (from {data.get('source', 'the design')})"))
+        self.s.proposal, self.s.verdict = proposal, None
+        self.s.extra = {**self.s.extra, "proposal_source": "prereg"}
+        return st(Step.GATE, phase), {
+            "choice": [p.spec.name for p in proposal.specs],
+            "reason": proposal.rationale,
+            "input_row_hashes": [r.row_hash for r in self._latest()],
+            "data": {**data, "proposed_spec_hashes": list(proposal.spec_hashes())},
         }
 
     def _gate(self, phase: Phase) -> Outcome:
@@ -436,9 +466,13 @@ class Conductor:
             self.s.gate_rejections = 0
             self.s.extra = {**self.s.extra, "rejections": []}
             return st(Step.FALLBACK_PLAN, phase), decision
-        if all(d.rule == "duplicate" for d in verdict.dropped):
+        promotes_nothing = (self.s.extra.get("proposal_source") == "prereg"
+                            and not proposal.specs)
+        if promotes_nothing or all(d.rule == "duplicate" for d in verdict.dropped):
             following = next_phase(phase)
-            decision["reason"] = "nothing new to run in this phase: every spec already has a row"
+            decision["reason"] = (
+                "the pre-registered rule promotes nothing to replicate" if promotes_nothing
+                else "nothing new to run in this phase: every spec already has a row")
             if phase is Phase.REPLICATE and self.scout is not None and not self.s.scout_done:
                 return SCOUT, decision
             return (st(Step.PLAN, following) if following else FREEZE), decision
