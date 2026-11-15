@@ -47,6 +47,7 @@ from .gatekeeper import Gatekeeper
 from .llm import LLMClient, budgeted_llm
 from .lock import AlreadyRunning, single_writer
 from .operator import Operator
+from .pastdev import PastMemory
 from .roles import Clock, FakeClock, Scout, StubAnalyst, StubPlanner, SystemClock
 from .search import ExaSearch
 from .sim import SimExecutor, World, default_catalog, default_prereg, default_stream
@@ -152,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
                              "not in the catalog (needs --llm openai and EXA_API_KEY)")
     parser.add_argument("--config", type=Path, default=None,
                         help="agent config YAML (models, prices, model budget) for --llm openai")
+    parser.add_argument("--memory", choices=["none", "pastdev"], default="none",
+                        help="pastdev: the Scout recalls from the shared memory before it drafts "
+                             "(statements by the Scout and the explorer, never a result) and "
+                             "writes its claim cards there (needs PAST_API_KEY)")
     args = parser.parse_args(argv)
 
     if args.scout == "exa" and args.llm != "openai":
@@ -184,11 +189,24 @@ def _main_locked(args: argparse.Namespace, cfg: AgentConfig | None) -> int:
         llm = budgeted_llm(cfg, agents)  # the one shared model ledger (RT-32)
         print(f"model ledger {llm.log_path}: spent ${llm.cap_usd - llm.remaining_usd:.2f} "
               f"of ${llm.cap_usd:.2f}")
+    args.memory_client = shared_memory(args.memory)
     if args.executor == "real":
         return _main_real(args, llm)
-    scout = LLMScout(llm, ExaSearch()) if args.scout == "exa" and llm else None
+    scout = (LLMScout(llm, ExaSearch(), memory=args.memory_client)
+             if args.scout == "exa" and llm else None)
     conductor = build_sim(args.out, args.seed, args.compute_cap_usd, llm=llm, scout=scout)
     return _run_and_print(conductor, args)
+
+
+def shared_memory(choice: str) -> PastMemory | None:
+    """`--memory pastdev`: the shared memory client. Without PAST_API_KEY it says so and runs
+    with an empty memory (every call is a no-op); it never stops the loop."""
+    if choice != "pastdev":
+        return None
+    memory = PastMemory()
+    if not memory.configured:
+        print("--memory pastdev: PAST_API_KEY is not set; the shared memory is empty this run")
+    return memory
 
 
 def _main_real(args: argparse.Namespace, llm: LLMClient | None) -> int:
@@ -198,7 +216,7 @@ def _main_real(args: argparse.Namespace, llm: LLMClient | None) -> int:
         print(f"PREREG: {exc}")
         return 2
     rows = args.rows or Path("results/agent/rows.jsonl")
-    scout = (LLMScout(llm, ExaSearch(), runnable=bench_problems)
+    scout = (LLMScout(llm, ExaSearch(), runnable=bench_problems, memory=args.memory_client)
              if args.scout == "exa" and llm else None)
     try:
         conductor = build_real(args.out, prereg, rows, compute_cap_usd=args.compute_cap_usd,

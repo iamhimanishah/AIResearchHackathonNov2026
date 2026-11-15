@@ -266,3 +266,14 @@ def test_scout_sees_no_rows_and_search_results_are_data():
                                                     "search_results"]
     assert "row=" not in prompt.user and "cost_x" not in prompt.user and "usd" not in prompt.user
     assert prompt.parts[-2].text.count("<<<") == 2 and "replay:" in prompt.user
+    # the shared memory (past.dev, fix plan S9) is one more quoted block, never rows or budget
+    assert context.CONTEXT_MAP["scout"].reads == ("catalog_summary", "findings_summary",
+                                                 "search_results", "shared_memory")
+    with_memory = context.build_scout_prompt(
+        card=make_card("scout"), skills=[], catalog=sim.default_catalog(),
+        findings=[_finding()], search_results=[source], shared_memory=INJECTION)
+    assert [p.name for p in with_memory.parts[1:-1]] == ["catalog_summary", "findings_summary",
+                                                         "search_results", "shared_memory"]
+    block = with_memory.parts[-2].text
+    assert "source=memory" in block and block.count("<<<") == 2 and block.count(">>>") == 2
+    assert "row=" not in with_memory.user and "usd" not in with_memory.user

@@ -656,6 +656,11 @@ class Conductor:
             result = ScoutResult(skipped_reason=f"scout raised {type(exc).__name__}: {exc}")
         path = write_scout_result(result, self.candidates_dir)
         self._write_claim_cards(result)
+        remember = getattr(self.scout, "remember_cards", None)
+        if self.explore_inbox is not None and remember is not None:
+            remember(result, self.explore_inbox)  # the Scout's own write to past.dev (S9)
+        memory = getattr(self.scout, "memory", None)
+        memory_events = [dict(e) for e in getattr(memory, "events", [])]
         sources = [{"id": s.id, "url": s.url, "title": s.title[:200], "published": s.published,
                     "query": s.query[:200], "used": s.used} for s in result.sources]
         planned = [c for c in result.claims if c.plannable]
@@ -682,7 +687,10 @@ class Conductor:
                                     for c in result.candidates],
                      "rejected": list(result.rejected),
                      "searches": result.searches,
-                     "search_errors": list(result.search_errors)},
+                     "search_errors": list(result.search_errors),
+                     "memory_kept": result.memory_kept,
+                     "memory_dropped": result.memory_dropped,
+                     "memory_events": memory_events},
         }
 
     def _write_claim_cards(self, result: ScoutResult) -> None:

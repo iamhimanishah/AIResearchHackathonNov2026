@@ -56,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="agent config YAML with a model and price for the scout")
     parser.add_argument("--search-only", action="store_true",
                         help="run the Exa queries and print the sources; no model call")
+    parser.add_argument("--memory", choices=["none", "pastdev"], default="none",
+                        help="pastdev: recall from the shared memory before drafting "
+                             "(statements by the Scout and the explorer only; needs PAST_API_KEY)")
     args = parser.parse_args(argv)
 
     search = ExaSearch()
@@ -74,7 +77,10 @@ def main(argv: list[str] | None = None) -> int:
     llm = budgeted_llm(cfg, ("scout",))  # the loop's model ledger, shared (RT-32)
     print(f"model ledger {llm.log_path}: spent ${llm.cap_usd - llm.remaining_usd:.2f} "
           f"of ${llm.cap_usd:.2f}")
-    result = LLMScout(llm, search, runnable=bench_problems).scout(real_request())
+    from .loop import shared_memory
+
+    result = LLMScout(llm, search, runnable=bench_problems,
+                      memory=shared_memory(args.memory)).scout(real_request())
     path = write_scout_result(result, args.out)
     print(summary(result))
     print(f"written: {path}")

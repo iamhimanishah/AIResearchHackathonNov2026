@@ -105,7 +105,9 @@ CONTEXT_MAP: dict[str, ContextRow] = {
         writes="findings",
     ),
     "scout": ContextRow(
-        reads=("catalog_summary", "findings_summary", "search_results"),
+        # shared_memory: past.dev statements by the Scout and the explorer only, never the
+        # analyst's and never a measured effect (agents.scout_memory_filter)
+        reads=("catalog_summary", "findings_summary", "search_results", "shared_memory"),
         never_reads=("rows_selection", "rows_report", "budget", "secrets"),
         writes="shortlist",
     ),
@@ -565,14 +567,19 @@ def build_scout_prompt(
     findings: Sequence[Finding] = (),
     search_results: Sequence[Source] = (),
     schema: type[BaseModel] = Candidate,
+    shared_memory: str = "",
 ) -> Prompt:
     """Scout context: catalog names with one-line descriptions, a findings summary and search
-    results as quoted data. No rows, no budget."""
+    results as quoted data, and (when given) statements recalled from the shared memory, also
+    quoted. No rows, no budget. `shared_memory` must already be filtered
+    (`agents.scout_memory_filter`); an empty string adds no block."""
     fixed = [("catalog_summary", render_catalog_summary(catalog))]
     changing = [
         ("findings_summary", wrap_untrusted(render_findings_summary(findings), "findings")),
         ("search_results", wrap_untrusted(render_sources(search_results), "search")),
     ]
+    if shared_memory.strip():
+        changing.append(("shared_memory", wrap_untrusted(shared_memory, "memory")))
     return _assemble("scout", card, skills, fixed, changing, schema)
 
 

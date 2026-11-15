@@ -197,6 +197,8 @@ class ScoutResult(Frozen):
     meta: CallMeta | None = None
     searches: int = 0  # web searches attempted (one per query; for the Exa budget count)
     search_errors: tuple[str, ...] = ()  # one line per query that failed, even if others worked
+    memory_kept: int = 0  # past.dev statements shown to the Scout (after the firewall filter)
+    memory_dropped: int = 0  # recalled statements the filter withheld (analyst, measured effects)
 
 
 class ReportRequest(Frozen):

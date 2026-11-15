@@ -394,6 +394,30 @@ def check_candidate(item: CandidateDraft, catalog_names: Collection[str], return
     ), ""
 
 
+SCOUT_MEMORY_WRITERS = frozenset({"scout", "explorer"})
+RESOLVED_MARK = "measured effect"  # explore's write_hypothesis text once a hypothesis is resolved
+SCOUT_MEMORY_QUERY = ("Which published claims about forgetting in continued pre-training were "
+                      "already found, and which hypotheses were already proposed, tested or "
+                      "refused on the frozen bench?")
+
+
+def scout_memory_filter(recalled: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """The past.dev statements the Scout may read, and how many were withheld.
+
+    The Scout never sees a run result (ARCHITECTURE section 4). A statement is kept only when
+    every writer behind it is the Scout or the explorer (so nothing the analyst wrote, alone or
+    mixed in) and its text carries no measured effect (an explorer verdict reports a
+    selection-half effect size once a hypothesis is resolved).
+    """
+    kept = []
+    for item in recalled:
+        writers = {str(w) for w in item.get("writers", ())}
+        text = str(item.get("content", ""))
+        if writers and writers <= SCOUT_MEMORY_WRITERS and RESOLVED_MARK not in text.lower():
+            kept.append(dict(item))
+    return kept, len(recalled) - len(kept)
+
+
 class LLMScout:
     """Searches the web with Exa, then asks a model for a ranked shortlist: claim cards the loop
     can test with the plugins it has, and candidate techniques that need new plugin code.
@@ -407,13 +431,50 @@ class LLMScout:
     def __init__(self, llm: LLMClient, search: SearchClient, cards: CardStore | None = None,
                  clock: Clock | None = None,
                  queries: Sequence[tuple[str, str]] = SCOUT_QUERIES,
-                 runnable: BenchCheck | None = None) -> None:
+                 runnable: BenchCheck | None = None, memory: Any = None) -> None:
         self.llm = llm
         self.search = search
         self.cards = cards or CardStore()
         self.clock = clock or SystemClock()
         self.queries = tuple(queries)
         self.runnable = runnable
+        self.memory = memory  # a `pastdev.PastMemory`, or None: the second reader (S9)
+
+    def _recall(self) -> tuple[list[dict[str, Any]], int]:
+        """Statements from the shared memory the Scout may read, and how many were withheld.
+        A missing key, a service that is down or a client bug gives nothing; never raises."""
+        if self.memory is None:
+            return [], 0
+        try:
+            recalled = self.memory.recall(SCOUT_MEMORY_QUERY, "scout")
+        except Exception as exc:  # noqa: BLE001 - the shared memory is best effort
+            self.memory.events.append({"op": "recall", "ok": False, "error": type(exc).__name__})
+            return [], 0
+        return scout_memory_filter(recalled)
+
+    @staticmethod
+    def _memory_block(kept: Sequence[Mapping[str, Any]]) -> str:
+        from .pastdev import as_prompt_block
+
+        return as_prompt_block(kept)
+
+    def remember_cards(self, result: ScoutResult, inbox: str | Path) -> int:
+        """Write this result's claim cards to the shared memory as the Scout, from the lines
+        `explore.read_inbox` reads back, with `PastMemory.write_claim_card`: the same id and text
+        explore writes, so one replaces the other and nothing is duplicated. Never raises."""
+        if self.memory is None or not result.claims:
+            return 0
+        try:
+            from .explore import read_inbox
+
+            mine = {c.id for c in result.claims}
+            cards, _ = read_inbox(Path(inbox), [])
+            return sum(bool(self.memory.write_claim_card(card_id, hyp))
+                       for card_id, hyp in cards if card_id in mine)
+        except Exception as exc:  # noqa: BLE001 - the shared memory is best effort
+            self.memory.events.append({"op": "remember", "ok": False,
+                                       "error": type(exc).__name__})
+            return 0
 
     def gather(self) -> tuple[tuple[Source, ...], list[str]]:
         """Run every query; return sources deduplicated by paper (arXiv versions merged) and one
@@ -436,10 +497,12 @@ class LLMScout:
         if not sources:
             reason = "search returned nothing" + (f": {errors[0]}" if errors else "")
             return ScoutResult(skipped_reason=reason, **searched)
+        kept, withheld = self._recall()
+        searched.update(memory_kept=len(kept), memory_dropped=withheld)
         prompt = build_scout_prompt(
             card=self.cards.card("scout"), skills=self.cards.skills_for("scout", "scout"),
             catalog=request.catalog, findings=request.findings, search_results=sources,
-            schema=ScoutDraft,
+            schema=ScoutDraft, shared_memory=self._memory_block(kept),
         )
         try:
             draft, meta = run_prompt(self.llm, prompt, ScoutDraft)

@@ -221,3 +221,50 @@ only itself instead of throwing away the whole paid-for shortlist.
 
 **Out of scope.** S4 (resume without paying twice), S5 to S8 (checks that match the explore gate,
 the hand-off by configuration, CLI parity, sources evidence).
+
+**Result.** Commit `3573e8f`. `make test`: 545 passed, 2 skipped, 1 deselected.
+
+## Item 7: past.dev as a second reader in the Scout (S9)
+
+**Goal.** The Scout reads what the other agents recorded on past.dev (claims already found,
+hypotheses already tested or refused) before it drafts, without ever seeing a run result, and
+writes its own claim cards there so the "scout" label is really written by the Scout.
+
+**Acceptance criteria.**
+- `LLMScout(memory=None)` takes an optional `PastMemory`. Before the prompt it calls
+  `memory.recall(query, "scout")`.
+- Firewall (brendan + justin): a statement is kept only if its writers are non-empty and all
+  in {scout, explorer}; any statement with "analyst" among its writers is dropped, and so is
+  any statement whose content contains "Measured effect" (a resolved verdict with a
+  selection-half effect size). Both filters are tested.
+- The kept statements go into a new `shared_memory` block, wrapped with
+  `context.wrap_untrusted(..., "memory")`; a recalled `<<<END DATA` stays quoted.
+- `shared_memory` is in `CONTEXT_MAP["scout"].reads` and in `cards/scout.md`;
+  `card_problems` is empty for the real card; the firewall test lists the new block and still
+  checks that the Scout sees no rows.
+- A missing key or a service that is down gives no block and never raises.
+- After the Conductor writes the explore inbox, the Scout writes each of its cards with
+  `PastMemory.write_claim_card(card_id, hyp)` on the line read back by `explore.read_inbox`,
+  so the id (`remember-claim-<card_id>`) and the text are exactly explore's, and explore's
+  identical write replaces it instead of duplicating it.
+- The SCOUT decision logs `memory_kept`, `memory_dropped` and the memory events.
+- `--memory pastdev` on `loop.py` and `scout.py`; without `PAST_API_KEY` it prints a notice and
+  runs with an empty memory.
+- ARCHITECTURE's Scout rows are updated in the same commit.
+
+**Design.** `agents.scout_memory_filter(recalled)` (pure, tested alone) and
+`LLMScout._recall()`; `context.build_scout_prompt(shared_memory=...)`; `ScoutResult` gains
+`memory_kept` / `memory_dropped`; `LLMScout.remember_cards(result, inbox)` reuses
+`explore.read_inbox` and `pastdev.write_claim_card` (imported, not edited);
+`Conductor._scout` calls it after `_write_claim_cards` and logs `memory.events`.
+
+**Tests** (`tests/agent/test_scout_memory.py`; `tests/agent/test_kernel_context.py` updated).
+- `test_s9_the_filter_keeps_scout_and_explorer_and_drops_analyst_and_verdicts`.
+- `test_s9_recalled_statements_reach_the_prompt_quoted_and_filtered`.
+- `test_s9_memory_down_or_unconfigured_gives_no_block_and_never_raises`.
+- `test_s9_the_scout_writes_its_cards_with_explores_id_and_text` (loop in real mode with an
+  inbox; the stored text equals `write_claim_card` on explore's read-back).
+- `test_s9_the_card_and_map_allow_shared_memory`.
+- `test_s9_memory_flag_on_both_entry_points`.
+
+**Out of scope.** The Scout CLI writes no inbox (S6), so it recalls but does not write cards.
