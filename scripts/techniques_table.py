@@ -2,7 +2,7 @@
 
     uv run python scripts/techniques_table.py
 
-Reads the row files below, keeps finished fast-bench rows, and groups three kinds of arm by
+Reads the row files below, keeps finished full-length fast-bench rows, and groups three kinds of arm by
 technique settings and learning rate: no technique, the reference arm and its warmup-only
 variant, and LoRA on its own. Every number in the table is a mean over the seeds of one arm,
 with the standard deviation across seeds in brackets. Nothing is typed in.
@@ -26,7 +26,9 @@ FILES = (
     "rows.reference.remeasured.jsonl",
     "agent/rows.jsonl",
     "rows.explore.jsonl",
+    "agent/explore-peter/rows.jsonl",  # the research agent's LoRA arms (instance peter)
 )
+FULL_STREAM = [10_000_000, 10_000_000]  # the frozen bench; the agent's short probe runs are left out
 BENCH_LR = 1e-4
 LORA_DEFAULT = {"rank": 8, "lr": 1e-3}  # the plugin's defaults, for specs that leave them out
 
@@ -60,7 +62,8 @@ def main() -> None:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if row["status"] == "finished" and row["spec"].get("bench") == "fast":
+            full = [d["tokens"] for d in row["spec"]["stream"]] == FULL_STREAM
+            if row["status"] == "finished" and row["spec"].get("bench") == "fast" and full:
                 by_hash[row["spec_hash"]] = (row, name)
 
     groups: dict[tuple, tuple[str, list[dict], set[str]]] = {}
