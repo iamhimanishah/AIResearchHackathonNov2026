@@ -9,6 +9,7 @@ row stays sealed until the row appears in `report.json`, which only exists after
 from __future__ import annotations
 
 import json
+import re
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -208,6 +209,69 @@ def _candidates(out: Path) -> str:
          f"<code>{escape(c['file'])}</code>"] for c in queue], numeric={0})
 
 
+_URL = re.compile(r"https?://[^\s)\]<>'\"]+")
+
+
+def _explore_dir(path: Path) -> str:
+    records = read_jsonl(path / "hypotheses.jsonl").records
+    searches = []
+    pending = _json(path / "next_search.json")
+    if pending.get("query"):
+        searches.append([escape(str(pending["query"])),
+                         "run" if pending.get("used") else "not run yet", ""])
+    for d in DecisionLog(path / "decisions.jsonl").entries():
+        if d.key.startswith("explore/search"):
+            searches.append([escape(str(d.data.get("query", ""))), "run",
+                             ", ".join(f'<a href="{escape(_safe_url(str(u)))}">link</a>'
+                                       for u in d.data.get("urls") or [])])
+    if not records and not searches:
+        return ""
+    rows = []
+    for h in records:
+        source = str(h.get("source") or "")
+        match = _URL.search(source)
+        src = (f'<a href="{escape(_safe_url(match.group(0)))}">{escape(match.group(0)[:60])}</a>'
+               if match else "")
+        pw = h.get("prior_work")
+        pw = pw if isinstance(pw, dict) else {}
+        if pw.get("error"):
+            prior = f'Exa error: {escape(str(pw["error"])[:120])}'
+        elif pw:
+            cites = " ".join(
+                f'<a href="{escape(_safe_url(str(c.get("url", ""))))}">[{i + 1}]</a>'
+                for i, c in enumerate(pw.get("citations") or []))
+            prior = escape(str(pw.get("answer", ""))[:300]) + " " + cites
+        else:
+            prior = '<span class="muted">not asked</span>'
+        verdict = escape(str(h.get("status", "")))
+        effect, threshold = h.get("effect_points"), h.get("threshold_points")
+        if effect is not None and threshold is not None:
+            verdict += f' {_num(effect, "+.2f")} / {_num(threshold, ".2f")} pts'
+        own = h.get("new_technique")
+        own = own if isinstance(own, dict) else {}
+        rows.append([f"<code>{escape(str(h.get('id', '')))}</code>", verdict,
+                     escape(str(h.get("claim", ""))[:300]),
+                     escape(str(h.get("origin", ""))) + (" " + src if src else ""),
+                     escape(str(own.get("title", ""))[:80]), prior])
+    search_html = ("<h3>Searches the agent chose</h3>" +
+                   _table(["Query", "Ran through Exa", "URLs"], searches)) if searches else ""
+    return (f"<h2>Explore hypotheses — <code>{escape(path.name)}</code></h2>" +
+            _table(["Id", "Verdict (effect / threshold)", "Claim", "Origin / source",
+                    "Agent technique", "Prior work (Exa answer)"], rows) +
+            search_html)
+
+
+def _explore(out: Path) -> str:
+    """Explore-loop evidence: hypotheses with the source and the Exa prior-work check, and the
+    searches the model chose itself. Covers the rendered dir and each `explore-*` subdir.
+    Read-only."""
+    if not out.is_dir():
+        return ""
+    return "".join(_explore_dir(path) for path in
+                   [out, *(p for p in sorted(out.iterdir()) if p.is_dir()
+                           and p.name.startswith("explore-"))] if path.is_dir())
+
+
 def _decisions(out: Path) -> str:
     rows = []
     for d in DecisionLog(out / "decisions.jsonl").entries():
@@ -245,6 +309,7 @@ def render(out_dir: str | Path, rows_path: str | Path | None = None,
         "<h2>Findings</h2>", _findings(out),
         "<h2>Claim cards (exploratory tests)</h2>", _claim_cards(out),
         "<h2>Candidate review queue</h2>", _candidates(out),
+        _explore(out),
         "<h2>Decisions</h2>", _decisions(out),
         "</body></html>",
     ])

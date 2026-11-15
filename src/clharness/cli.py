@@ -20,6 +20,7 @@
                                             one C5 arm on Tinker; --smoke is 50/50 per task
   clh tinker-analyze                        C5 metrics: final acc, gap closed, forgetting (+ CIs)
   clh tinker-figures                        the C5 R[stage, task] heatmap SVG
+  clh exa-trail DIR... [--out FILE]           the Exa evidence trail as one Markdown page
 """
 
 from __future__ import annotations
@@ -649,6 +650,13 @@ def cmd_tinker_figures(args) -> int:
     return 0
 
 
+def cmd_exa_trail(args) -> int:
+    from clharness.agent import trail
+
+    argv = [str(d) for d in args.dirs] + ["--out", str(args.out)]
+    return trail.main(argv)
+
+
 def cmd_export_schema(args) -> int:
     from clharness.spec import json_schemas
 
@@ -758,6 +766,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default=str(REPO_ROOT / "results" / "figures"
                                         / "tinker_r_heatmap.svg"))
     p.set_defaults(fn=cmd_tinker_figures)
+    p = sub.add_parser("exa-trail", help="the Exa evidence trail (Scout candidates, hypotheses, "
+                       "prior-work answers, model-chosen searches) as one Markdown page")
+    p.add_argument("dirs", nargs="*", type=Path,
+                   help="explore/loop output dirs, candidates dirs or Scout result JSON files; "
+                        "default: results/agent")
+    p.add_argument("--out", default=str(REPO_ROOT / "results" / "agent" / "exa_trail.md"))
+    p.set_defaults(fn=cmd_exa_trail)
     p = sub.add_parser("build-data")
     p.add_argument("--set", default="smoke", help="smoke | real")
     p.add_argument("--domain", action="append", help="real set: build only these domains (repeatable)")

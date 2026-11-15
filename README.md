@@ -130,6 +130,33 @@ Rules: nothing from the report half is ever written there, and the mirror is bes
 past.dev is down the run continues from the files). Code: `src/clharness/agent/pastdev.py`. Turn
 it on with `--memory pastdev` on `clharness.agent.explore`; the key is read from `PAST_API_KEY`.
 
+## Exa in the loop
+
+The research agent uses the Exa API at every step of its literature loop, all through
+`ExaSearch` in `src/clharness/agent/search.py` (`EXA_API_KEY` in `.env`):
+
+1. **Scout** (`LLMScout` in `src/clharness/agent/agents.py`): three `ExaSearch.search` calls a
+   step; the model drafts technique candidates and claim cards, each citing the sources it saw.
+   Written to `results/agent/loop-*/candidates/*.json`.
+2. **Proposer** (`src/clharness/agent/explore.py`): the Scout's candidates and their papers are
+   quoted into the next prompt (`scout_sources`); the proposer may build one as an
+   agent-written technique (`origin: "literature"`, `source` = the paper).
+3. **Prior-work check**: for each hypothesis the gate accepts, one `ExaSearch.answer` call asks
+   whether it was already tested, before any compute is spent (`ask_prior_work`; stored on the
+   hypothesis as `prior_work` with its citations). Informational, never a gate.
+4. **Model-chosen search**: the proposer also names the one web search it wants next
+   (`next_search`); code runs it through Exa before the following cycle and shows the results.
+
+The evidence lives in `results/agent/explore-*/{hypotheses.jsonl,decisions.jsonl,sources.jsonl,
+next_search.json,rows.jsonl}` and `results/agent/loop-*/candidates/*.json`. One readable page
+of the whole trail:
+
+```bash
+clh exa-trail results/agent/explore-himani results/agent/loop-himani   # -> results/agent/exa_trail.md
+```
+
+It reads committed files only, makes no network calls, and is byte-identical on a rerun.
+
 ## Adding a technique
 
 Techniques plug into the training loop as hooks (`src/clharness/train/hooks.py`). A hook can:
