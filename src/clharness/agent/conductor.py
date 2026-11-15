@@ -280,16 +280,23 @@ class Conductor:
     def _budget(self) -> BudgetView:
         rows = self._rows()
         have_row = {r.spec_hash for r in rows}
-        spent = self._spent(rows)
-        committed = sum(
-            cost for key, cost in self.s.extra.get("pending_usd", {}).items()
-            if key not in have_row
-        )
+        baseline = build_spec("baseline", 0, self.stream)
+        if self.launches:
+            spent = self._spent(rows)
+            committed = sum(
+                cost for key, cost in self.s.extra.get("pending_usd", {}).items()
+                if key not in have_row
+            )
+        else:
+            # Read-only: the rows were paid for by whoever launched them (launch_design), not by
+            # this loop, so they don't count against its cap. What counts is what it proposes,
+            # priced flat per run as launch_design prices them.
+            spent = 0.0
+            committed = len(self._proposed()) * self._estimate(baseline)
         # the explore share is held back from every other phase until claim tests spend it
         reserve = self.compute_cap_usd * self.reserve_fraction + self._explore_left(rows)
         now = self.clock.now()
         minutes = (self.deadline - now).total_seconds() / 60 if self.deadline else None
-        baseline = build_spec("baseline", 0, self.stream)
         return BudgetView(
             compute_usd_left=self.compute_cap_usd - reserve - spent - committed,
             compute_usd_reserve=reserve, model_usd_left=self._model_usd_left(),

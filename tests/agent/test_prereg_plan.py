@@ -216,3 +216,17 @@ def test_out_inside_the_explore_directory_is_refused(tmp_path):
                    compute_cap_usd=80.0, explore_inbox=inbox)
     build_real(tmp_path / "loop", sim.default_prereg(), rows, compute_cap_usd=80.0,
                explore_inbox=inbox)  # beside it is fine
+
+
+def test_read_only_budget_ignores_runs_it_did_not_launch(tmp_path, monkeypatch):
+    """The grid's rows were paid for by launch_design. With the real config's $80 cap they must
+    not exhaust the read-only loop's budget, or it skips straight to FREEZE (seen on real rows)."""
+    rows, out = _copy(tmp_path), tmp_path / "out"
+    _no_report(monkeypatch)
+    build_real(out, c.load_prereg(DEFAULT_PREREG), rows, compute_cap_usd=80.0,
+               clock=FakeClock()).run(stop_before=REPORT)
+    states = [d.state for d in _decisions(out)]
+    assert "replicate/fallback_plan" in states and "combine/plan" in states
+    for d in _decisions(out):
+        if d.state.endswith("/gate"):
+            assert not any(": budget: " in x for x in d.data["choice"].get("dropped", []))
