@@ -137,7 +137,7 @@ Members A to D are placeholders: replace each with a name when someone claims th
   workstreams can build against them.
 - Build a Modal executor with parallel fan-out, retries, idempotent run IDs and a budget
   guard.
-- ~~Add a Tinker backend that emits the same result row.~~ Cut on Saturday (see A7).
+- ~~Add a Tinker backend that emits the same result row.~~ Moved to himani on Saturday evening (see A7).
 - Add `make reproduce`.
 
 **Member B (peter): techniques (3).** In this order, each with a sanity run at matched gradient tokens:
@@ -171,18 +171,22 @@ sequence: Tinker LoRA on Qwen3-8B, SST-2 then MNLI then AG News, 5k train
 and 1k eval per task. It runs naive, replay-200, joint and the top two techniques at 3 seeds,
 scored as gap closed and average forgetting. Rules:
 - It starts only after sync point 1.
-- It gets about 4 hours of Member C's time.
-- It is the first thing to cut.
+- **Reinstated on Saturday evening (himani).** himani owns the Tinker backend (A7) and C5; Devin
+  builds the backend, and himani reviews it and runs the Tinker jobs. No time from Member A.
+- Scope: the 3 core arms (naive, replay-200, joint × 3 seeds) on Saturday night; the top two
+  techniques on Sunday morning, if they carry over to LoRA on Tinker.
 
 **Budget caps** (70% of the team total, 30% held back for reruns): Modal $700, Tinker $280,
 OpenAI $70.
 
 **Cut order if behind:**
-1. The second task sequence.
-2. The Exa loop.
-3. Weight averaging, then distillation.
-4. Activation-based selection (keep random and loss-based).
-5. Replication from 3 seeds to 2.
+1. The Exa loop.
+2. Weight averaging, then distillation.
+3. Activation-based selection (keep random and loss-based).
+4. Replication from 3 seeds to 2.
+
+The second task sequence was taken off this list on Saturday evening (himani); its top-two
+technique arms are the part that waits for time.
 
 Never cut the reference arm, the noise floor, the decision log or the results page.
 
@@ -201,7 +205,7 @@ are in [`TASKS.md`](TASKS.md).
 | A4 | Per-domain LR re-warm | A | (nothing upstream) | B1 (reference arm) |
 | A5 | Frozen fast bench config | A | One baseline run to confirm it | A6, B sanity runs, C3 |
 | A6 | Modal executor (fan-out, retries, budget guard) | A | A1, A5 | Sync point 1, then C3, D2 |
-| A7 | ~~Tinker backend, same result row~~ **Cut Saturday afternoon** to protect the critical path | A | A1 | C5 has no backend unless someone else builds one |
+| A7 | Tinker backend for C5. Cut by A on Saturday afternoon; **moved to himani** on Saturday evening (built by Devin, reviewed and run by himani) | himani | A1 | C5 |
 | A8 | `make reproduce` | A | A6, C4 | Submission |
 | B1 | Reference arm: replay plus LR re-warm | B | A4, B2 | C1 decision rule, D2 grid, pitch |
 | B2 | Replay | B | (nothing upstream; smoke data is enough) | B1, B3 |
