@@ -135,8 +135,12 @@ def _primary_item_metric(samples: list[dict]) -> str | None:
     return None
 
 
-def _mc_choices(task, samples: list[dict], metric: str) -> tuple[dict[int, int], dict[int, int]]:
-    """Chosen option index per doc (mirrors lm-eval's `pred` / `pred_norm`) and the gold index.
+def _mc_choices(
+    task, samples: list[dict], metric: str,
+) -> tuple[dict[int, int], dict[int, int], dict[int, tuple[list[float], list[float]]]]:
+    """Chosen option index per doc (mirrors lm-eval's `pred` / `pred_norm`), the gold index, and
+    the per-option log-likelihoods as (raw, score): `score` is what the pick is the argmax of
+    (divided by the option's character length for acc_norm, else equal to `raw`).
 
     Uses the same `doc_to_choice` and character-length normalisation as lm-eval's
     `process_results` for multiple_choice tasks, so `chosen == gold` reproduces acc / acc_norm.
@@ -144,20 +148,21 @@ def _mc_choices(task, samples: list[dict], metric: str) -> tuple[dict[int, int],
     norm = metric.startswith("acc_norm")
     chosen: dict[int, int] = {}
     gold: dict[int, int] = {}
+    scores: dict[int, tuple[list[float], list[float]]] = {}
     for smp in samples:
         doc = smp["doc"]
         choices = task.doc_to_choice(doc)
-        lls = np.array([float(r[0]) for r in smp["filtered_resps"]][: len(choices)])
-        if lls.size != len(choices):
+        raw = np.array([float(r[0]) for r in smp["filtered_resps"]][: len(choices)])
+        if raw.size != len(choices):
             continue
-        if norm:
-            lls = lls / np.array([float(len(c)) for c in choices])
+        lls = raw / np.array([float(len(c)) for c in choices]) if norm else raw
         chosen[int(smp["doc_id"])] = int(np.argmax(lls))
+        scores[int(smp["doc_id"])] = (raw.tolist(), lls.tolist())
         g = task.doc_to_target(doc)
         if isinstance(g, str):  # same rule as chance_levels: digit string = index, else a choice string
             g = int(g) if g.strip().lstrip("-").isdigit() else (choices.index(g) if g in choices else -1)
         gold[int(smp["doc_id"])] = int(g) if isinstance(g, (int, np.integer)) else -1
-    return chosen, gold
+    return chosen, gold, scores
 
 
 def run_lm_eval(
@@ -219,9 +224,11 @@ def run_lm_eval(
             # multiple-choice tasks: which option the model picked (for the degenerate-answer alarm)
             task = task_objs.get(n)
             if task is not None and getattr(task, "OUTPUT_TYPE", None) == "multiple_choice" and samples:
-                ch, gd = _mc_choices(task, samples, metric or "acc")
+                ch, gd, sc = _mc_choices(task, samples, metric or "acc")
                 r["_choices"] = [ch.get(i, -1) for i in manifest["tasks"][n]["indices"]]
                 r["_gold"] = [gd.get(i, -1) for i in manifest["tasks"][n]["indices"]]
+                # per-option log-likelihoods (raw, score) per item, for answer margins; None = missing
+                r["_loglik"] = [sc.get(i) for i in manifest["tasks"][n]["indices"]]
             results[n] = r
     if was_training:
         model.train()
