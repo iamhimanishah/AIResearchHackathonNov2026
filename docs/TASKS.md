@@ -433,7 +433,9 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 ### C1 · `analysis/PREREG.md`
 - **Goal:** commit to the decision rules *before* seeing results, for rigour and for Q&A.
 - **Where:** `analysis/PREREG.md`, committed with a timestamp before sync point 2.
-- **Status:** drafted in [`analysis/PREREG.md`](../analysis/PREREG.md).
+- **Status: FROZEN** in [`analysis/PREREG.md`](../analysis/PREREG.md) when the freeze PR merges. Phase-0 values:
+  σ_noise 1.15 points (report half), margins 1.05 for code and legal, and the rule-4 control is
+  no-mitigation at 3e-5.
   - The split is built: `manifests/eval-protected-v1-split.json`, from
     `scripts/make_item_split.py`, stratified by base correctness.
   - Settled:
@@ -444,9 +446,7 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
       at seeds 0–2. Seed 0 is A5's calibration run, so 4 runs are new.
     - the published-claims family (6.5, A14): 7 claim arms at 3 seeds, 20 new runs, about $25,
       exploratory, run with the screen.
-  - Still open before the freeze:
-    - σ_noise, from C3;
-    - three provisional items (invalid-run rules, MBPP, matched compute).
+  - Nothing is open. Changes after the freeze follow PREREG section 11.
   - Every option considered is kept in the PREREG's Appendix A.
 - **Steps:** write down each of the following.
   1. **The split:** which items are in the selection half and which in the report half. Make

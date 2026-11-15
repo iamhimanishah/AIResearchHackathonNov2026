@@ -28,13 +28,15 @@ from clharness.spec import RunSpec, StreamDomain, TechniqueSpec
 FACTORS = ("replay", "lr_rewarm", "lora", "freeze", "distill", "wavg")
 GENERATORS = {"distill": ("replay", "lr_rewarm", "lora"), "wavg": ("replay", "lr_rewarm", "freeze")}
 
-# Frozen parameters, matching configs/bench/specs/reference-s0.json and sanity/*.json.
+# Frozen parameters, matching configs/bench/specs/reference-s0.json and sanity/*.json, except
+# distill top_k (256, not the sanity spec's 64; PREREG A15). lora keeps its plugin default lr 1e-3:
+# a stated exception to the bench LR (PREREG 0.3, A15).
 PARAMS: dict[str, dict[str, Any]] = {
     "replay": {"share": 0.05, "source": "general"},
     "lr_rewarm": {"rewarm_steps": 8, "min_lr_ratio": 0.1, "schedule": "cosine"},
     "lora": {"rank": 8},
     "freeze": {"bottom_layers": 13},
-    "distill": {"weight": 1.0, "top_k": 64},
+    "distill": {"weight": 1.0, "top_k": 256},  # PREREG A15: 64 under-represents distillation (lit scan)
     "wavg": {"alpha": 0.25},
 }
 SELECTION_PARAMS: dict[str, dict[str, Any]] = {
