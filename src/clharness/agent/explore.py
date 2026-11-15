@@ -46,6 +46,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .. import env  # noqa: F401 - loads .env (OPENAI_API_KEY, EXA_API_KEY), as scout.py and loop.py do
 from .. import spec as a1
 from ..analysis import design
 from ..analysis.item_profile import item_profile, set_sizes
