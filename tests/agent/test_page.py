@@ -84,3 +84,28 @@ def test_server_serves_get_and_refuses_writes(done_dir):
         assert err.value.code == 501
     finally:
         server.shutdown()
+
+
+def test_runs_table_separates_lr_controls_and_shows_per_domain_acquisition(tmp_path):
+    """A lower-learning-rate control is its own arm, and acquisition is the own-boundary ratio
+    per domain (the measure the pre-registration gates on), not the end-of-stream mean."""
+    from clharness import spec as a1
+    from clharness.page.render import render
+
+    def row(name, lr, code, legal):
+        spec = a1.RunSpec(name=name, seed=0, stream=[{"name": "code", "tokens": 10}, {"name": "legal", "tokens": 10}],
+                          optim={"lr": lr} if lr else {})
+        half = a1.HalfRetention(per_task={"arc_easy": a1.TaskRetention(base=0.7, final=0.65, delta=-0.05, n_items=250)},
+                                mean_delta=-0.05)
+        return a1.ResultRow(
+            spec=spec, spec_hash=spec.spec_hash(), git_sha="a" * 40, status="finished", backend="modal",
+            retention=a1.Retention(selection=half, report=half),
+            acquisition=a1.Acquisition(ppl_ratio={"code": 1.79, "legal": legal}, mean_ppl_ratio=1.17,
+                                       own_boundary_ppl_ratio={"code": code, "legal": legal}),
+            cost=a1.Cost(gradient_tokens=20, wall_clock_s=1100.0, gpu_type="H100", est_usd=1.2))
+
+    a1.write_rows(tmp_path / "rows.jsonl", [row("base", None, 1.128, 0.787), row("low", 3e-5, 1.027, 0.754)])
+    html = render(tmp_path, refresh_s=None)
+    assert "no_mitigation @ lr=3e-05" in html
+    assert "code ppl" in html and "legal ppl" in html and "Acquisition ppl</th>" not in html.split("Runs (2)")[1]
+    assert "1.128" in html and "0.754" in html and "1.170" not in html

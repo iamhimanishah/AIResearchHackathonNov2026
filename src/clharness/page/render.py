@@ -102,19 +102,60 @@ def _report(report: dict[str, Any]) -> str:
         rows, numeric={2, 3, 4, 5, 6}, classes=classes)
 
 
-def _runs(latest: list[ResultRow], opened: set[str]) -> str:
+def _arm(spec: Any) -> str:
+    """The arm a run belongs to. An optimizer override is part of the arm: no mitigation at a
+    lower learning rate is a control of its own (PREREG rule 4), not the 1e-4 baseline."""
+    name = arm_of(spec)
+    if spec.optim:
+        name += " @ " + ", ".join(
+            f"{k}={v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else f"{k}={v}"
+            for k, v in sorted(spec.optim.items()))
+    return name
+
+
+def _own_boundary(rows_file: Path) -> dict[str, dict[str, float]]:
+    """spec hash -> {domain: held-out perplexity right after that domain's training, / base}.
+
+    This is the acquisition measure the pre-registration gates on. The end-of-stream ratio mixes
+    in what later domains made the model forget, so it is not shown. Read from the row file
+    directly, because the agent's row view carries only the end-of-stream values."""
+    from clharness import spec as a1
+
+    out: dict[str, dict[str, float]] = {}
+    if not rows_file.exists():
+        return out
+    for line in rows_file.read_text(encoding="utf-8").splitlines():
+        try:
+            row = a1.ResultRow.model_validate_json(line)
+        except ValueError:
+            continue
+        if row.acquisition is not None:  # a later line for the same spec wins
+            out[row.spec_hash] = dict(row.acquisition.own_boundary_ppl_ratio or {})
+    return out
+
+
+def _runs(latest: list[ResultRow], opened: set[str], own: dict[str, dict[str, float]]) -> str:
+    domains: list[str] = []
+    for r in latest:  # columns in stream order
+        domains += [d.name for d in r.spec.stream if d.name not in domains]
     rows = []
     for r in latest:
         report = (_num(r.retention_report.mean_delta)
                   if r.row_hash in opened and r.retention_report else '<span class="muted">sealed</span>')
+        acq = own.get(r.spec_hash, {})
         rows.append([
-            escape(r.spec.name), escape(arm_of(r.spec)), str(r.spec.seed),
+            escape(r.spec.name), escape(_arm(r.spec)), str(r.spec.seed),
             f'<span class="tag">{escape(r.status)}</span>', str(r.attempt), escape(r.backend),
             _num(r.retention_selection.mean_delta if r.retention_selection else None), report,
-            _num(r.acquisition_mean, ".4f"), _num(r.cost.usd, ".2f"),
+            *[_num(acq.get(d), ".3f") for d in domains], _num(r.cost.usd, ".2f"),
         ])
-    return _table(["Run", "Arm", "Seed", "Status", "Attempt", "Backend", "Selection Δ",
-                   "Report Δ", "Acquisition ppl", "USD"], rows, numeric={2, 4, 6, 7, 8, 9})
+    n = len(domains)
+    note = ('<p class="muted">Perplexity columns: held-out perplexity on a domain right after '
+            "training on it, divided by the base model's. Below 1 means the domain was learned; "
+            "above 1 means training on it made the model worse at it.</p>")
+    return note + _table(
+        ["Run", "Arm", "Seed", "Status", "Attempt", "Backend", "Selection Δ", "Report Δ",
+         *[f"{d} ppl" for d in domains], "USD"], rows, numeric={2, 4, 6, 7, *range(8, 9 + n)})
 
 
 def _failures(rows: list[ResultRow]) -> str:
@@ -182,7 +223,8 @@ def render(out_dir: str | Path, rows_path: str | Path | None = None,
     out = Path(out_dir)
     state = _json(out / "state.json")
     report = _json(out / "report.json")
-    all_rows = load_rows(Path(rows_path) if rows_path else out / "rows.jsonl").rows
+    rows_file = Path(rows_path) if rows_path else out / "rows.jsonl"
+    all_rows = load_rows(rows_file).rows
     latest = sorted(latest_by_spec(all_rows).values(), key=lambda r: (r.spec.name, r.spec_hash))
     opened = set(report.get("row_hashes", []))
     refresh = f'<meta http-equiv="refresh" content="{refresh_s}">' if refresh_s else ""
@@ -193,7 +235,7 @@ def render(out_dir: str | Path, rows_path: str | Path | None = None,
         f'<p class="muted">Read-only view of <code>{escape(str(out))}</code>.</p>',
         "<h2>Status</h2>", _summary(state, out),
         "<h2>Report (frozen set)</h2>", _report(report),
-        f"<h2>Runs ({len(latest)})</h2>", _runs(latest, opened),
+        f"<h2>Runs ({len(latest)})</h2>", _runs(latest, opened, _own_boundary(rows_file)),
         "<h2>Failed and invalid runs</h2>", _failures(all_rows),
         "<h2>Findings</h2>", _findings(out),
         "<h2>Claim cards (exploratory tests)</h2>", _claim_cards(out),

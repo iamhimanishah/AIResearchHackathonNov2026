@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 from collections.abc import Callable, Sequence
@@ -109,6 +110,7 @@ class Hypothesis(_Model):
     source: str | None = None
     prediction: Prediction
     control: str
+    card_id: str | None = None  # the Scout claim card it came from (origin `literature`)
     test_spec_hashes: list[str] = Field(default_factory=list)
     control_spec_hashes: list[str] = Field(default_factory=list)
     decision_rule: str = ""
@@ -257,6 +259,48 @@ def fixed_proposals(arms: Sequence[Arm]) -> Proposal:
             techniques=[a1.TechniqueSpec(name="replay", params=design.PARAMS["replay"])],
             lr=3e-5, control=low))
     return Proposal(hypotheses=out)
+
+
+INBOX_NAME = "literature.jsonl"  # written by the Conductor's Scout step, read here
+_CONTROL_LR = re.compile(r"-lr([0-9.e+-]+)$")
+
+
+def _control_name(name: str) -> str:
+    """The Scout names arms the Conductor's way (`no_mitigation-lr3e-05`); the arm table here
+    says `no-mitigation@lr3e-05`. Same arm, one spelling."""
+    name = _CONTROL_LR.sub(lambda m: f"@lr{float(m.group(1)):g}", name)
+    return name.replace("no_mitigation", "no-mitigation")
+
+
+def read_inbox(path: Path, prior: Sequence[Hypothesis]) -> tuple[list[tuple[str, ProposedHypothesis]], list[str]]:
+    """Claim cards the Scout left for the explore loop: ([(card_id, hypothesis)], problems).
+
+    One JSON object per line with the `ProposedHypothesis` fields plus `card_id` (the agreed
+    field list: card_id, origin, question, claim, source, prediction{direction, size_points},
+    techniques[{name, params}], lr, control). A card already turned into a stored hypothesis is
+    skipped, so the inbox may be rewritten whole on every Scout step. A line that does not
+    parse is reported and skipped; the text of a card is data and is never executed or obeyed.
+    The gate treats these exactly like a model's proposals."""
+    if not path.exists():
+        return [], []
+    seen = {h.card_id for h in prior if h.card_id}
+    cards, problems = [], []
+    for n, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+            card_id = str(raw.pop("card_id"))
+            raw["origin"] = "literature"
+            raw["control"] = _control_name(str(raw.get("control", "")))
+            hyp = ProposedHypothesis.model_validate(raw)
+        except (ValueError, KeyError, TypeError) as exc:
+            problems.append(f"{path.name}:{n}: {type(exc).__name__}: {str(exc)[:160]}")
+            continue
+        if card_id not in seen:
+            seen.add(card_id)
+            cards.append((card_id, hyp))
+    return cards, problems
 
 
 def propose(arms: Sequence[Arm], prior: Sequence[Hypothesis], llm: LLMClient | None,
@@ -423,14 +467,23 @@ def cycle(
 
     if not resolve_only:
         arms = read_arms(inputs)
-        proposal, author = propose(arms, stored, llm, sources, max_hypotheses)
+        # Literature first: a claim card comes with its source and was already checked against
+        # the catalog by the Scout. The proposer fills what is left of this cycle's allowance.
+        cards, problems = read_inbox(out / INBOX_NAME, stored)
+        for problem in problems:
+            say(f"inbox: skipped {problem}")
+        cards = cards[:max_hypotheses]
+        room = max_hypotheses - len(cards)
+        proposal, author = propose(arms, stored, llm, sources, room) if room else (Proposal(), "none")
+        candidates = [(cid, p, "scout") for cid, p in cards]
+        candidates += [(None, p, author) for p in proposal.hypotheses[:room]]
         taken = {s.spec_hash() for s in design.screen() + design.claims_specs() + design.phase0()}
         taken |= {h_ for a in arms for h_ in a.hashes_by_seed.values()}
         taken |= {x for h in stored for x in h.test_spec_hashes}
         budget_left = cap_usd
         accepted_specs: list[a1.RunSpec] = []
         fresh: list[Hypothesis] = []
-        for i, p in enumerate(proposal.hypotheses):
+        for i, (card_id, p, who) in enumerate(candidates):
             hyp_id = f"h{len(stored) + i + 1:03d}"
             specs, why = gate_one(p, hyp_id, arms, taken)
             cost = USD_PER_RUN * len(specs)
@@ -438,8 +491,9 @@ def cycle(
                 specs, why = [], f"costs ${cost:.2f}, only ${budget_left:.2f} left of the ${cap_usd:.2f} cap"
             control = next((a for a in arms if a.name == p.control), None)
             record = Hypothesis(
-                id=hyp_id, created_at=now(), author=author, origin=p.origin, question=p.question,
+                id=hyp_id, created_at=now(), author=who, origin=p.origin, question=p.question,
                 claim=p.claim, source=p.source, prediction=p.prediction, control=p.control,
+                card_id=card_id,
                 test_spec_hashes=[s.spec_hash() for s in specs],
                 control_spec_hashes=[control.hashes_by_seed[s] for s in EXPLORE_SEEDS] if specs and control else [],
                 decision_rule=RULE, status="accepted" if specs else "rejected", reason=why)
@@ -454,7 +508,8 @@ def cycle(
             return stored + fresh
         log.append(
             key=f"explore/gate#{len(log.entries())}", state="explore/gate", actor="explore", ts=now(),
-            reason=f"{author} proposed {len(fresh)} hypotheses; "
+            reason=f"{len(cards)} from the Scout's claim cards and {len(fresh) - len(cards)} from "
+                   f"{author}: {len(fresh)} hypotheses; "
                    f"{sum(h.status == 'accepted' for h in fresh)} accepted by the gate.",
             data={"hypotheses": [h.model_dump() for h in fresh],
                   "estimated_usd": round(cap_usd - budget_left, 2), "cap_usd": cap_usd},

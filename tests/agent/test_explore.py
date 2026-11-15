@@ -181,3 +181,47 @@ def test_with_no_model_or_a_failing_one_the_fixed_list_is_used(tmp_path, have):
     assert [h.author for h in out] == ["fixed-list", "fixed-list"] and all(h.status == "accepted" for h in out)
     out, _ = _cycle(tmp_path, have, llm=FakeLLM())  # nothing queued: the provider is dead
     assert out and out[0].author == "fixed-list"
+
+
+# -- the Scout's claim-card inbox --------------------------------------------------------------
+
+
+def _card(card_id: str, **kw) -> str:
+    """One inbox line as the Conductor's Scout step writes it (conductor._write_claim_cards)."""
+    return json.dumps({"card_id": card_id, **_hyp(origin="literature",
+                       source="Simple and Scalable Strategies https://arxiv.org/abs/2403.08763",
+                       control="no_mitigation-lr3e-05", **kw)}) + "\n"
+
+
+def test_claim_cards_become_literature_hypotheses_with_their_source(tmp_path, have):
+    out = tmp_path / "explore"
+    out.mkdir()
+    (out / ex.INBOX_NAME).write_text(_card("c1") + "not json\n" + _card("c2", lr=5.0))
+    said = []
+    hyps = ex.cycle(out, [have], say=said.append, max_hypotheses=4)
+    by_card = {h.card_id: h for h in hyps if h.card_id}
+    assert by_card["c1"].status == "accepted" and by_card["c1"].author == "scout"
+    assert by_card["c1"].origin == "literature" and "arxiv.org/abs/2403.08763" in by_card["c1"].source
+    assert by_card["c1"].control == "no-mitigation@lr3e-05"  # the Scout's spelling, normalised
+    assert by_card["c2"].status == "rejected"  # the gate applies to a card like any proposal
+    assert any("skipped" in line and ":2:" in line for line in said)  # the bad line is reported
+    assert sum(h.card_id is None for h in hyps) == 2  # the fixed list fills what is left
+
+
+def test_a_card_is_used_once_and_cards_take_the_allowance_first(tmp_path, have):
+    out = tmp_path / "explore"
+    out.mkdir()
+    (out / ex.INBOX_NAME).write_text(_card("c1"))
+    backend = FakeModal(lambda spec: (-1.0, 0.75))
+    first = ex.cycle(out, [have], backend=backend, git_sha=SHA, go=True, sleep=lambda s: None,
+                     say=lambda s: None, max_hypotheses=1)
+    assert [h.card_id for h in first] == ["c1"]  # allowance of one: the card, not the fixed list
+    again = ex.cycle(out, [have], say=lambda s: None, max_hypotheses=4)  # inbox rewritten whole
+    assert [h.card_id for h in again].count("c1") == 1
+
+
+def test_control_names_from_the_scout_map_onto_the_arm_table():
+    assert ex._control_name("no_mitigation") == "no-mitigation"
+    assert ex._control_name("no_mitigation-lr3e-05") == "no-mitigation@lr3e-05"
+    assert ex._control_name("lr_rewarm+replay") == "lr_rewarm+replay"
+    assert ex._control_name("no-mitigation@lr3e-05") == "no-mitigation@lr3e-05"
