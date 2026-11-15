@@ -64,6 +64,17 @@ REAL_BACKENDS = frozenset({"modal", "tinker"})  # rows from local/fake runs neve
 # two-sided 95% t criticals, df 1..10 (claims read 2-4 paired seeds; bootstrap understates there)
 T_CRIT_975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
               6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
+# PREREG 0.4 froze both from the phase-0 seeds (red-team RT-24): the acquisition margin is 1.05
+# on code and on legal (exp(2 x SD) is below 1.05 on both), and the rule-4 control L is
+# no-mitigation at LR 3e-5 (3-seed selection-half means -1.47 vs -2.43 at 5e-5, gate passed).
+# `analyze(frozen=False)` re-derives both from the rows instead, as the rule is written; the fake
+# rows use that, because their planted noise and LR arms differ from the bench's.
+FROZEN_MARGINS = {"code": ACQ_GATE, "legal": ACQ_GATE}
+FROZEN_LR_CONTROL = 3e-5
+TOKEN_TOLERANCE = 0.01  # PREREG 8: gradient tokens within 1% of spec.gradient_tokens()
+MAJORITY_RATE = {"pubmedqa_pqal": 0.58}  # PREREG 8: printed next to PubMedQA scores
+# src/clharness/analysis/attribution.py -> repo root; items_path in a row is repo-relative
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -135,9 +146,10 @@ def acquisition_margins(base: Config | None) -> dict[str, float]:
 
 def acquisition_gate(x: Config, ref: Config | None, margins: dict[str, float] | None = None) -> dict[str, Any]:
     """Rule 3, per domain: for every trained domain, mean ratio(x) <= margin_d x mean ratio(ref).
-    Every domain must pass (code and legal), so one cannot hide behind the other."""
+    Every domain must pass (code and legal), so one cannot hide behind the other. Without a
+    reference row nothing passes: a missing comparator is not evidence (red-team RT-01)."""
     if ref is None:
-        return {"passes": True, "domains": {}}
+        return {"passes": False, "domains": {}, "reason": "no reference-arm rows"}
     margins = margins or {}
 
     def means(cfg: Config) -> dict[str, float]:
@@ -310,10 +322,15 @@ ItemLoader = Callable[[ResultRow, str, Half], "tuple[np.ndarray, np.ndarray] | N
 
 def checkpoint_items(row: ResultRow, task: str, half: Half) -> tuple[np.ndarray, np.ndarray] | None:
     """(base, final) per-item correctness on one half, from the run's checkpoint files, or None
-    when they are not on this machine. Positions come from the executor's `half_indices`."""
+    when they are not on this machine. Positions come from the executor's `half_indices`.
+    A relative `items_path` is read against the repo root, not the working directory, so the
+    bootstrap mode does not depend on where the analysis is run from (red-team RT-05)."""
     if not row.items_path:
         return None
-    ckpts = sorted(Path(row.items_path).glob("ckpt_*"))
+    path = Path(row.items_path)
+    if not path.is_absolute():
+        path = _REPO_ROOT / path
+    ckpts = sorted(path.glob("ckpt_*"))
     if (len(ckpts) < 2 or not (ckpts[0] / f"items_{task}.npy").exists()
             or not (ckpts[-1] / f"items_{task}.npy").exists()):
         return None
@@ -474,9 +491,12 @@ def promote(configs: dict[str, Config], ref: Config | None, k: int = 3,
 
 
 def choose_lr_control(configs: dict[str, Config], ref: Config | None,
-                      margins: dict[str, float] | None = None) -> dict[str, Any]:
+                      margins: dict[str, float] | None = None,
+                      frozen_lr: float | None = None) -> dict[str, Any]:
     """PREREG A13: the lower-LR no-mitigation arm with the best selection-half outcome among
-    those whose acquisition passes the 5% gate against the reference arm. Selection half only."""
+    those whose acquisition passes the 5% gate against the reference arm. Selection half only.
+    With `frozen_lr` (PREREG 0.4 froze L = 3e-5), that arm is the control when its rows exist,
+    and the rule-derived pick is reported next to it as `derived`."""
     arms = []
     for cfg in configs.values():
         if cfg.lr is None:
@@ -486,9 +506,13 @@ def choose_lr_control(configs: dict[str, Config], ref: Config | None,
                      "selection_primary": float(cfg.primary("selection").mean()),
                      "acquisition": acq, "passes_acquisition_gate": acquisition_gate(cfg, ref, margins)["passes"]})
     eligible = [a for a in arms if a["passes_acquisition_gate"]]
-    chosen = max(eligible, key=lambda a: a["selection_primary"], default=None)
+    derived = max(eligible, key=lambda a: a["selection_primary"], default=None)
+    chosen = derived
+    if frozen_lr is not None:
+        chosen = next((a for a in arms if math.isclose(a["lr"], frozen_lr)), None)
     return {"arms": sorted(arms, key=lambda a: -a["lr"]), "chosen": chosen["key"] if chosen else None,
-            "chosen_label": chosen["config"] if chosen else None}
+            "chosen_label": chosen["config"] if chosen else None,
+            "frozen_lr": frozen_lr, "derived_label": derived["config"] if derived else None}
 
 
 def promote_selection(configs: dict[str, Config], ref: Config | None,
@@ -641,8 +665,39 @@ def config_summaries(configs: dict[str, Config], half: Half, base: Config | None
             "acquisition": {d: _seed_interval(v, rng, nb) for d, v in sorted(by_dom.items())},
             "vs_base": vs_base,
             "collapsed": sorted({t for r in cfg.rows for t in collapse_flags(r)}),
+            "secondary": secondary_outcomes(cfg),
         })
     return out
+
+
+def secondary_outcomes(cfg: Config) -> dict[str, float | None]:
+    """PREREG 4 secondary outcomes that the rows carry: end-of-stream acquisition (mean
+    perplexity ratio after the last domain) and the general-web perplexity ratio, means over
+    seeds. Persistent losses need the per-item files and are not computed here."""
+    gen = [r.acquisition.general_ppl_ratio for r in cfg.rows if r.acquisition.general_ppl_ratio is not None]
+    return {"acquisition_end_of_stream": float(np.mean([r.acquisition.mean_ppl_ratio for r in cfg.rows])),
+            "general_ppl_ratio": float(np.mean(gen)) if gen else None}
+
+
+def collapse_sensitivity(row: ResultRow, halves: Iterable[Half]) -> dict[str, Any]:
+    """PREREG 8: for a flagged row, the primary outcome with and without the collapsed tasks."""
+    flags = collapse_flags(row)
+    out: dict[str, Any] = {"collapsed": flags}
+    for half in halves:
+        h = _half(row, half)
+        kept = [p.delta for t, p in h.per_task.items() if t not in flags]
+        out[half] = {"primary": h.mean_delta,
+                     "without_collapsed": float(np.mean(kept)) if kept else None}
+    return out
+
+
+def token_problem(row: ResultRow) -> str | None:
+    """PREREG 8: a finished run whose gradient tokens are off by more than 1% is invalid."""
+    want = row.spec.gradient_tokens()
+    got = row.cost.gradient_tokens
+    if want and abs(got - want) / want > TOKEN_TOLERANCE:
+        return f"gradient tokens {got} vs spec {want} ({100 * (got - want) / want:+.2f}%, over 1%)"
+    return None
 
 
 def claims_table(configs: dict[str, Config], half: Half, lr_control: Config | None = None,
@@ -743,12 +798,36 @@ def _claim_keys() -> set[str]:
     return {spec_key(x) for x in D.claims_specs()}
 
 
-def _row_rank(r: ResultRow) -> tuple[bool, bool]:
-    """Tiebreak between two rows of the same spec: prefer a finished row, then one measured the
-    current way (own-boundary acquisition, pinned item split — the remeasured files), then the
-    later row (a rerun rewrites the same run)."""
+def fit_rows(finished: Iterable[ResultRow]) -> list[ResultRow]:
+    """PREREG 7: the effects fit reads the factorial and the reference halves only. Selection
+    variants are their own family (6.3b), lower-LR arms are controls, and published-claims arms
+    that are not one of these technique sets (lora alone, freeze alone) stay out (red-team RT-10).
+    A claims arm that IS one of them (replay-5 = the replay half) is the same configuration."""
+    in_fit = set(factorial()) | set(HALVES)
+    return [r for r in finished
+            if selection_of(r.spec) is None and lr_of(r.spec) is None and is_design_spec(r.spec)
+            and frozenset(r.spec.technique_names()) in in_fit]
+
+
+def main_interactions() -> list[list[tuple[str, str]]]:
+    """The interaction columns of the main fit (PREREG 7, Amendment 3). replay x lr_rewarm sits
+    in one alias chain with distill x lora and freeze x wavg. The half runs separate
+    replay x lr_rewarm from the other two, but those two stay aliased with each other, so they
+    are one column read as their sum (red-team RT-11)."""
+    rw_pair = ("lr_rewarm", "replay")
+    chain = next((c for c in alias_chains() if rw_pair in c), [rw_pair])
+    partners = [p for p in chain if p != rw_pair]
+    return [[rw_pair]] + ([partners] if partners else [])
+
+
+def _row_rank(r: ResultRow) -> tuple[bool, bool, bool]:
+    """Tiebreak between two rows of the same spec: prefer a row from a real backend (a local or
+    simulated copy must never shadow a real run, red-team RT-08), then a finished row, then one
+    measured the current way (own-boundary acquisition, pinned item split — the remeasured
+    files), then the later row (a rerun rewrites the same run)."""
     a = r.acquisition
-    return (r.status == "finished", a is not None and a.mean_own_boundary_ppl_ratio is not None)
+    return (r.backend in REAL_BACKENDS, r.status == "finished",
+            a is not None and a.mean_own_boundary_ppl_ratio is not None)
 
 
 def dedupe_rows(rows: list[ResultRow]) -> tuple[list[ResultRow], int]:
@@ -771,48 +850,72 @@ def dedupe_rows(rows: list[ResultRow]) -> tuple[list[ResultRow], int]:
 
 
 def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_000, seed: int = 0,
-            items: ItemLoader | None = checkpoint_items, allow_simulated: bool = False) -> dict[str, Any]:
+            items: ItemLoader | None = checkpoint_items, allow_simulated: bool = False,
+            frozen: bool = True) -> dict[str, Any]:
     """Screening-stage analysis on the selection half; with `confirmatory`, also the
     pre-registered tests on the report half (PREREG 3, 5, 6, 7). Finished rows from non-real
     backends (local, fake) are excluded unless `allow_simulated` — a simulator's rows must not
-    reach the reported tables. Decisions are re-derived only from the SCREEN_SEED rows: once
-    replication rows exist, re-ranking on all seeds would test a different family than the one
-    the screen promoted."""
+    reach the reported tables. The family and the selection variants are re-derived only from
+    the SCREEN_SEED rows: once replication rows exist, re-ranking on all seeds would test a
+    different family than the one the screen promoted.
+
+    `frozen` (the default) uses the acquisition margins and the rule-4 control L that PREREG 0.4
+    froze from phase 0. `frozen=False` derives them from the rows at hand (margins from every
+    no-mitigation seed, L from the 3-seed lower-LR arms), which is what the fake-row tests do.
+
+    `warnings` lists anything that makes the output untrustworthy: no seed-0 reference arm
+    (nothing is promoted: the gate fails closed), or confirmatory rows read without their
+    per-item files (the bootstrap falls back to parametric)."""
     rows, n_dup = dedupe_rows(rows)
     finished = [r for r in rows if r.status == "finished"]
     simulated = sorted(r.spec.name for r in finished if r.backend not in REAL_BACKENDS)
     if not allow_simulated:
         finished = [r for r in finished if r.backend in REAL_BACKENDS]
+    # PREREG 8 validity: a finished run off its gradient-token budget by more than 1% is invalid
+    token_invalid = [(r, p) for r in finished if (p := token_problem(r))]
+    bad = {id(r) for r, _ in token_invalid}
+    finished = [r for r in finished if id(r) not in bad]
     # "finished" counts the rows that are actually used; excluded simulated rows are counted apart
     statuses = {"finished": len(finished),
                 **{s: sum(r.status == s for r in rows) for s in ("failed", "invalid")}}
-    # selection variants are their own family (PREREG 6.3b), not a seventh factor of the fit
-    design_rows = [r for r in finished
-                   if selection_of(r.spec) is None and lr_of(r.spec) is None and is_design_spec(r.spec)]
+    statuses["invalid"] += len(token_invalid)
     in_factorial = set(factorial())
+    design_rows = fit_rows(finished)
     factorial_rows = [r for r in design_rows if frozenset(r.spec.technique_names()) in in_factorial]
     configs = group(finished)
     base, ref = find(configs, NO_MITIGATION), find(configs, REFERENCE)
 
-    # every screen-time decision (family, selection variants, lower-LR control, margins) is
-    # computed on the seed-0 rows only — the rows the screen actually produced (PREREG 6.3)
+    # the family and the selection variants are ranked on the seed-0 rows only — the rows the
+    # screen actually produced (PREREG 6.3)
     screen_configs = group([r for r in finished if r.spec.seed == SCREEN_SEED])
-    screen_base, screen_ref = find(screen_configs, NO_MITIGATION), find(screen_configs, REFERENCE)
-    margins = acquisition_margins(screen_base)
+    screen_ref = find(screen_configs, REFERENCE)
+    warnings: list[str] = []
+    if screen_ref is None:
+        warnings.append("no seed-0 reference-arm row (replay+lr_rewarm, e.g. "
+                        "results/rows.reference.remeasured.jsonl): the acquisition gate fails "
+                        "closed, so nothing is promoted")
+    if frozen:
+        margins = dict(FROZEN_MARGINS)
+    else:
+        # the noise term needs the noise-floor seeds, not the single seed-0 row (red-team RT-24)
+        margins = acquisition_margins(base)
 
-    # the alias chain that replay x lr_rewarm sits in: each partner pair gets its own column —
-    # the half runs break the aliasing, so the main estimate is the pair's own effect (PREREG 7)
-    rw_pair = ("lr_rewarm", "replay")
-    rw_chain = next((c for c in alias_chains() if rw_pair in c), [rw_pair])
-
+    sens_halves = ["selection"] + (["report"] if confirmatory else [])
     out: dict[str, Any] = {
         "halves_read": ["selection"] + (["report"] if confirmatory else []),
+        "frozen_decision_values": frozen,
+        "warnings": warnings,
         "rows": {"total": len(rows), **statuses, "duplicates_dropped": n_dup,
-                 "excluded_backend": len(simulated)},
+                 "excluded_backend": len(simulated), "invalid_tokens": len(token_invalid)},
         "excluded_backend_rows": simulated,
         "not_finished": [{"name": r.spec.name, "status": r.status, "reason": r.reason}
-                         for r in rows if r.status != "finished"],
+                         for r in rows if r.status != "finished"]
+                        + [{"name": r.spec.name, "status": "invalid", "reason": p} for r, p in token_invalid],
         "collapse_flags": {r.spec.name: collapse_flags(r) for r in finished if collapse_flags(r)},
+        "collapse_sensitivity": {r.spec.name: collapse_sensitivity(r, sens_halves)
+                                 for r in finished if collapse_flags(r)},
+        "majority_rate": MAJORITY_RATE,
+        "screen_reference": screen_ref.label if screen_ref else None,
         "noise_floor": {"config": base.label if base else None, "n_seeds": len(base.rows) if base else 0,
                         "sigma_noise": SIGMA_NOISE,
                         "sigma_selection_measured": noise_sd(base, "selection") if base else None},
@@ -823,7 +926,7 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         # reference halves make separately estimable; sigma is the frozen phase-0 value
         "effects_retention_selection": fit_effects(
             design_rows, lambda r: r.retention.selection.mean_delta, sigma=SIGMA_NOISE,
-            interactions=[[p] for p in rw_chain]),
+            interactions=main_interactions()),
         # exploratory: one contrast per alias chain of the factorial (PREREG 6.2), factorial runs only
         "alias_chains_retention_selection": fit_effects(
             factorial_rows, lambda r: r.retention.selection.mean_delta, sigma=SIGMA_NOISE,
@@ -835,9 +938,13 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         "effects_log_acquisition": fit_effects(
             design_rows, lambda r: math.log(acquisition_of(r)), sigma=None),
         "acquisition_margins": margins,
+        "acquisition_margins_measured": acquisition_margins(base),
         "promotion": promote(screen_configs, screen_ref, margins=margins),
         "selection_screen": promote_selection(screen_configs, screen_ref, margins),
-        "lr_control": choose_lr_control(screen_configs, screen_ref, margins),
+        # L is judged on the 3-seed lower-LR arms against the full reference arm, as PREREG 0.4
+        # froze it; with `frozen` the frozen LR is the control (red-team RT-24)
+        "lr_control": choose_lr_control(configs, ref, margins,
+                                        frozen_lr=FROZEN_LR_CONTROL if frozen else None),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),
         # per-configuration numbers the figures draw (selection half is decision-legal)
@@ -851,7 +958,8 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     boots = {configs[k].label: paired_bootstrap(configs[k], ref, "report", n_boot, seed, items) for k in promoted}
     adj = holm({name: b["p"] for name, b in boots.items()})
     lr_ctrl = configs.get(out["lr_control"]["chosen"]) if out["lr_control"]["chosen"] else None
-    lr_missing = not out["lr_control"]["arms"]
+    # no lower-LR rows at all, or (frozen) no rows of the frozen L: missing evidence, rule 4 fails
+    lr_missing = not out["lr_control"]["arms"] or (frozen and lr_ctrl is None)
     lr_boots = {configs[k].label: paired_bootstrap(configs[k], lr_ctrl, "report", n_boot, seed, items)
                 for k in promoted} if lr_ctrl is not None else {}
     lr_adj = holm({name: b["p"] for name, b in lr_boots.items()}) if lr_boots else {}
@@ -876,6 +984,13 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     out["pareto_report"] = pareto(configs, "report")
     out["cost_report"] = cost_table(configs, base, "report")
     out["configs_report"] = config_summaries(configs, "report", base, n_boot, seed, items)
+    # a confirmatory test on real rows should resample items; parametric means the item files
+    # were not found (red-team RT-05). The intervals are still valid, only wider.
+    parametric = sorted({name for fam in (boots, lr_boots, sel_boots) for name, b in fam.items()
+                         if b["mode"] == "parametric"})
+    if items is not None and parametric and any(r.backend in REAL_BACKENDS for r in finished):
+        warnings.append("per-item files missing, parametric bootstrap used for: "
+                        + ", ".join(parametric) + " (run `clh fetch-items`)")
     return out
 
 
@@ -928,6 +1043,12 @@ def to_markdown(report: dict[str, Any]) -> str:
     pts = lambda v: "—" if v is None else f"{100 * v:.2f}"
     lines = ["# Grid analysis\n", f"Halves read: {', '.join(report['halves_read'])}\n",
              f"Rows: {report['rows']}\n"]
+    for w in report.get("warnings", []):
+        lines.append(f"> **Warning:** {w}\n")
+    if "frozen_decision_values" in report:
+        src = ("frozen in PREREG 0.4" if report["frozen_decision_values"] else "derived from these rows")
+        m = ", ".join(f"{d} {v:.3f}" for d, v in sorted(report["acquisition_margins"].items())) or "none"
+        lines.append(f"Acquisition margins ({src}): {m}\n")
     nf = report["noise_floor"]
     lines.append(f"Noise floor: `{nf['config']}` over {nf['n_seeds']} seeds, "
                  f"σ_noise = {pts(nf['sigma_noise'])} points (frozen), "
@@ -963,15 +1084,17 @@ def to_markdown(report: dict[str, Any]) -> str:
     if "confirmatory" in report:
         lines.append("\n## Confirmatory tests vs the reference arm (report half)\n")
         lc = report.get("lr_control", {})
-        lines.append(f"Lower-LR control (A13): `{lc.get('chosen_label') or 'none passes the acquisition gate'}`\n")
-        lines.append("| Config | Seeds | Δ | 95% CI | p (Holm) | > 2σ | Acq. gate | Δ vs LR control | Beats LR control | Wins |\n"
-                     "|---|---|---|---|---|---|---|---|---|---|")
+        how = (f"frozen at LR {lc['frozen_lr']:g}; the rule applied to these rows picks "
+               f"`{lc.get('derived_label') or 'none'}`" if lc.get("frozen_lr") else "chosen by the A13 rule")
+        lines.append(f"Lower-LR control (A13): `{lc.get('chosen_label') or 'missing: no rows of it'}` ({how})\n")
+        lines.append("| Config | Seeds | Δ | 95% CI | p (Holm) | Bootstrap | > 2σ | Acq. gate | Δ vs LR control | Beats LR control | Wins |\n"
+                     "|---|---|---|---|---|---|---|---|---|---|---|")
         for d in report["confirmatory"]:
             seeds = f"{d['n_pairs']}" + ("" if d["enough_seeds"] else " (too few)")
             vs = d.get("vs_lr_control")
             lr_cell = f"{pct(vs['delta'])} ({pct(vs['ci'][0])} to {pct(vs['ci'][1])})" if vs else "n/a"
             lines.append(f"| {d['config']} | {seeds} | {pct(d['delta'])} | {pct(d['ci'][0])} to {pct(d['ci'][1])} | "
-                         f"{d['p_holm']:.3f} | {'yes' if d['rule2_large_enough'] else 'no'} | "
+                         f"{d['p_holm']:.3f} | {d['bootstrap_mode']} | {'yes' if d['rule2_large_enough'] else 'no'} | "
                          f"{'pass' if d['rule3_learns_enough'] else 'fail'} | {lr_cell} | "
                          f"{'yes' if d['rule4_beats_lr_control'] else 'no'} | **{'yes' if d['beats_reference'] else 'no'}** |")
         if report.get("confirmatory_selection"):
@@ -982,9 +1105,12 @@ def to_markdown(report: dict[str, Any]) -> str:
                 lines.append(f"| {d['config']} | {seeds} | {pct(d['delta'])} | {pct(d['ci'][0])} to {pct(d['ci'][1])} | "
                              f"{d['p_holm']:.3f} | {'yes' if d['rule2_large_enough'] else 'no'} | "
                              f"**{'yes' if d['beats_reference'] else 'no'}** |")
-        s = report["sanity_reference_vs_no_mitigation"]
-        lines.append(f"\nSanity, reference vs no-mitigation: Δ = {pct(s['delta'])} "
-                     f"({pct(s['lo'])} to {pct(s['hi'])}), {s['mode']} bootstrap over {s['n_pairs']} seeds.")
+        s = report.get("sanity_reference_vs_no_mitigation")
+        if s:
+            lines.append(f"\nSanity, reference vs no-mitigation: Δ = {pct(s['delta'])} "
+                         f"({pct(s['lo'])} to {pct(s['hi'])}), {s['mode']} bootstrap over {s['n_pairs']} seeds.")
+        else:
+            lines.append("\nSanity, reference vs no-mitigation: not computed (an arm has no rows).")
     if report.get("claims"):
         lines.append("\n## Published claims (exploratory, report half)\n")
         lines.append("| # | Claim | Arm vs comparator | Outcome | Δ (95% CI) | Seeds | Verdict | vs lower-LR control |\n"
@@ -1001,6 +1127,16 @@ def to_markdown(report: dict[str, Any]) -> str:
         for k, v in report.get("claims_elsewhere", {}).items():
             lines.append(f"\nClaim {k}: {v}")
     lines.append(f"\nPareto frontier (selection): {', '.join(report['pareto_selection'])}")
+    if report.get("collapse_sensitivity"):
+        rates = ", ".join(f"{t} {v:.2f}" for t, v in report.get("majority_rate", {}).items())
+        lines.append("\n## Answer collapse (PREREG 8: flagged, kept; sensitivity without the collapsed task)\n")
+        lines.append(f"Majority-class rate: {rates}\n")
+        halves = [h for h in ("selection", "report") if h in report["halves_read"]]
+        lines.append("| Run | Collapsed | " + " | ".join(f"{h} primary | {h} without" for h in halves) + " |\n"
+                     "|---|---|" + "---|---|" * len(halves))
+        for name, s in sorted(report["collapse_sensitivity"].items()):
+            cells = " | ".join(f"{pct(s[h]['primary'])} | {pct(s[h]['without_collapsed'])}" for h in halves if h in s)
+            lines.append(f"| {name} | {', '.join(s['collapsed'])} | {cells} |")
     if report["not_finished"]:
         lines.append("\n## Failed and invalid runs\n")
         lines += [f"- `{d['name']}`: {d['status']}, {d['reason']}" for d in report["not_finished"]]

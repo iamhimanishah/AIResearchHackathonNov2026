@@ -475,9 +475,14 @@ Comparators come from phase 0 (no-mitigation, the reference arm, LR 3e-5) or fro
   on 0/1 technique indicators, over the design rows (factorial, halves and replications; not
   selection variants or off-design rows):
   - **Main fit:** the 6 main effects plus replay × lr_rewarm, and its two alias partners in the
-    factorial (lora × distill, freeze × wavg). The halves make all three estimable separately.
+    factorial (lora × distill, freeze × wavg). The halves separate replay × lr_rewarm from the
+    two partners; the partners stay aliased with each other, so they are one column, reported
+    as lora × distill = freeze × wavg (the sum of both). (Corrected wording, red-team RT-11: the
+    text first said all three were separately estimable.)
     A coefficient reads as "what switching this on changes". (Amendment 3: without the partner
-    columns, their effects leaked into replay × lr_rewarm.)
+    columns, their effects leaked into replay × lr_rewarm.) Published-claims arms whose
+    technique set is not in the factorial or the halves (lora alone, freeze alone) are not
+    design rows.
   - **Chain fit:** on the factorial runs only, the 6 main effects plus one column per alias
     chain. Each chain estimate is the sum of the pairs in its chain, and it is reported with
     all of their names.
@@ -569,6 +574,7 @@ This file will change, and the rules for how keep the results honest:
 | 5 | 2026-11-14 17:46 | Sections 5 and 0.2, made explicit: rule 4 fails when the lower-LR rows are absent (it still holds trivially when they are present and fail the gate); a configuration missing an acquisition domain fails rule 3 | The code waived rule 4 when its rows were left out, and passed a configuration with a domain missing | No |
 | 6 | 2026-11-14 19:25 | Section 10: C5 settings fixed (LoRA rank 32, LR 3e-4 constant, batch 32, length 256, 2 epochs, the data manifest and SST-2 eval mix, scoring, arm definitions) | Section 10 named the model and arms but not the training settings; fixed here before any C5 run | No: no C5 rows existed |
 | — | 2026-11-14 | Implementation fixes, with no rule change (PR #9, independent review): screen-time decisions (promotion, selection screen, lower-LR control, margins) use seed-0 rows only; rows are de-duplicated by spec hash; σ_noise is pinned at the frozen 1.15 points; finished rows from non-real backends are excluded unless explicitly allowed | Make the code do what sections 0, 3, 5 and 6.3 already say | No |
+| — | 2026-11-14 | Implementation fixes, with no rule change (red-team review `docs/reviews/red-team-57fa138.md`, RT-01, 05, 08, 09, 10, 11, 24, 25, 26, 27): the acquisition gate fails closed without a seed-0 reference row, and replication planning refuses; relative item paths are read from the repo root and the bootstrap mode is printed; a real-backend row always wins de-duplication over a local copy; finished rows off their gradient-token budget by more than 1% are invalid (section 8); claims arms outside the factorial and halves stay out of the effects fit (section 7); lora × distill is labelled as aliased with freeze × wavg (section 7 wording corrected); the margins (1.05 on both domains) and the rule-4 control L (no-mitigation at 3e-5) are the values frozen in section 0.4, not re-derived from seed 0 (this supersedes the PR #9 row for those two); flagged rows get the without-collapsed-task sensitivity and the 0.58 majority rate (section 8), and configurations report end-of-stream acquisition and the general-web ratio (section 4); the cost chart plots the paired gain against extra forward tokens (Amendment 4) | Make the code do what sections 0.4, 4, 5, 7, 8 and 9 already say | No: run before any `--confirmatory` analysis |
 
 ---
 

@@ -43,8 +43,13 @@ def replication_specs(rows: Iterable[ResultRow], seeds: Sequence[int] = REPLICAT
     specs that are already finished are left out of `specs`, so calling this again after some
     replication runs have landed returns only what is missing, and the ranking does not move.
     """
-    rows, _ = A.dedupe_rows(list(rows))
+    rows, _ = A.dedupe_rows(list(rows))  # real-backend rows win ties (A._row_rank, red-team RT-08)
     report = A.analyze(rows, confirmatory=False, n_boot=200, allow_simulated=allow_simulated)
+    if report["screen_reference"] is None:
+        # without the seed-0 reference arm the gate cannot be applied, and the ranking would
+        # pick configurations that fail it: refuse rather than launch paid runs (red-team RT-01)
+        raise ValueError("no seed-0 reference-arm row (replay+lr_rewarm) in these rows; include "
+                         "results/rows.reference.remeasured.jsonl before planning replication")
     usable = [r for r in rows if r.status == "finished"
               and (allow_simulated or r.backend in A.REAL_BACKENDS)]
     screen = A.group([r for r in usable if r.spec.seed == A.SCREEN_SEED])

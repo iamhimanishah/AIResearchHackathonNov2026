@@ -62,7 +62,7 @@ def test_claims_lists_every_test_with_a_verdict(confirmatory, tmp_path):
     text = (tmp_path / "claims.svg").read_text()
     for r in confirmatory["claims"]:
         assert r["verdict"] in text
-    assert "no-mitigation-lr5e-05" in text  # the lower-LR second marker names its control
+    assert "no-mitigation-lr3e-05" in text  # the second marker names the frozen lower-LR control
 
 
 def test_per_task_marks_collapsed_tasks(confirmatory, tmp_path):

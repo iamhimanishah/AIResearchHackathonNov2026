@@ -1,5 +1,7 @@
 """The replication set follows the pre-registered rule and agrees with the analysis report."""
 
+import pytest
+
 from clharness.analysis import attribution as A
 from clharness.analysis import design as D
 from clharness.analysis.replication import replication_specs
@@ -48,7 +50,9 @@ def test_the_ranking_does_not_move_when_replication_rows_arrive():
 def test_duplicate_rows_do_not_change_it_and_simulated_rows_are_refused_by_default():
     assert replication_specs(SCREEN + SCREEN, allow_simulated=True)["promoted"] == \
         replication_specs(SCREEN, allow_simulated=True)["promoted"]
-    assert replication_specs(SCREEN)["specs"] == []  # fake rows are not real results
+    # fake rows are not real results: with none left there is no reference arm, and it refuses
+    with pytest.raises(ValueError, match="reference"):
+        replication_specs(SCREEN)
 
 
 def test_design_exposes_it():
