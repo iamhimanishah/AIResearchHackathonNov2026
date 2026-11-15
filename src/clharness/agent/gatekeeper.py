@@ -40,6 +40,7 @@ from .contracts import (
     Verdict,
     canonical_json,
     config_hash,
+    retryable,
     spec_hash,
     technique_map,
     technique_names,
@@ -163,8 +164,7 @@ def config_key(spec: RunSpec) -> str:
 def duplicate(specs: list[ProposedSpec], request: GateRequest) -> list[Dropped]:
     """Drop what was already run or launched. An infra or timeout failure may be run again
     until its retries are used up."""
-    settled = {config_key(r.spec) for r in request.rows
-               if r.failure_kind not in ("infra", "timeout")}
+    settled = {config_key(r.spec) for r in request.rows if not retryable(r)}
     exhausted = set(request.retry_exhausted)
     pending = set(request.pending_spec_hashes)
     seen: set[str] = set()
@@ -174,7 +174,7 @@ def duplicate(specs: list[ProposedSpec], request: GateRequest) -> list[Dropped]:
         if key in settled:
             why = "this spec already has a result row"
         elif spec_hash(item.spec) in exhausted:
-            why = "this spec failed on infrastructure on every allowed attempt"
+            why = "this spec failed on infrastructure or timeout on every allowed attempt"
         elif spec_hash(item.spec) in pending:
             why = "this spec is already launched"
         elif key in seen:

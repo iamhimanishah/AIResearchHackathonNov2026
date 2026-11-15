@@ -152,6 +152,19 @@ def test_source_code_replays_code_only_after_code(tmp_path, monkeypatch):
     assert _last(metrics, "replay/share") == 0.25  # over rows seen while active
 
 
+def test_a_later_stream_domain_is_never_replayed_early(tmp_path, monkeypatch):
+    # source: math on a code -> math stream. Math is not old text until it has been trained, and
+    # it is never replayed into itself, so this run must not replay anything.
+    spy, metrics = _train(tmp_path, monkeypatch, "math-src",
+                          [{"name": "replay", "params": {"share": 0.25, "source": "math"}}])
+    assert _last(metrics, "replay/rows") == 0
+    assert spy.batches and all(b["mask"] is None for b in spy.batches)
+    assert _replayed_rows(spy) == []
+    math_chunks = _chunks(_domain_tokens(tmp_path, "math"))
+    during_code = [tuple(r.tolist()) for b in spy.batches if b["domain"] == "code" for r in b["rows"]]
+    assert during_code and not any(r in math_chunks for r in during_code)
+
+
 def test_replay_rows_follow_the_seed(tmp_path, monkeypatch):
     _add_general(tmp_path)
     tech = [{"name": "replay", "params": {"share": 0.25}}]

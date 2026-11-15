@@ -26,7 +26,7 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 
-from .config import ModelPrice
+from .config import AgentConfig, ModelPrice
 from .contracts import Frozen, append_jsonl, read_jsonl, sha256_hex, utc_iso
 
 T = TypeVar("T", bound=BaseModel)
@@ -306,10 +306,17 @@ class BudgetedLLM:
         self._prices = dict(prices)
         self._max_output_tokens = max_output_tokens
         self._now = now
-        self.spent_usd = sum(float(r.get("cost_usd", 0.0)) for r in read_jsonl(log_path).records)
+        self.spent_usd = self._ledger_spent()
+
+    def _ledger_spent(self) -> float:
+        """Spending so far, rebuilt from the ledger. Other guards on the same file (another entry
+        point) count too, so it is re-read before every call (RT-32)."""
+        return sum(float(r.get("cost_usd", 0.0)) for r in read_jsonl(self.log_path).records)
 
     @property
     def remaining_usd(self) -> float:
+        """What is left of the cap on the shared ledger, as of now."""
+        self.spent_usd = self._ledger_spent()
         return max(0.0, self.cap_usd - self.spent_usd)
 
     def _model(self, agent: str) -> str:
@@ -328,6 +335,7 @@ class BudgetedLLM:
         return price.cost(estimate_tokens(system + user), self._max_output_tokens)
 
     def _check_cap(self, agent: str, system: str, user: str) -> None:
+        self.spent_usd = self._ledger_spent()
         estimate = self.estimate_usd(agent, system, user)
         if self.spent_usd + estimate > self.cap_usd:
             raise BudgetExceeded(
@@ -374,3 +382,26 @@ class BudgetedLLM:
         except InvalidOutput as exc:
             repair = user + _REPAIR_NOTE.format(error=str(exc)[:600])
         return self._attempt(agent, system, repair, schema, attempt=2)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def ledger_path(cfg: AgentConfig) -> Path:
+    """The one model-spend ledger, `paths.llm_calls` of the config (RT-32). A relative `root`
+    (the committed config says ".") resolves against the repository, not the working
+    directory, so every entry point finds the same file wherever it is started."""
+    if Path(cfg.root).is_absolute():
+        return cfg.path("llm_calls")
+    path = Path(cfg.paths.llm_calls)
+    return path if path.is_absolute() else (REPO_ROOT / cfg.root / path).resolve()
+
+
+def budgeted_llm(cfg: AgentConfig, agents: tuple[str, ...],
+                 inner: LLMClient | None = None) -> BudgetedLLM:
+    """The guard an entry point builds: the config's models, prices and cap, on the shared
+    ledger. `inner` replaces the OpenAI client (tests pass a `FakeLLM`)."""
+    if inner is None:
+        inner = OpenAIClient(cfg.require_models(agents), max_output_tokens=cfg.llm_max_output_tokens)
+    return BudgetedLLM(inner, cap_usd=cfg.model_budget_usd, log_path=ledger_path(cfg),
+                       prices=cfg.prices, max_output_tokens=cfg.llm_max_output_tokens)

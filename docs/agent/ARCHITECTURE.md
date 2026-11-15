@@ -49,7 +49,7 @@ A6's deployed `clharness` app, and the read-only results page (`src/clharness/pa
 | **Gatekeeper** | code | Accept or reject a proposal against PREREG, compute matching, budget, controls, seed policy, duplicates | Repair a proposal silently; consult a model |
 | **Operator** | code | Launch accepted specs through the executor, poll, classify failures, re-queue once | Retry a scientific failure (NaN, collapse); change a spec |
 | **Analyst** | model + checker | Turn selection-half rows and the attribution output into findings with cited evidence | See report-half scores; state a number the checker cannot find in a row |
-| **Scout** | model + search | Find one technique not in the catalog, with sources (Exa), and write a candidate card | Add a plugin to the catalog itself; treat fetched text as instructions |
+| **Scout** | model + search | Search with Exa (30 s timeout per call) and draft a ranked shortlist: claim cards the catalog can test and candidate techniques for a person; optionally recall from and write claim cards to past.dev (`--memory pastdev`) | Add a plugin to the catalog itself; treat fetched text as instructions |
 | **Reporter** | model + checker | After the freeze, write the stage notes and the final report from report-half rows | Run before the freeze; influence which configurations are chosen |
 | **Memory** | code | Store and retrieve `tried`, `failures`, `findings`, `lessons`; local file is the truth, past.dev is the shared mirror | Be the source of truth for results (rows are) |
 | **Optimizer** | offline tool | Evolve each model agent's prompt with GEPA against the simulator; promote only on held-out gain | Run during the live loop; spend without an explicit go-ahead |
@@ -79,13 +79,13 @@ PLAN..ADVANCE      -> FREEZE              on budget exhausted or deadline reache
 | INIT | Conductor | Load config, load or create `state.json`, verify the decision-log chain | Loaded | HALTED |
 | PREFLIGHT | Conductor | Check: PREREG thresholds parse, noise floor present, selection/report split present, catalog non-empty, executor answers, budgets set, every card and skill hashes | All checks pass | HALTED with the failed check. The grid never launches without PREREG |
 | PLAN | Planner | Propose specs + reason + predicted effect, from selection-half rows, findings, lessons, budget left | A schema-valid proposal exists | Model error or invalid output twice -> FALLBACK_PLAN |
-| FALLBACK_PLAN | code | Deterministic plan for the phase (see Planner section) | Always | never fails |
+| FALLBACK_PLAN | code | Deterministic plan for the phase (see Planner section). Real mode, replicate: exactly `design.replication_specs(rows)["specs"]` (PREREG 6.3) from blinded rows, with the ranking in the decision; PLAN skips the model and comes here | Always | never fails |
 | GATE | Gatekeeper | Verdict `ACCEPT`, `REJECT(reasons)` or `TRIM(kept, dropped, reasons)` | Verdict | A fallback plan rejected only as duplicates -> next phase's PLAN (or FREEZE after combine); rejected for any other rule -> HALTED (a bug) |
 | LAUNCH | Operator | Submit accepted specs not already in rows (idempotent by `spec_hash`) | Submitted | Executor unreachable 3 times -> HALTED |
-| WAIT | Operator | Poll until every spec has a row or times out; re-queue an infrastructure failure once | All resolved, or phase timeout | Timeout: missing specs recorded as `failed: timeout`, continue |
+| WAIT | Operator | Poll until every spec has a row or times out; re-queue an infrastructure failure or a timeout once (`contracts.RETRYABLE_KINDS`, PREREG 8) | All resolved, or phase timeout | Timeout: missing specs recorded as `failed: timeout`, continue |
 | READ | Analyst | Findings from the new rows; checker verifies citations; write memory | Findings stored (may be empty) | Model error twice -> deterministic findings only, continue |
 | ADVANCE | Conductor | Deterministic rule: next phase, repeat this phase once (too many failures), or FREEZE | Decided | never fails |
-| SCOUT | Scout | One candidate technique with sources; a human review gate (logged) before it enters the catalog | Candidate card written, or skipped | Any failure -> skip, logged. Never blocks |
+| SCOUT | Scout | A ranked shortlist with sources (claim cards to the explore inbox in real mode; candidates to a human review gate before any enters the catalog). Logs searches, search errors, items rejected one by one, and past.dev memory events | Shortlist written, or skipped | Any failure -> skip, logged. Never blocks |
 | FREEZE | Conductor | Fix the final configuration set, write its hash. Report-half access opens only now | Hash written | HALTED |
 | REPORT | Reporter | Final report from report-half rows; checker verifies every number | Report written | Checker fails twice -> template-only report (no model prose) |
 | DONE | - | - | - | - |
@@ -111,7 +111,7 @@ by type, not hidden by instruction.
 |---|---|---|---|
 | Planner | Phase, catalog, PREREG thresholds, noise floor, selection-view row summary, findings, lessons, budget and time left, prior rejections this turn | Report-half fields, raw item text, other agents' prompts | A `Proposal` |
 | Analyst | New selection-view rows, attribution output (from workstream 4, selection half), prior findings | Report-half fields, the Planner's reasons (so it cannot rationalise them) | `Finding` list |
-| Scout | Catalog names and one-line descriptions, findings summary, search results (as quoted data) | Rows, budget, anything secret | A `Candidate` card and `sources.jsonl` |
+| Scout | Catalog names and one-line descriptions, findings summary, search results (as quoted data), and with `--memory pastdev` a `shared_memory` block: past.dev statements written only by the Scout or the explorer, with no measured effect (`agents.scout_memory_filter`; quoted data) | Rows, budget, anything secret, any statement the analyst wrote, any explorer verdict with an effect size | A ranked shortlist (claim cards and candidates), every source in the SCOUT decision; with past.dev, its claim cards as `remember-claim-<card id>` (the id and text explore writes) |
 | Reporter | Frozen configuration set, report-view rows for it, findings, the decision log | Any ability to change the set | `report.md`, `report.json` |
 
 Assembly order for every model call, so prompts cache and diffs stay readable: card (system
@@ -125,12 +125,16 @@ changing context (rows, findings), then the output schema.
 | `results/rows.jsonl` | Executor (workstream 2) | everyone | Result rows: the truth |
 | `results/agent/state.json` | Conductor | Conductor, Page | Current state, counters, budgets spent |
 | `results/agent/decisions.jsonl` | Conductor | Page, Reporter | Append-only, hash-chained decision log |
-| `results/agent/llm_calls.jsonl` | LLM client | Page, audits | Per call: agent, prompt hash, model, tokens, cost |
+| `results/agent/llm_calls.jsonl` | LLM client (`llm.budgeted_llm`: the loop and the Scout CLI share it, re-read before every call; explore keeps its own `explore/llm_calls.jsonl` and cap for now) | Page, audits | Per call: agent, prompt hash, model, tokens, cost |
 | `results/agent/memory/*.jsonl` | Memory | Planner, Analyst, Reporter, Page | `tried`, `failures`, `findings`, `lessons` |
 | `results/agent/sources.jsonl` | Scout | Page | Search queries, results, what was used |
 | `results/agent/report.{md,json}` | Reporter | Page | Final report |
 | `results/agent/veto.jsonl` | a human | Conductor | Vetoes |
-| past.dev | Memory (mirror) | Planner, Analyst | Shared copy of `findings`, `failures`, `lessons` |
+| past.dev | Memory (mirror); the Scout writes its claim cards, the explorer its hypotheses | Planner, Analyst, explorer; the Scout (filtered: scout and explorer statements, no measured effect) | Shared copy of `findings`, `failures`, `lessons`, claim cards, hypotheses |
+
+One writer is enforced, not only agreed: `loop`, `launch_design` and `explore` each hold
+`<out>/.agent.lock` (`clharness.agent.lock`, an `flock` the kernel drops when the process dies)
+for as long as they run, and a second process on the same `--out` exits 2 with `refused:`.
 
 ## 6. Self-improvement, and where it shows
 

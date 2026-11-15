@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, model_validator
 
 from .cards import CardStore
 from .catalog_real import LR_RANGE, arm_key, claim_arm_spec, lr_in_range
@@ -286,6 +286,41 @@ class ScoutDraft(BaseModel):
     candidates: list[CandidateDraft] = Field(default_factory=list,
                                              max_length=MAX_SCOUT_ITEMS)  # ranked
     skip_reason: str | None = None  # set when both lists are empty
+    # Items dropped while parsing (invalid, or past the limit), one line each. Private, so the
+    # model-facing JSON schema (and every prompt and card hash) is unchanged.
+    _dropped: list[str] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _one_bad_item_rejects_only_itself(cls, data: Any, handler: Any) -> ScoutDraft:
+        """Validate each item on its own: keep the first `MAX_SCOUT_ITEMS` valid ones per list
+        and record the rest, so one bad or sixth item does not lose a paid-for shortlist
+        (fix plan S3)."""
+        if not isinstance(data, dict):
+            return handler(data)
+        data, dropped = dict(data), []
+        for key, model, label in (("claims", ClaimDraft, "claim"),
+                                  ("candidates", CandidateDraft, "candidate")):
+            items = data.get(key)
+            if not isinstance(items, list):
+                continue
+            kept: list[BaseModel] = []
+            for n, raw in enumerate(items, start=1):
+                try:
+                    item = model.model_validate(raw)
+                except ValidationError as exc:
+                    err = exc.errors()[0]
+                    where = ".".join(str(p) for p in err.get("loc", ())) or "item"
+                    dropped.append(f"{label} {n}: invalid: {where}: {err['msg']}"[:200])
+                    continue
+                if len(kept) >= MAX_SCOUT_ITEMS:
+                    dropped.append(f"{label} {n}: beyond the {MAX_SCOUT_ITEMS}-item limit")
+                    continue
+                kept.append(item)
+            data[key] = kept
+        draft = handler(data)
+        draft._dropped = dropped
+        return draft
 
 
 def _arm(items: Sequence[ArmTechnique]) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -359,6 +394,30 @@ def check_candidate(item: CandidateDraft, catalog_names: Collection[str], return
     ), ""
 
 
+SCOUT_MEMORY_WRITERS = frozenset({"scout", "explorer"})
+RESOLVED_MARK = "measured effect"  # explore's write_hypothesis text once a hypothesis is resolved
+SCOUT_MEMORY_QUERY = ("Which published claims about forgetting in continued pre-training were "
+                      "already found, and which hypotheses were already proposed, tested or "
+                      "refused on the frozen bench?")
+
+
+def scout_memory_filter(recalled: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """The past.dev statements the Scout may read, and how many were withheld.
+
+    The Scout never sees a run result (ARCHITECTURE section 4). A statement is kept only when
+    every writer behind it is the Scout or the explorer (so nothing the analyst wrote, alone or
+    mixed in) and its text carries no measured effect (an explorer verdict reports a
+    selection-half effect size once a hypothesis is resolved).
+    """
+    kept = []
+    for item in recalled:
+        writers = {str(w) for w in item.get("writers", ())}
+        text = str(item.get("content", ""))
+        if writers and writers <= SCOUT_MEMORY_WRITERS and RESOLVED_MARK not in text.lower():
+            kept.append(dict(item))
+    return kept, len(recalled) - len(kept)
+
+
 class LLMScout:
     """Searches the web with Exa, then asks a model for a ranked shortlist: claim cards the loop
     can test with the plugins it has, and candidate techniques that need new plugin code.
@@ -372,13 +431,50 @@ class LLMScout:
     def __init__(self, llm: LLMClient, search: SearchClient, cards: CardStore | None = None,
                  clock: Clock | None = None,
                  queries: Sequence[tuple[str, str]] = SCOUT_QUERIES,
-                 runnable: BenchCheck | None = None) -> None:
+                 runnable: BenchCheck | None = None, memory: Any = None) -> None:
         self.llm = llm
         self.search = search
         self.cards = cards or CardStore()
         self.clock = clock or SystemClock()
         self.queries = tuple(queries)
         self.runnable = runnable
+        self.memory = memory  # a `pastdev.PastMemory`, or None: the second reader (S9)
+
+    def _recall(self) -> tuple[list[dict[str, Any]], int]:
+        """Statements from the shared memory the Scout may read, and how many were withheld.
+        A missing key, a service that is down or a client bug gives nothing; never raises."""
+        if self.memory is None:
+            return [], 0
+        try:
+            recalled = self.memory.recall(SCOUT_MEMORY_QUERY, "scout")
+        except Exception as exc:  # noqa: BLE001 - the shared memory is best effort
+            self.memory.events.append({"op": "recall", "ok": False, "error": type(exc).__name__})
+            return [], 0
+        return scout_memory_filter(recalled)
+
+    @staticmethod
+    def _memory_block(kept: Sequence[Mapping[str, Any]]) -> str:
+        from .pastdev import as_prompt_block
+
+        return as_prompt_block(kept)
+
+    def remember_cards(self, result: ScoutResult, inbox: str | Path) -> int:
+        """Write this result's claim cards to the shared memory as the Scout, from the lines
+        `explore.read_inbox` reads back, with `PastMemory.write_claim_card`: the same id and text
+        explore writes, so one replaces the other and nothing is duplicated. Never raises."""
+        if self.memory is None or not result.claims:
+            return 0
+        try:
+            from .explore import read_inbox
+
+            mine = {c.id for c in result.claims}
+            cards, _ = read_inbox(Path(inbox), [])
+            return sum(bool(self.memory.write_claim_card(card_id, hyp))
+                       for card_id, hyp in cards if card_id in mine)
+        except Exception as exc:  # noqa: BLE001 - the shared memory is best effort
+            self.memory.events.append({"op": "remember", "ok": False,
+                                       "error": type(exc).__name__})
+            return 0
 
     def gather(self) -> tuple[tuple[Source, ...], list[str]]:
         """Run every query; return sources deduplicated by paper (arXiv versions merged) and one
@@ -397,23 +493,26 @@ class LLMScout:
 
     def scout(self, request: ScoutRequest) -> ScoutResult:
         sources, errors = self.gather()
+        searched = {"searches": len(self.queries), "search_errors": tuple(errors)}
         if not sources:
             reason = "search returned nothing" + (f": {errors[0]}" if errors else "")
-            return ScoutResult(skipped_reason=reason)
+            return ScoutResult(skipped_reason=reason, **searched)
+        kept, withheld = self._recall()
+        searched.update(memory_kept=len(kept), memory_dropped=withheld)
         prompt = build_scout_prompt(
             card=self.cards.card("scout"), skills=self.cards.skills_for("scout", "scout"),
             catalog=request.catalog, findings=request.findings, search_results=sources,
-            schema=ScoutDraft,
+            schema=ScoutDraft, shared_memory=self._memory_block(kept),
         )
         try:
             draft, meta = run_prompt(self.llm, prompt, ScoutDraft)
         except LLMError as exc:
-            return ScoutResult(sources=sources, skipped_reason=f"model failed: {exc}")
+            return ScoutResult(sources=sources, skipped_reason=f"model failed: {exc}", **searched)
         now = utc_iso(self.clock.now())
         returned = {s.id for s in sources}
         claims: list[ClaimCard] = []
         candidates: list[Candidate] = []
-        rejected: list[str] = []
+        rejected: list[str] = list(draft._dropped)  # invalid or past the limit, while parsing
         for item in draft.claims:
             card, why = check_claim(item, request, returned, self.runnable, now)
             if card is None:
@@ -439,7 +538,7 @@ class LLMScout:
                 f"every item failed a check: {rejected[0]}"
         return ScoutResult(claims=tuple(claims), candidates=tuple(candidates),
                            rejected=tuple(rejected), sources=marked, skipped_reason=skipped,
-                           meta=meta)
+                           meta=meta, **searched)
 
 
 def write_scout_result(result: ScoutResult, out_dir: str | Path) -> Path:

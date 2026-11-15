@@ -37,6 +37,17 @@ wandb/
 # claude code local settings
 .claude/settings.local.json
 
+# local agent and editor files (each person's own; .claude/ itself is tracked: team rules)
+/.agents/
+/.worktrees/
+skills-lock.json
+CLAUDE.local.md
+# raw image exports before they are picked for the page
+src/clharness/page/static/gemini-raw/
+
+# agent single-writer locks (clharness.agent.lock); not a bare *.lock, which would hide uv.lock
+results/**/.agent.lock
+
 # dry-run artifacts
 results/baselines/*_dryrun.json
 manifests/eval-*-dryrun.json

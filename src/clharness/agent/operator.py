@@ -1,4 +1,5 @@
-"""The Operator: launch accepted specs, wait for their rows, re-queue an infra failure once.
+"""The Operator: launch accepted specs, wait for their rows, re-queue an infrastructure failure
+or a timeout once (`contracts.RETRYABLE_KINDS`, PREREG 8).
 
 It keeps no state of its own. What has run is read from `rows.jsonl` every time, so a process
 killed anywhere can call `launch` and `wait` again with the same specs and nothing runs twice.
@@ -11,7 +12,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
-from .contracts import ResultRow, RunSpec, load_rows, spec_hash
+from .contracts import ResultRow, RunSpec, load_rows, retryable, spec_hash
 from .roles import Clock, Executor, ExecutorUnreachable, LaunchReport, WaitReport
 
 MAX_INFRA_ATTEMPTS = 2  # the first run plus one re-queue
@@ -29,7 +30,7 @@ def _settled(attempts: list[ResultRow]) -> ResultRow | None:
     if not attempts:
         return None
     last = attempts[-1]
-    if last.failure_kind == "infra" and len(attempts) < MAX_INFRA_ATTEMPTS:
+    if retryable(last) and len(attempts) < MAX_INFRA_ATTEMPTS:
         return None
     return last
 
@@ -72,13 +73,15 @@ class Operator:
                 row = _settled(tries)
                 if row is not None:
                     final[key] = row
-                elif tries and key not in requeued:  # one infra failure so far: run it again
-                    self.executor.submit([spec])  # no-op if it is already in flight
+                elif tries and key not in requeued:  # one retryable failure so far: run again
+                    try:
+                        self.executor.submit([spec])  # no-op if it is already in flight
+                    except ExecutorUnreachable:
+                        continue  # not requeued yet: try again on the next tick
                     requeued.add(key)
             missing = [k for k in wanted if k not in final]
             if not missing or self.clock.now() >= deadline:
-                retried = {k for k in wanted if any(
-                    r.failure_kind in ("infra", "timeout") for r in attempts.get(k, []))}
+                retried = {k for k in wanted if any(retryable(r) for r in attempts.get(k, []))}
                 return WaitReport(  # read from the rows file, so a resumed wait reports the same
                     rows=tuple(final.values()), requeued=tuple(sorted(requeued | retried)),
                     timed_out=tuple(missing),

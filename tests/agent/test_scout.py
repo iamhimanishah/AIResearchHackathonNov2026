@@ -94,7 +94,7 @@ def test_exa_search_sends_the_recommended_request_and_maps_results():
     fake = _FakeExa(SimpleNamespace(results=[item, SimpleNamespace(url=None)]))
     sources = ExaSearch(client=fake, clock=FakeClock()).search("query", "goal")
     assert fake.calls == [("query", {"objective": "goal", "type": "auto",
-                                     "contents": {"highlights": True}})]
+                                     "contents": {"highlights": True}, "timeout": 30.0})]
     assert len(sources) == 1
     s = sources[0]
     assert (s.url, s.title, s.published, s.snippet) == (item.url, "Paper", "2026-01-02",

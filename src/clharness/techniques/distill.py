@@ -148,6 +148,11 @@ class Distill(BaseHook):
         if self.p.rows == "replay" and "replay" not in {t.name for t in getattr(ctx.cfg, "techniques", ())}:
             raise ValueError("distill: rows='replay' needs the replay technique in the same run")
         teacher = copy.deepcopy(ctx.model)
+        # With train.compile on, the loop replaces the model's `forward` with a compiled wrapper
+        # stored on the instance. deepcopy copies that attribute as it is, still bound to the
+        # student, so the "teacher" would run the student's weights and the KL would be 0.
+        # Dropping it makes the copy use its class's own forward, on its own weights.
+        teacher.__dict__.pop("forward", None)
         teacher.eval()
         for p in teacher.parameters():
             p.requires_grad_(False)

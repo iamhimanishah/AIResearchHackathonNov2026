@@ -28,6 +28,7 @@ A process killed between any two of these redoes the step on restart and ends in
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Collection, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -44,6 +45,8 @@ from .contracts import (
     DecisionLog,
     Phase,
     Prereg,
+    Proposal,
+    ProposedSpec,
     ResultRow,
     RunSpec,
     StreamDomain,
@@ -61,6 +64,7 @@ from .contracts import (
     mint_freeze_token,
     passes_acquisition_floor,
     read_jsonl,
+    retryable,
     selection_views,
     spec_hash,
     technique_names,
@@ -94,6 +98,8 @@ from .states import (
     st,
 )
 
+# (rows path) -> (the replicate proposal, data to log with it); see prereg_plan.replicate_plan
+ReplicatePlan = Callable[[Path], tuple[Sequence[ProposedSpec], dict[str, Any]]]
 Fault = Callable[[str, str], None]  # (state id, point) -> may raise; tests use it to kill the loop
 Outcome = tuple[State, dict[str, Any]]
 
@@ -110,6 +116,7 @@ class Conductor:
         design_arms: dict[str, int] | None = None, explore_inbox: str | Path | None = None,
         lr_range: tuple[float, float] | None = LR_RANGE, launches: bool = True,
         exploratory_configs: Collection[str] = (),
+        replicate_plan: ReplicatePlan | None = None,
     ) -> None:
         self.out_dir = Path(out_dir)
         self.rows_path = Path(rows_path)
@@ -134,6 +141,9 @@ class Conductor:
         # Config hashes of arms that are exploratory by design (real mode: the published-claims
         # arms outside the screen). FREEZE never picks one, whatever its name or notes say.
         self.exploratory_configs = frozenset(exploratory_configs)
+        # Real mode: the replicate phase proposes the pre-registered replication set
+        # (`prereg_plan.replicate_plan`, PREREG 6.3) instead of asking a planner.
+        self.replicate_plan = replicate_plan
         self.max_gate_rejections = max_gate_rejections
         self.bench = bench
         self.prereg, self.catalog, self.stream = prereg, catalog, tuple(stream)
@@ -229,9 +239,10 @@ class Conductor:
         return self.executor.estimate_cost(spec)
 
     def _spent(self, rows: Sequence[ResultRow]) -> float:
-        """Money the rows cost. A finished or failed run with no price is charged the estimate,
-        so a bench that forgets `est_usd` cannot make the budget look unspent."""
-        return sum(r.cost.usd if r.cost.usd > 0 or r.failure_kind == "infra"
+        """Money the rows cost. Any row without a positive, finite price is charged the
+        estimate, infra failures included (RT-16): a lost call's wall time is unknown, and a
+        bench that forgets `est_usd` must not make the budget look unspent."""
+        return sum(r.cost.usd if math.isfinite(r.cost.usd) and r.cost.usd > 0
                    else self._estimate(r.spec) for r in rows)
 
     def _model_usd_left(self) -> float:
@@ -243,8 +254,7 @@ class Conductor:
         for row in self._rows():
             attempts[row.spec_hash] = attempts.get(row.spec_hash, 0) + 1
         return tuple(sorted(r.spec_hash for r in self._latest()
-                            if r.failure_kind in ("infra", "timeout")
-                            and attempts[r.spec_hash] >= MAX_INFRA_ATTEMPTS))
+                            if retryable(r) and attempts[r.spec_hash] >= MAX_INFRA_ATTEMPTS))
 
     def _explore_used(self, rows: Sequence[ResultRow]) -> float:
         """Spent on exploratory rows plus committed to exploratory specs still in flight."""
@@ -270,16 +280,23 @@ class Conductor:
     def _budget(self) -> BudgetView:
         rows = self._rows()
         have_row = {r.spec_hash for r in rows}
-        spent = self._spent(rows)
-        committed = sum(
-            cost for key, cost in self.s.extra.get("pending_usd", {}).items()
-            if key not in have_row
-        )
+        baseline = build_spec("baseline", 0, self.stream)
+        if self.launches:
+            spent = self._spent(rows)
+            committed = sum(
+                cost for key, cost in self.s.extra.get("pending_usd", {}).items()
+                if key not in have_row
+            )
+        else:
+            # Read-only: the rows were paid for by whoever launched them (launch_design), not by
+            # this loop, so they don't count against its cap. What counts is what it proposes,
+            # priced flat per run as launch_design prices them.
+            spent = 0.0
+            committed = len(self._proposed()) * self._estimate(baseline)
         # the explore share is held back from every other phase until claim tests spend it
         reserve = self.compute_cap_usd * self.reserve_fraction + self._explore_left(rows)
         now = self.clock.now()
         minutes = (self.deadline - now).total_seconds() / 60 if self.deadline else None
-        baseline = build_spec("baseline", 0, self.stream)
         return BudgetView(
             compute_usd_left=self.compute_cap_usd - reserve - spent - committed,
             compute_usd_reserve=reserve, model_usd_left=self._model_usd_left(),
@@ -355,6 +372,11 @@ class Conductor:
                 for c in self._claim_cards()}
 
     def _plan(self, phase: Phase) -> Outcome:
+        if phase is Phase.REPLICATE and self.replicate_plan is not None:
+            return st(Step.FALLBACK_PLAN, phase), {
+                "choice": "use the pre-registered replication set",
+                "reason": "PREREG 6.3: the agent applies the replication rule mechanically",
+            }
         if getattr(self.planner, "llm", None) is None:
             return st(Step.FALLBACK_PLAN, phase), {
                 "choice": "use the deterministic plan",
@@ -382,6 +404,8 @@ class Conductor:
         }
 
     def _fallback_plan(self, phase: Phase) -> Outcome:
+        if phase is Phase.REPLICATE and self.replicate_plan is not None:
+            return self._prereg_replicate(phase)
         request = self._plan_request(phase)
         proposal = self.planner.fallback(request)
         self.s.proposal, self.s.verdict = proposal, None
@@ -390,6 +414,25 @@ class Conductor:
             "choice": [p.spec.name for p in proposal.specs],
             "reason": proposal.rationale,
             "input_row_hashes": [r.row_hash for r in request.rows],
+        }
+
+    def _prereg_replicate(self, phase: Phase) -> Outcome:
+        """Propose exactly the pre-registered replication set and log the ranking it came from.
+        The rows are read blinded: the report half is never seen (`prereg_plan.blind`)."""
+        try:
+            specs, data = self.replicate_plan(self.rows_path)
+        except ValueError as exc:  # PlanInputError: the rows cannot support the plan
+            return HALTED, {"choice": "halt", "accepted": False,
+                            "reason": f"replicate plan refused: {exc}"[:600]}
+        proposal = Proposal(phase=phase, specs=tuple(specs), rationale=(
+            f"{data.get('rule', 'PREREG 6.3')} (from {data.get('source', 'the design')})"))
+        self.s.proposal, self.s.verdict = proposal, None
+        self.s.extra = {**self.s.extra, "proposal_source": "prereg"}
+        return st(Step.GATE, phase), {
+            "choice": [p.spec.name for p in proposal.specs],
+            "reason": proposal.rationale,
+            "input_row_hashes": [r.row_hash for r in self._latest()],
+            "data": {**data, "proposed_spec_hashes": list(proposal.spec_hashes())},
         }
 
     def _gate(self, phase: Phase) -> Outcome:
@@ -436,9 +479,13 @@ class Conductor:
             self.s.gate_rejections = 0
             self.s.extra = {**self.s.extra, "rejections": []}
             return st(Step.FALLBACK_PLAN, phase), decision
-        if all(d.rule == "duplicate" for d in verdict.dropped):
+        promotes_nothing = (self.s.extra.get("proposal_source") == "prereg"
+                            and not proposal.specs)
+        if promotes_nothing or all(d.rule == "duplicate" for d in verdict.dropped):
             following = next_phase(phase)
-            decision["reason"] = "nothing new to run in this phase: every spec already has a row"
+            decision["reason"] = (
+                "the pre-registered rule promotes nothing to replicate" if promotes_nothing
+                else "nothing new to run in this phase: every spec already has a row")
             if phase is Phase.REPLICATE and self.scout is not None and not self.s.scout_done:
                 return SCOUT, decision
             return (st(Step.PLAN, following) if following else FREEZE), decision
@@ -620,6 +667,11 @@ class Conductor:
             result = ScoutResult(skipped_reason=f"scout raised {type(exc).__name__}: {exc}")
         path = write_scout_result(result, self.candidates_dir)
         self._write_claim_cards(result)
+        remember = getattr(self.scout, "remember_cards", None)
+        if self.explore_inbox is not None and remember is not None:
+            remember(result, self.explore_inbox)  # the Scout's own write to past.dev (S9)
+        memory = getattr(self.scout, "memory", None)
+        memory_events = [dict(e) for e in getattr(memory, "events", [])]
         sources = [{"id": s.id, "url": s.url, "title": s.title[:200], "published": s.published,
                     "query": s.query[:200], "used": s.used} for s in result.sources]
         planned = [c for c in result.claims if c.plannable]
@@ -644,7 +696,12 @@ class Conductor:
                      "claim_cards": [c.model_dump(mode="json") for c in result.claims],
                      "candidates": [{"name": c.name, "description": c.description}
                                     for c in result.candidates],
-                     "rejected": list(result.rejected)},
+                     "rejected": list(result.rejected),
+                     "searches": result.searches,
+                     "search_errors": list(result.search_errors),
+                     "memory_kept": result.memory_kept,
+                     "memory_dropped": result.memory_dropped,
+                     "memory_events": memory_events},
         }
 
     def _write_claim_cards(self, result: ScoutResult) -> None:

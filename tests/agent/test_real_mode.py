@@ -77,7 +77,12 @@ def test_real_mode_reads_real_rows_logs_proposals_and_launches_nothing(tmp_path,
     assert not (out / "report.json").exists()  # the report half of real rows stays closed
 
     states = _states(out)
-    assert states.index("replicate/advance") < states.index("scout") < states.index("combine/plan")
+    # these rows have no screen, so PREREG 6.3 promotes nothing: replicate goes from its gate
+    # straight to the scout (it used to replicate the controls, which phase 0 already ran)
+    assert states.index("replicate/gate") < states.index("scout") < states.index("combine/plan")
+    [gate] = [d for d in c.DecisionLog(out / "decisions.jsonl").entries()
+              if d.state == "replicate/gate"]
+    assert gate.reason == "the pre-registered rule promotes nothing to replicate"
     launches = [d for d in c.DecisionLog(out / "decisions.jsonl").entries()
                 if d.state.endswith("/launch")]
     assert launches and all(d.data["choice"]["submitted"] == 0 for d in launches)
@@ -123,9 +128,11 @@ def test_real_mode_refuses_a_rows_file_of_exploratory_runs(tmp_path, capsys):
 
 
 def test_real_mode_cli_needs_thresholds_and_has_no_launch_flag(tmp_path, capsys):
+    # --prereg defaults to configs/agent/thresholds.yaml; a thresholds file that is not there
+    # still refuses (test_prereg_plan checks the default itself)
     assert main(["--executor", "real", "--out", str(tmp_path / "out"),
-                 "--compute-cap-usd", "80"]) == 2
-    assert "needs --prereg" in capsys.readouterr().out
+                 "--prereg", str(tmp_path / "missing.yaml"), "--compute-cap-usd", "80"]) == 2
+    assert "PREREG file not found" in capsys.readouterr().out
     for gone in (["--executor", "modal"], ["--executor", "real", "--go"], ["--executor", "real"]):
         with pytest.raises(SystemExit):
             main([*gone, "--out", str(tmp_path / "out")])

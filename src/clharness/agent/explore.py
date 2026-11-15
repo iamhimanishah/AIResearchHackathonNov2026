@@ -251,7 +251,7 @@ answer. It is one Python class, used as a training hook.
 
 Define only the methods you need. Its rules, enforced by a program: import only torch, math and
 BaseHook; no files, network, processes, `while`, `try`, lambdas or names containing two
-underscores; no `.save`, `.load`, `.cuda`; one class and nothing else at the top level; it must
+underscores; no decorators except `@torch.no_grad()` (or use `with torch.no_grad():`); no `.save`, `.load`, `.cuda`; one class and nothing else at the top level; it must
 spend the same gradient tokens and optimizer steps as plain training; under 6000 characters.
 Before any full run it must pass a static check, a tiny-model training check and a four-step
 run on a real GPU; if it fails, the hypothesis is refused and you are told why next time.

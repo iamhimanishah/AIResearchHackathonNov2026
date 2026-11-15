@@ -386,3 +386,12 @@ def test_one_agent_written_technique_per_cycle_and_the_lora_limit(tmp_path, have
     tame = ex.ProposedHypothesis.model_validate(_hyp(
         techniques=[{"name": "lora", "params": {"rank": 256, "lr": 1.5e-4}}], lr=None, control="no-mitigation"))
     assert ex.gate_one(tame, "h9", arms, set())[0]
+
+
+def test_no_grad_is_the_one_decorator_allowed():
+    from clharness.techniques.agent_code import validate_source
+
+    head = "import torch\nfrom clharness.train.hooks import BaseHook\nclass A(BaseHook):\n"
+    assert validate_source(head + "    @torch.no_grad()\n    def on_step_end(self, ctx, stats):\n        return None\n") == []
+    for decorator in ("@staticmethod", "@torch.jit.script", "@torch.no_grad", "@torch.enable_grad()"):
+        assert validate_source(head + f"    {decorator}\n    def on_step_end(self, ctx, stats):\n        return None\n")

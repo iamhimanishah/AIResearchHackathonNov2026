@@ -202,6 +202,14 @@ FailureKind = Literal["infra", "science", "timeout"]
 FAILURE_PREFIXES: dict[str, FailureKind] = {
     "infrastructure:": "infra", "infra:": "infra", "timeout:": "timeout",
 }
+# Failure kinds that are run again (PREREG 8: re-queued once). The one list: the Operator, the
+# Gatekeeper, the Conductor, the executors and the simulator all read it (RT-30).
+RETRYABLE_KINDS: frozenset[FailureKind] = frozenset({"infra", "timeout"})
+
+
+def retryable(row: Any) -> bool:
+    """True when the row is a failure that may be run again (infrastructure or timeout)."""
+    return row.failure_kind in RETRYABLE_KINDS
 
 
 def failure_kind_of(status: str, reason: str | None) -> FailureKind | None:

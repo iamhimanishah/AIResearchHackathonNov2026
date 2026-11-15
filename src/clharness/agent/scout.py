@@ -19,7 +19,7 @@ from .agents import LLMScout, write_scout_result
 from .catalog_real import bench_problems, design_claim_arms, real_catalog
 from .catalog_real import stream as bench_stream
 from .config import load_agent_config
-from .llm import BudgetedLLM, OpenAIClient
+from .llm import budgeted_llm
 from .roles import ScoutRequest, ScoutResult
 from .search import ExaSearch
 
@@ -40,6 +40,7 @@ def summary(result: ScoutResult) -> str:
     for cand in result.candidates:
         lines.append(f"candidate: {cand.name}\n  {cand.description}")
     lines += [f"rejected: {why}" for why in result.rejected]
+    lines += [f"search error: {err}" for err in result.search_errors]
     if not result.claims and not result.candidates:
         lines.append(f"skipped: {result.skipped_reason}")
     used = [s.url for s in result.sources if s.used]
@@ -55,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="agent config YAML with a model and price for the scout")
     parser.add_argument("--search-only", action="store_true",
                         help="run the Exa queries and print the sources; no model call")
+    parser.add_argument("--memory", choices=["none", "pastdev"], default="none",
+                        help="pastdev: recall from the shared memory before drafting "
+                             "(statements by the Scout and the explorer only; needs PAST_API_KEY)")
     args = parser.parse_args(argv)
 
     search = ExaSearch()
@@ -70,13 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.config is None:
         parser.error("a model call needs --config (or use --search-only)")
     cfg = load_agent_config(args.config)
-    models = cfg.require_models(("scout",))
-    llm = BudgetedLLM(
-        OpenAIClient(models, max_output_tokens=cfg.llm_max_output_tokens),
-        cap_usd=cfg.model_budget_usd, log_path=args.out / "llm_calls.jsonl",
-        prices=cfg.prices, max_output_tokens=cfg.llm_max_output_tokens,
-    )
-    result = LLMScout(llm, search, runnable=bench_problems).scout(real_request())
+    llm = budgeted_llm(cfg, ("scout",))  # the loop's model ledger, shared (RT-32)
+    print(f"model ledger {llm.log_path}: spent ${llm.cap_usd - llm.remaining_usd:.2f} "
+          f"of ${llm.cap_usd:.2f}")
+    from .loop import shared_memory
+
+    result = LLMScout(llm, search, runnable=bench_problems,
+                      memory=shared_memory(args.memory)).scout(real_request())
     path = write_scout_result(result, args.out)
     print(summary(result))
     print(f"written: {path}")

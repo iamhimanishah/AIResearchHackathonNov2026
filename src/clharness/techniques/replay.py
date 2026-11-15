@@ -7,8 +7,10 @@ gets (1 - share) of them.
 
 Parameters
   share        fraction of training sequences that are replayed (0 < share < 1)
-  source       data-manifest domain whose `stream` split is replayed. Replay is off while the
-               run trains on the source itself, so `source: code` means "replay code while
+  source       data-manifest domain whose `stream` split is replayed. A source outside the
+               run's stream (such as `general`) is replayed from the first domain on. A source
+               that is one of the stream's domains is replayed only after the run has trained
+               on it, and never into itself, so `source: code` means "replay code while
                training the domains after it".
   buffer_seqs  None: walk the source stream, fresh sequences each time (new permutation when it
                runs out). N: a fixed buffer of N sequences, sampled with replacement.
@@ -77,6 +79,7 @@ class Replay(BaseHook):
     def __init__(self, params: Params):
         self.p = params
         self.active = False
+        self._trained: set[str] = set()
         self.rows_seen = 0
         self.rows_replayed = 0
         self.source_epochs = 0
@@ -109,6 +112,7 @@ class Replay(BaseHook):
             self.buffer = self.order[: min(self.p.buffer_seqs, self.stream.n)]
             self.rng = np.random.default_rng(self.seed)
         self.active = False
+        self._trained: set[str] = set()  # stream domains this run has finished
         self.rows_seen = self.rows_replayed = 0
         self.source_epochs = 1  # passes over the source stream started
         self._reset_selection()
@@ -145,7 +149,14 @@ class Replay(BaseHook):
 
     # -- mixing -----------------------------------------------------------------------------
     def on_domain_start(self, ctx: RunContext, domain: str):
-        self.active = domain != self.p.source  # never replay a domain into itself
+        # Never replay a domain into itself. A source that is part of this run's stream is old
+        # text only once the run has trained on it: replaying a later domain early would feed
+        # the model that domain before its turn.
+        in_stream = self.p.source in {d.name for d in ctx.cfg.data.domains}
+        self.active = domain != self.p.source and (not in_stream or self.p.source in self._trained)
+
+    def on_domain_end(self, ctx: RunContext, domain: str):
+        self._trained.add(domain)
 
     def select_batch(self, ctx: RunContext, batch: torch.Tensor):
         if not self.active:

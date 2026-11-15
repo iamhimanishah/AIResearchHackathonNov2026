@@ -1,7 +1,7 @@
 """Entry point for the agent loop.
 
     python -m clharness.agent.loop --executor sim --out results/agent-sim
-    python -m clharness.agent.loop --executor real --prereg thresholds.yaml \
+    python -m clharness.agent.loop --executor real \
         --rows results/agent/rows.jsonl --out results/agent/loop
 
 `--executor sim` runs the whole loop against the simulator (fake result rows with planted
@@ -13,6 +13,9 @@ human review), every source in the decision log (needs `--llm openai`).
 pre-registered grid filled (`launch_design`), plans and gates against the real plugin catalog
 (`catalog_real.real_catalog`, with the bench check in the Gatekeeper), runs the Scout on that
 catalog, and writes every accepted spec to `<out>/proposed_specs.jsonl` as a proposal. Its
+replicate phase does not plan: it proposes the pre-registered replication set
+(`design.replication_specs`, PREREG 6.3) and logs the ranking, read from blinded rows
+(`prereg_plan`). Thresholds come from `--prereg` (default `configs/agent/thresholds.yaml`). Its
 executor refuses `submit`, so it needs no Modal deploy and cannot spend GPU money: every launch
 goes through `launch_design`. Claim cards go to `--explore-inbox` (default
 `results/agent/explore/literature.jsonl`, the file `explore.read_inbox` reads) for the explore
@@ -24,7 +27,9 @@ state.json. It refuses a rows file of exploratory runs (`rows.explore.jsonl`).
 from __future__ import annotations
 
 import argparse
+import functools
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -37,18 +42,24 @@ from .catalog_real import (
 )
 from .catalog_real import stream as bench_stream
 from .conductor import Conductor
-from .config import load_agent_config
+from .config import AgentConfig, load_agent_config
 from .contracts import Prereg, PreregError, load_prereg, read_jsonl
 from .explore import INBOX_NAME
 from .gatekeeper import Gatekeeper
-from .llm import BudgetedLLM, LLMClient, OpenAIClient
+from .llm import LLMClient, budgeted_llm
+from .lock import AlreadyRunning, single_writer
 from .operator import Operator
+from .pastdev import PastMemory
 from .roles import Clock, FakeClock, Scout, StubAnalyst, StubPlanner, SystemClock
 from .search import ExaSearch
 from .sim import SimExecutor, World, default_catalog, default_prereg, default_stream
 from .states import REPORT
 
 SIM_CAP_USD = 700.0  # the simulator's default cap: fake money, DIRECTION's team-wide number
+REPO_ROOT = Path(__file__).resolve().parents[3]
+# Real mode's thresholds when --prereg is not given: transcribed from analysis/PREREG.md
+# (DRAFT until himani confirms it; see the file's header).
+DEFAULT_PREREG = REPO_ROOT / "configs" / "agent" / "thresholds.yaml"
 
 
 def build_sim(out: Path, seed: int, compute_cap_usd: float, concurrency: int = 8,
@@ -76,18 +87,24 @@ def build_real(out: Path, prereg: Prereg, rows_path: Path, *, compute_cap_usd: f
                gpu: str = "H100", clock: Clock | None = None, llm: LLMClient | None = None,
                scout: Scout | None = None, memory: bool = True,
                deadline: datetime | None = None, fault=None,
-               explore_inbox: Path | None = None, reserve_fraction: float = 0.3) -> Conductor:
+               explore_inbox: Path | None = None, reserve_fraction: float = 0.3,
+               context_rows: Sequence[str | Path] | None = None) -> Conductor:
     """The loop on real rows, read-only: a `ReadOnlyExecutor` (refuses every launch), the real
     catalog, the bench check in the gate, the frozen stream. Accepted specs become proposals;
     claim cards go to the explore inbox (`explore_inbox`, default `<out>/explore/literature.jsonl`;
     the file `explore.read_inbox` reads) and this loop tests none of them."""
     from .launch_design import MINUTES_PER_RUN
+    from .prereg_plan import PREREG_CONTEXT_ROWS, replicate_plan
     from .readonly import ReadOnlyExecutor
 
     rows_path = Path(rows_path)
     if "explore" in rows_path.name:
         raise ValueError(f"{rows_path.name} holds exploratory runs: the loop reads the "
                          "pre-registered rows only")
+    inbox = Path(explore_inbox or Path(out) / "explore" / INBOX_NAME)
+    if Path(out).resolve().is_relative_to(inbox.parent.resolve()):
+        raise ValueError(f"--out {out} is inside the explore directory {inbox.parent}: the loop "
+                         "writes only the claim-card inbox there")
     clock = clock or SystemClock()
     catalog = real_catalog()
     executor = ReadOnlyExecutor(rows_path, minutes_per_run=MINUTES_PER_RUN, gpu=gpu,
@@ -104,7 +121,10 @@ def build_real(out: Path, prereg: Prereg, rows_path: Path, *, compute_cap_usd: f
         exploratory_configs=design_exploratory_configs(),
         minutes_per_run=MINUTES_PER_RUN, fault=fault, scout=scout,
         design_arms=design_claim_arms(),
-        explore_inbox=explore_inbox or out / "explore" / INBOX_NAME, launches=False,
+        explore_inbox=inbox, launches=False,
+        replicate_plan=functools.partial(
+            replicate_plan,
+            context=tuple(PREREG_CONTEXT_ROWS if context_rows is None else context_rows)),
     )
 
 
@@ -112,12 +132,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--executor", choices=["sim", "real"], required=True)
     parser.add_argument("--out", type=Path, required=True, help="directory for rows, state, log")
+    parser.add_argument("--context-rows", type=Path, nargs="*", default=None,
+                        help="real: the other pre-registered row files read with --rows (the "
+                             "phase-0 controls and the reference arm; default the Makefile's "
+                             "REPORTED_ROWS list). Never written")
     parser.add_argument("--rows", type=Path, default=None,
                         help="real: the rows file to read, never written "
                              "(default results/agent/rows.jsonl)")
-    parser.add_argument("--prereg", type=Path, default=None,
+    parser.add_argument("--prereg", type=Path, default=DEFAULT_PREREG,
                         help="real: PREREG thresholds (a .yaml, or a .md with an "
-                             "`agent_thresholds` block)")
+                             "`agent_thresholds` block). Default: configs/agent/thresholds.yaml")
     parser.add_argument("--open-report", action="store_true",
                         help="real: also run REPORT, which opens the report half of the frozen "
                              "set. Off by default: the loop stops after FREEZE")
@@ -139,11 +163,14 @@ def main(argv: list[str] | None = None) -> int:
                              "not in the catalog (needs --llm openai and EXA_API_KEY)")
     parser.add_argument("--config", type=Path, default=None,
                         help="agent config YAML (models, prices, model budget) for --llm openai")
+    parser.add_argument("--memory", choices=["none", "pastdev"], default="none",
+                        help="pastdev: the Scout recalls from the shared memory before it drafts "
+                             "(statements by the Scout and the explorer, never a result) and "
+                             "writes its claim cards there (needs PAST_API_KEY)")
     args = parser.parse_args(argv)
 
     if args.scout == "exa" and args.llm != "openai":
         parser.error("--scout exa needs --llm openai (the Scout is a model step)")
-    llm = None
     if args.llm == "openai" and args.config is None:
         parser.error("--llm openai needs --config")
     cfg = load_agent_config(args.config) if args.config else None
@@ -157,39 +184,56 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--executor real needs --compute-cap-usd or a --config with "
                          "compute_budget_usd")
     args.reserve_fraction = cfg.compute_reserve_fraction if cfg is not None else 0.3
+    try:  # one writer per --out (RT-15): before any state, log or ledger is touched
+        with single_writer(args.out):
+            return _main_locked(args, cfg)
+    except AlreadyRunning as exc:
+        print(f"refused: {exc}")
+        return 2
+
+
+def _main_locked(args: argparse.Namespace, cfg: AgentConfig | None) -> int:
+    llm = None
     if args.llm == "openai":
         agents = ("planner", "analyst") + (("scout",) if args.scout == "exa" else ())
-        models = cfg.require_models(agents)
-        llm = BudgetedLLM(
-            OpenAIClient(models, max_output_tokens=cfg.llm_max_output_tokens),
-            cap_usd=cfg.model_budget_usd, log_path=args.out / "llm_calls.jsonl",
-            prices=cfg.prices, max_output_tokens=cfg.llm_max_output_tokens,
-        )
+        llm = budgeted_llm(cfg, agents)  # the one shared model ledger (RT-32)
+        print(f"model ledger {llm.log_path}: spent ${llm.cap_usd - llm.remaining_usd:.2f} "
+              f"of ${llm.cap_usd:.2f}")
+    args.memory_client = shared_memory(args.memory)
     if args.executor == "real":
         return _main_real(args, llm)
-    scout = LLMScout(llm, ExaSearch()) if args.scout == "exa" and llm else None
+    scout = (LLMScout(llm, ExaSearch(), memory=args.memory_client)
+             if args.scout == "exa" and llm else None)
     conductor = build_sim(args.out, args.seed, args.compute_cap_usd, llm=llm, scout=scout)
     return _run_and_print(conductor, args)
 
 
+def shared_memory(choice: str) -> PastMemory | None:
+    """`--memory pastdev`: the shared memory client. Without PAST_API_KEY it says so and runs
+    with an empty memory (every call is a no-op); it never stops the loop."""
+    if choice != "pastdev":
+        return None
+    memory = PastMemory()
+    if not memory.configured:
+        print("--memory pastdev: PAST_API_KEY is not set; the shared memory is empty this run")
+    return memory
+
+
 def _main_real(args: argparse.Namespace, llm: LLMClient | None) -> int:
-    if args.prereg is None:
-        print("--executor real needs --prereg (analysis/PREREG.md has no machine-readable "
-              "`agent_thresholds` block yet)")
-        return 2
     try:
         prereg = load_prereg(args.prereg)
     except PreregError as exc:
         print(f"PREREG: {exc}")
         return 2
     rows = args.rows or Path("results/agent/rows.jsonl")
-    scout = (LLMScout(llm, ExaSearch(), runnable=bench_problems)
+    scout = (LLMScout(llm, ExaSearch(), runnable=bench_problems, memory=args.memory_client)
              if args.scout == "exa" and llm else None)
     try:
         conductor = build_real(args.out, prereg, rows, compute_cap_usd=args.compute_cap_usd,
                                gpu=args.gpu, llm=llm, scout=scout,
                                explore_inbox=args.explore_inbox,
-                               reserve_fraction=args.reserve_fraction)
+                               reserve_fraction=args.reserve_fraction,
+                               context_rows=args.context_rows)
     except ValueError as exc:
         print(f"refused: {exc}")
         return 2
