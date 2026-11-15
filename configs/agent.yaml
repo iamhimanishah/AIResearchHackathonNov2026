@@ -1,0 +1,30 @@
+# Agent configuration for runs on real data (the overnight explore loop, the Scout, the
+# Conductor's model agents). Loaded by clharness.agent.config.load_agent_config.
+#
+# Model: gpt-6.1-sol, which OpenAI describes as the choice "to balance intelligence and cost".
+# Prices are OpenAI's standard API prices per million tokens, short context, read from
+# https://developers.openai.com/api/docs/pricing on 2026-11-14. The model budget below is
+# enforced from these numbers before every call, so update them if the price changes.
+#
+# The explore loop has no model slot of its own yet; it uses the planner's.
+#
+# The `openai` package is not a repo dependency. Supply it for the command that needs it:
+#   uv run --with openai --extra modal python -m clharness.agent.explore --llm openai \
+#       --config configs/agent.yaml            # dry run; add --go to launch
+# OPENAI_API_KEY is read from the environment (put it in .env, which is git-ignored).
+root: "."
+compute_budget_usd: 80.0          # agreed at the all-gather for the overnight exploratory loop
+compute_reserve_fraction: 0.15
+model_budget_usd: 10.0            # hard cap on model spend; a cycle costs a few cents
+deadline: null
+autonomy: veto
+phase_timeout_minutes: { screen: 240.0, replicate: 240.0, combine: 180.0 }
+executor: { concurrency: 10, minutes_per_run: 22.0 }   # workspace limit: 10 GPUs; runs take 17 to 27 minutes
+scout_enabled: true
+models:
+  planner: gpt-6.1-sol
+  analyst: gpt-6.1-sol
+  scout: gpt-6.1-sol
+  reporter: gpt-6.1-sol
+prices:
+  gpt-6.1-sol: { input_per_mtok: 2.0, output_per_mtok: 10.0 }

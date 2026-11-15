@@ -575,7 +575,9 @@ def main(argv: list[str] | None = None) -> int:
         from .llm import BudgetedLLM, OpenAIClient
 
         cfg = load_agent_config(args.config)
-        models = cfg.require_models(("explorer",))
+        # The config has no model slot named "explorer" (the slots are the Conductor's agents),
+        # so this loop uses the planner's model: it does the same kind of work.
+        models = {"explorer": cfg.require_models(("planner",))["planner"]}
         args.out.mkdir(parents=True, exist_ok=True)
         llm = BudgetedLLM(OpenAIClient(models, max_output_tokens=cfg.llm_max_output_tokens),
                           cap_usd=cfg.model_budget_usd, log_path=args.out / "llm_calls.jsonl",
