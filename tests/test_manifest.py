@@ -10,15 +10,20 @@ import pytest
 from clharness.config import REPO_ROOT
 from clharness.data.manifest import (
     ManifestMismatch,
-    _iter_file_entries as _file_entries,
     file_entry,
     read_manifest,
     verify_manifest,
     write_manifest,
 )
+from clharness.data.manifest import (
+    _iter_file_entries as _file_entries,
+)
 
 SMOKE = REPO_ROOT / "manifests" / "smoke.json"
-DATA_MANIFESTS = sorted(p for p in (REPO_ROOT / "manifests").glob("*.json") if not p.name.startswith("eval-"))
+# tinker-c5.json is the C5 index manifest (dataset indices + example sha256), not a data
+# manifest of token files, so the domains/splits checks below do not apply to it.
+DATA_MANIFESTS = sorted(p for p in (REPO_ROOT / "manifests").glob("*.json")
+                        if not p.name.startswith(("eval-", "tinker-")))
 
 
 @pytest.mark.skipif(not SMOKE.exists(), reason="smoke manifest not built (make smoke)")

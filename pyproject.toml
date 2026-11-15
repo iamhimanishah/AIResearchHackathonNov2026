@@ -34,6 +34,9 @@ modal = [
 exa = [
     "exa-py>=2.28,<3",
 ]
+tinker = [
+    "tinker==0.39.0",  # pinned: the C5 backend was written against this API surface
+]
 
 [project.scripts]
 clh = "clharness.cli:main"
