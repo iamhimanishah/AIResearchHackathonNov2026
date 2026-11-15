@@ -1,0 +1,171 @@
+# Design: the research agent
+
+**Status: draft for discussion, 14 November 2026.** Started by Member A's agent at justin's
+request after the team talked about it. Nothing here is decided. The agent system is workstream
+5 (brendan), so anything that changes it is his call; the pre-registration is himani's.
+
+**How to take part.** Each workstream has a section under "Comments" at the end. Add your
+points there and push; keep edits to other sections small and say what you changed in the
+commit message. Answer the open questions addressed to you in place, the way task cards do
+(strike the question through and write the decision next to it).
+
+## 1. What we mean
+
+A research agent uses the test bench to make progress on a question in continual learning:
+it forms a hypothesis, runs the experiments that test it, and records what was learned in a form
+someone else can check. The pre-registered screen answers questions we wrote down in advance.
+The research agent is for the questions that come up afterwards.
+
+## 2. What already exists
+
+The agent system in [`agent/ARCHITECTURE.md`](agent/ARCHITECTURE.md) already does most of this:
+
+- A deterministic Conductor owns control flow, budget and the decision log.
+- A Planner proposes specs with a predicted effect; a Gatekeeper accepts or rejects them
+  against the pre-registration, compute matching and the budget.
+- An Analyst writes findings that cite rows; a checker confirms every number.
+- Predictions are scored into lessons that the next plan reads.
+- A Scout searches the literature (Exa) for a technique not in the catalog.
+- Phases are screen, replicate, combine, then freeze and report.
+
+So this document is about what to add, not a second agent.
+
+## 3. Why not just a coding agent with the repo
+
+A general coding agent can already read rows, write a spec and launch it. The question for the
+pitch is what ours does better. The proposed answer:
+
+| | General coding agent | Research agent |
+|---|---|---|
+| Can it look at the report half before choosing? | Yes, nothing stops it | No: the data is not in what it is handed |
+| Can it change the bench, or pick the best of ten noisy runs? | Yes | No: the Gatekeeper rejects it |
+| Is each decision checkable afterwards? | A chat transcript | A hash-chained log with the rows and prompt version behind each decision |
+| Can it overspend or stall overnight? | Yes | Hard budget cap; a fallback rule after two rejections |
+| Does it get better from its own results? | Only within one session's context | Predictions are scored; lessons and findings persist and are shared |
+
+Section 6 proposes measuring this instead of only asserting it.
+
+## 4. The gap
+
+Three things the current design does not do:
+
+1. **It has no place for a question it was not given.** Phases follow the pre-registered design.
+   Today's surprise (no mitigation at a learning rate of 3e-5 forgets less than the published
+   recipe at 1e-4, `results/rows.phase0*.jsonl`) suggests an obvious next run: the recipe at
+   3e-5. Nothing in the loop would propose it.
+2. **A hypothesis is not an object.** A finding records what was seen. Nothing records what was
+   asked, what was predicted, what would count as an answer, and whether it was confirmed.
+3. **The Scout looks for techniques, not claims.** Most of what the literature offers us is a
+   claim we can test with the plugins we already have
+   ([`published-claims.md`](published-claims.md)), which needs no new code and no human review.
+
+## 5. Proposal
+
+### 5.1 A hypothesis record
+
+One new store, `results/agent/memory/hypotheses.jsonl`, one writer (Memory, through the
+Conductor).
+
+| Field | Meaning |
+|---|---|
+| `id`, `created_at`, `author` | As for findings |
+| `origin` | `surprise`, `literature` or `follow_up` |
+| `question` | One sentence |
+| `claim` | The statement being tested |
+| `source` | For `literature`: title and URL, from `sources.jsonl`. For `surprise`: the finding or lesson id that triggered it |
+| `prediction` | Direction and rough size, stated before any run |
+| `test_spec_hashes`, `control_spec_hashes` | The runs that test it and the runs it is compared with |
+| `decision_rule` | Which rule in the pre-registration's exploratory section applies |
+| `status` | `proposed`, `accepted`, `running`, `confirmed`, `refuted`, `inconclusive` or `rejected` |
+| `evidence_row_hashes`, `effect`, `interval` | Filled when it is resolved |
+
+### 5.2 An explore phase
+
+A fourth phase after combine, reusing the existing cycle (plan, gate, launch, wait, read,
+advance) with its own skill file.
+
+- **Plan.** The Planner proposes a small batch of hypotheses with their specs. Inputs: findings,
+  lessons, unresolved hypotheses, claims from the Scout, the catalog.
+- **Gate.** New deterministic rules:
+  - every spec uses only catalog techniques, within declared parameter ranges, on the frozen bench;
+  - every hypothesis names its control, and the test runs share seeds with the control;
+  - at least two seeds before a hypothesis can be resolved;
+  - the phase has its own budget share and cannot spend past it;
+  - a hypothesis already resolved is not reopened without new evidence.
+- **Read.** The Analyst resolves each hypothesis by its decision rule, on the selection half.
+- **Rows from this phase are exploratory.** They are marked as such and never enter the
+  confirmatory analysis.
+
+### 5.3 Two ways a hypothesis starts
+
+- **From a surprise.** A deterministic trigger, not a model's taste: a prediction off by more
+  than twice the noise floor, or a control arm that beats the reference arm. The trigger hands
+  the Planner the finding and asks for at most one follow-up hypothesis.
+- **From the literature.** The Scout gains a second output: a claim card (claim, source, the
+  catalog arms that would test it). This puts the Exa call in the main loop, with sources shown.
+
+### 5.4 What the reader sees
+
+- A table of hypotheses on the results page: question, origin, prediction, verdict, evidence.
+- The claims table from `published-claims.md`, filled by the agent instead of by hand.
+
+## 6. Measuring it against a plain agent
+
+The architecture already has a simulator with planted effects. Use it to answer section 3 with
+a number: give a general coding agent and the research agent the same simulated world and the
+same budget, and score each on how much of the planted truth it recovers and how many claims it
+makes that are false. This is optional and comes after the explore phase works.
+
+## 7. Not in scope
+
+- The agent writing technique plugins on its own. A candidate technique still gets a human
+  review.
+- Changing the frozen bench, the pre-registered screen, or the confirmatory analysis.
+- A general autonomous scientist. One model, one stream, the techniques in the catalog.
+
+## 8. Order of work, if adopted
+
+1. A real end-to-end launch of the existing agent through the deployed Modal app. Everything
+   else depends on this.
+2. The hypothesis record and the hypotheses table on the page.
+3. The claim card from the Scout, feeding the claims table.
+4. The explore phase with its gate rules, run on Sunday morning with whatever budget is left.
+5. The surprise trigger.
+6. The comparison in section 6.
+
+Items 2 and 3 are small. Item 4 is the one that makes this a research agent.
+
+## 9. Open questions
+
+**For brendan (agent and page)**
+- Is a fourth phase the right shape, or should explore be a budget slice inside the existing
+  phases?
+- Does the Scout's claim card fit the existing `Candidate` type, or is it a new one?
+- Which of sections 5.1 to 5.4 fit before the submission deadline (Sunday 14:00)?
+- Has the existing agent launched real runs yet? If not, what is in the way?
+
+**For himani (design and analysis)**
+- What is the decision rule for an exploratory hypothesis: sign and an interval excluding zero
+  on the selection half, at two or more paired seeds?
+- Should a confirmed exploratory hypothesis be eligible for a confirmatory rerun on the report
+  half, or stay labelled exploratory?
+- What budget share can explore have without threatening the screen and replication?
+
+**For peter (techniques)**
+- Which parameters of each technique are safe for an agent to vary, and over what range? The
+  gate needs these declared in the catalog.
+- Are there combinations that should be refused outright (for example two techniques that both
+  set the learning rate)?
+
+**For justin (bench and executor)**
+- Rows need a way to be marked exploratory. Proposed: use the existing `notes` and
+  `parent_spec_hash` fields of the run spec, with no format change. Is that enough for the
+  analysis to filter on, or does the row need a field?
+
+## Comments
+
+### Member B (peter)
+
+### Member C (himani)
+
+### Member D (brendan)

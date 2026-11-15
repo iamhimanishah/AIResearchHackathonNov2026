@@ -1,0 +1,24 @@
+{
+  "name": "sanity-lora-r256",
+  "seed": 0,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 262144
+    },
+    {
+      "name": "legal",
+      "tokens": 262144
+    }
+  ],
+  "techniques": [
+    {
+      "name": "lora",
+      "params": {
+        "rank": 256
+      }
+    }
+  ],
+  "notes": "Four steps per domain: a memory and plumbing check for a published-claims arm. Its numbers mean nothing."
+}
