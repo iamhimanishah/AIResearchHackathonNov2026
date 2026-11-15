@@ -62,7 +62,10 @@ def _load_plugins() -> None:
 def available() -> dict[str, dict[str, Any]]:
     """Technique name -> JSON Schema of its params (for docs and for the planning agent)."""
     _load_plugins()
-    return {name: cls.Params.model_json_schema() for name, cls in sorted(REGISTRY.items())}
+    # A plugin marked `hidden` can be run by a spec but is not offered in the catalog (agent_code:
+    # it carries model-written source and is only reachable through the explore loop's checks).
+    return {name: cls.Params.model_json_schema() for name, cls in sorted(REGISTRY.items())
+            if not getattr(cls, "hidden", False)}
 
 
 def register(cls: type[BaseHook]) -> type[BaseHook]:

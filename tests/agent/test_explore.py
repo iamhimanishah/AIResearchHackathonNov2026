@@ -266,3 +266,123 @@ def test_the_total_cap_holds_across_cycles(tmp_path, have):
     second = ex.cycle(out, [have], max_hypotheses=2, total_cap_usd=two_runs + 0.01, **kw)
     assert sum(bool(h.test_spec_hashes) for h in second) == 1  # nothing more fits under the total
     assert any("left under the caps" in h.reason for h in second if h.status == "rejected")
+
+
+# -- agent-written techniques ----------------------------------------------------------------------
+
+GOOD_SOURCE = '''import torch
+from clharness.train.hooks import BaseHook
+
+
+class Pull(BaseHook):
+    """Keep the trainable weights near where they started."""
+
+    def __init__(self, weight=0.01):
+        self.weight = weight
+        self.start = None
+
+    def on_run_start(self, ctx):
+        self.start = [p.detach().clone() for p in ctx.model.parameters() if p.requires_grad]
+        return None
+
+    def extra_loss(self, ctx, batch, logits, labels):
+        total = logits.new_zeros(())
+        for p, s in zip([q for q in ctx.model.parameters() if q.requires_grad], self.start):
+            total = total + (p.float() - s.float()).pow(2).sum()
+        return self.weight * total
+'''
+
+
+def _own(**kw) -> dict:
+    base = {"new_technique": {"title": "pull to start", "source": GOOD_SOURCE, "params": {"weight": 0.01}}}
+    return _hyp(techniques=[], lr=None, control="no-mitigation", **{**base, **kw})
+
+
+def test_source_checker_accepts_a_plain_hook_and_refuses_dangerous_code():
+    from clharness.techniques.agent_code import validate_source
+
+    assert validate_source(GOOD_SOURCE) == []
+    head = "from clharness.train.hooks import BaseHook\n"
+    bad = {
+        "os": "import os\n" + head + "class A(BaseHook):\n    pass\n",
+        "open": head + "class A(BaseHook):\n    def on_run_start(self, ctx):\n        open('/etc/passwd')\n",
+        "dunder": head + "class A(BaseHook):\n    def on_run_start(self, ctx):\n        return ctx.__class__\n",
+        "save": "import torch\n" + head + "class A(BaseHook):\n    def on_run_start(self, ctx):\n        torch.save(ctx.model, 'x')\n",
+        "while": head + "class A(BaseHook):\n    def on_run_start(self, ctx):\n        while True:\n            pass\n",
+        "two classes": head + "class A(BaseHook):\n    pass\nclass B(BaseHook):\n    pass\n",
+        "top-level call": head + "print('hi')\nclass A(BaseHook):\n    pass\n",
+        "getattr": head + "class A(BaseHook):\n    def on_run_start(self, ctx):\n        return getattr(ctx, 'model')\n",
+        "string dunder": head + "class A(BaseHook):\n    name = '__import__'\n",
+        "paths": head + "class A(BaseHook):\n    def on_run_start(self, ctx):\n        return ctx.output_dir\n",
+        "not a hook": "class A:\n    pass\n",
+    }
+    for name, source in bad.items():
+        assert validate_source(source), name
+
+
+def test_the_tiny_model_check_passes_good_code_and_catches_bad_behaviour():
+    from clharness.techniques.agent_check import tiny_check
+
+    ok = tiny_check(GOOD_SOURCE, {"weight": 0.01})
+    assert ok["ok"] and ok["gradient_tokens"] == 1024
+    not_finite = tiny_check(GOOD_SOURCE.replace("return self.weight * total", "return total / 0.0 * 0.0"), {})
+    assert not not_finite["ok"] and "not finite" in not_finite["problems"][0]
+    drops = ("from clharness.train.hooks import BaseHook\nclass Drop(BaseHook):\n"
+             "    def select_batch(self, ctx, batch):\n        return batch[:1]\n")
+    assert "optimizer steps" in tiny_check(drops, {})["problems"][0]
+    assert tiny_check("import os\n", {})["stage"] == "static"
+
+
+def test_an_agent_written_technique_is_probed_before_its_full_runs(tmp_path, have):
+    backend = FakeModal(lambda spec: (-2.0, 0.78))
+    out = tmp_path / "explore"
+    hyps = ex.cycle(out, [have], llm=FakeLLM().queue("explorer", {"hypotheses": [_own()]}), backend=backend,
+                    git_sha=SHA, go=True, sleep=lambda s: None, say=lambda s: None,
+                    tiny_check=lambda source, params: {"ok": True, "stage": "tiny-model", "problems": []})
+    names = [s.name for s in backend.spawned]
+    assert names[0] == "explore-h001-probe" and sorted(names[1:]) == ["explore-h001-s0", "explore-h001-s1"]
+    assert backend.spawned[0].stream[0].tokens == ex.PROBE_TOKENS  # the probe is the short stream
+    assert all(s.technique_names() == ["agent_code"] for s in backend.spawned)
+    (h,) = hyps
+    assert h.checks == ["static allow-list", "tiny-model training", "four-step run on a GPU"]
+    assert h.new_technique.source == GOOD_SOURCE and h.status in ("confirmed", "refuted", "inconclusive")
+
+
+def test_a_failed_check_or_probe_stops_the_full_runs(tmp_path, have):
+    refuse = lambda source, params: {"ok": False, "stage": "tiny-model", "problems": ["a loss was not finite"]}  # noqa: E731
+    backend = FakeModal(lambda spec: (-2.0, 0.78))
+    hyps = ex.cycle(tmp_path / "a", [have], llm=FakeLLM().queue("explorer", {"hypotheses": [_own()]}),
+                    backend=backend, git_sha=SHA, go=True, sleep=lambda s: None, say=lambda s: None, tiny_check=refuse)
+    assert hyps[0].status == "rejected" and "tiny-model check" in hyps[0].reason and backend.spawned == []
+
+    class ProbeFails(FakeModal):
+        def result(self, call_id):
+            self.polls[call_id] += 1
+            if self.polls[call_id] < 2:
+                return None
+            spec = self.calls.pop(call_id)
+            return a1.row_to_line(a1.ResultRow(spec=spec, spec_hash=spec.spec_hash(), git_sha=SHA, status="failed",
+                                               reason="RuntimeError: CUDA out of memory", backend="modal"))
+
+    backend = ProbeFails(lambda spec: (0, 0))
+    hyps = ex.cycle(tmp_path / "b", [have], llm=FakeLLM().queue("explorer", {"hypotheses": [_own()]}),
+                    backend=backend, git_sha=SHA, go=True, sleep=lambda s: None, say=lambda s: None,
+                    tiny_check=lambda source, params: {"ok": True})
+    assert [s.name for s in backend.spawned] == ["explore-h001-probe"]  # no full run was paid for
+    assert hyps[0].status == "rejected" and "probe run did not finish" in hyps[0].reason
+
+
+def test_one_agent_written_technique_per_cycle_and_the_lora_limit(tmp_path, have):
+    ok = lambda source, params: {"ok": True}  # noqa: E731
+    two = [_own(claim="first"), _own(claim="second", new_technique={
+        "title": "other", "source": GOOD_SOURCE.replace("Pull", "Other"), "params": {}})]
+    hyps = ex.cycle(tmp_path / "e", [have], llm=FakeLLM().queue("explorer", {"hypotheses": two}),
+                    say=lambda s: None, tiny_check=ok)
+    assert [h.status for h in hyps] == ["accepted", "rejected"] and "one agent-written" in hyps[1].reason
+    arms = ex.read_arms([have])
+    wild = ex.ProposedHypothesis.model_validate(_hyp(
+        techniques=[{"name": "lora", "params": {"rank": 256, "lr": 1e-3}}], lr=None, control="no-mitigation"))
+    assert "diverged" in ex.gate_one(wild, "h9", arms, set())[1]
+    tame = ex.ProposedHypothesis.model_validate(_hyp(
+        techniques=[{"name": "lora", "params": {"rank": 256, "lr": 1.5e-4}}], lr=None, control="no-mitigation"))
+    assert ex.gate_one(tame, "h9", arms, set())[0]
