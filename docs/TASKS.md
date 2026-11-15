@@ -260,10 +260,10 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   prints the cost estimate.
 
 ### A7 · Tinker backend
-- **Status: built** Saturday night by workstream 4 (Devin), as `src/clharness/tinker/` —
-  cut earlier by Member A to protect the critical path, reinstated for C5. It emits its own
-  `TinkerRow` (C5 is exploratory, not the protected evals), not the shared `ResultRow`.
-- **Goal:** the second task sequence (C5) runs naive / replay-200 / joint at 3 seeds.
+- **Status: cut** on Saturday afternoon by Member A, to protect the critical path. Nothing was
+  built. The second task sequence (C5) has no backend unless someone else builds one.
+- **Goal:** the second task sequence (C5) produces the same result-row format.
+- **Where:** `src/clharness/executor/tinker_backend.py`. Devin can scaffold it.
 - **Steps:**
   1. Map the run spec (task stream, LoRA rank, technique) onto Tinker's training and sampling
      calls.

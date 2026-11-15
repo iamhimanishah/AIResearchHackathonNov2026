@@ -137,8 +137,7 @@ Members A to D are placeholders: replace each with a name when someone claims th
   workstreams can build against them.
 - Build a Modal executor with parallel fan-out, retries, idempotent run IDs and a budget
   guard.
-- ~~Add a Tinker backend that emits the same result row.~~ Cut on Saturday, then built by
-  workstream 4 as `src/clharness/tinker/` with its own row format (see A7, C5).
+- ~~Add a Tinker backend that emits the same result row.~~ Cut on Saturday (see A7).
 - Add `make reproduce`.
 
 **Member B (peter): techniques (3).** In this order, each with a sanity run at matched gradient tokens:
