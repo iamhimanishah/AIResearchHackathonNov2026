@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import statistics
 import sys
@@ -353,12 +354,17 @@ OWN_EVERY_CYCLE = ("\n\nIn this answer, exactly one hypothesis must test a mecha
 
 
 def propose(arms: Sequence[Arm], prior: Sequence[Hypothesis], llm: LLMClient | None,
-            sources: str = "", max_n: int = MAX_HYPOTHESES, own_technique: str = "allow") -> tuple[Proposal, str]:
+            sources: str = "", max_n: int = MAX_HYPOTHESES, own_technique: str = "allow",
+            focus: str = "") -> tuple[Proposal, str]:
     """(proposal, author). Falls back to the fixed list if the model fails or is absent."""
     if llm is None:
         return fixed_proposals(arms), "fixed-list"
     try:
         system = SYSTEM.format(max_n=max_n) + (OWN_EVERY_CYCLE if own_technique == "every" else "")
+        if focus:  # several instances run at once; each is given its own part of the question
+            system += ("\n\nOther instances of this loop are running in parallel on other parts of the "
+                       "problem, and what they find appears under \"Shared memory\". Do not repeat "
+                       f"their hypotheses. Your part: {focus}")
         proposal, _usage = llm.complete("explorer", system, build_prompt(arms, prior, sources), Proposal)
         if own_technique == "never":
             proposal = Proposal(hypotheses=[h for h in proposal.hypotheses if h.new_technique is None])
@@ -570,6 +576,7 @@ def cycle(
     total_cap_usd: float | None = None,
     tiny_check: Callable[[str, dict[str, Any]], dict[str, Any]] | None = tiny_check_subprocess,
     own_technique: str = "allow",
+    focus: str = "",
 ) -> list[Hypothesis]:
     """One explore cycle. Returns every hypothesis on file afterwards.
 
@@ -607,7 +614,7 @@ def cycle(
                 say(f"shared memory: recalled {len(recalled)} statements written by "
                     f"{sorted({w for r in recalled for w in r['writers']})}")
             sources = "\n\n".join(x for x in (sources, as_prompt_block(recalled)) if x)
-        proposal, author = (propose(arms, stored, llm, sources, room, own_technique)
+        proposal, author = (propose(arms, stored, llm, sources, room, own_technique, focus)
                             if room else (Proposal(), "none"))
         candidates = [(cid, p, "scout") for cid, p in cards]
         candidates += [(None, p, author) for p in proposal.hypotheses[:room]]
@@ -758,7 +765,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--go", action="store_true", help="launch accepted hypotheses; default is a dry run")
     parser.add_argument("--resolve", action="store_true", help="only resolve hypotheses whose rows are in")
-    parser.add_argument("--out", type=Path, default=REPO_ROOT / "results" / "agent" / "explore")
+    parser.add_argument("--out", type=Path, default=None,
+                        help="default: results/agent/explore, or results/agent/explore-<agent name>")
     parser.add_argument("--have", nargs="*", default=[
         *(str(REPO_ROOT / p) for p in DEFAULT_HAVE), str(REPO_ROOT / "results" / "agent" / "rows.jsonl")])
     parser.add_argument("--llm", choices=["none", "openai"], default="none")
@@ -775,15 +783,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--own-technique", choices=["allow", "every", "never"], default="allow",
                         help="agent-written techniques: allow (the model may write one per cycle), "
                              "every (it must), never")
+    parser.add_argument("--agent-name", default=os.environ.get("AGENTCHAT_NAME", ""),
+                        help="names this instance when several run at once; default: AGENTCHAT_NAME. "
+                             "With a name, --out defaults to results/agent/explore-<name>")
+    parser.add_argument("--focus", default="", help="this instance's part of the question, one sentence")
     parser.add_argument("--memory", choices=["none", "pastdev"], default="none",
                         help="pastdev: write to and recall from the shared memory (needs PAST_API_KEY)")
     args = parser.parse_args(argv)
+    if args.out is None:
+        args.out = REPO_ROOT / "results" / "agent" / (f"explore-{args.agent_name}" if args.agent_name else "explore")
 
     memory = None
     if args.memory == "pastdev":
         from .pastdev import PastMemory
 
-        memory = PastMemory()
+        memory = PastMemory(agent=args.agent_name)
         if not memory.configured:
             parser.error("--memory pastdev needs PAST_API_KEY in the environment")
 
@@ -816,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
             after = cycle(args.out, args.have, llm=llm, backend=backend, git_sha=sha, go=args.go,
                           resolve_only=args.resolve, sources=sources, max_hypotheses=args.max_hypotheses,
                           cap_usd=args.cap_usd, memory=memory, total_cap_usd=total_cap,
-                          own_technique=args.own_technique)
+                          own_technique=args.own_technique, focus=args.focus)
             new = [h for h in after if h.id not in before]
             if args.cycles > 1:
                 print(f"cycle {n + 1}/{args.cycles}: {len(new)} new hypotheses, "

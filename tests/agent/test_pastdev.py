@@ -87,3 +87,16 @@ def test_a_dry_run_writes_nothing_to_the_shared_memory(tmp_path, have):  # noqa:
     svc = FakeService()
     ex.cycle(tmp_path / "explore", [have], say=lambda s: None, memory=PastMemory("k", opener=svc))
     assert svc.points == {} and len(svc.recalls) == 1
+
+
+def test_two_named_instances_do_not_overwrite_each_other():
+    """Both number their hypotheses from h001; the instance name keeps the records apart."""
+    from clharness.agent.explore import Hypothesis, Prediction
+
+    svc = FakeService()
+    h = Hypothesis(id="h001", created_at="t", author="model", origin="surprise", question="q", claim="c",
+                   prediction=Prediction(direction="no_difference", size_points=0.0), control="x", status="accepted")
+    PastMemory("k", opener=svc, agent="justin").write_hypothesis(h)
+    PastMemory("k", opener=svc, agent="peter").write_hypothesis(h.model_copy(update={"claim": "another"}))
+    assert set(svc.points) == {"remember-hypothesis-justin-h001", "remember-hypothesis-peter-h001"}
+    assert {p["label"] for p in svc.points.values()} == {"explorer:justin", "explorer:peter"}

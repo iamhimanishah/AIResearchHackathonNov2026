@@ -50,7 +50,11 @@ class PastMemory:
     """A thin client plus the three writers. `events` records every call, for the decision log."""
 
     def __init__(self, api_key: str | None = None, api: str = API, timeout: float = 20.0,
-                 opener: Any = None) -> None:
+                 opener: Any = None, agent: str = "") -> None:
+        # `agent` names this instance when several explore loops run at once (one per teammate).
+        # It goes into hypothesis ids and the explorer's label, so instances never overwrite
+        # each other and a reader can tell whose hypothesis a statement is.
+        self.agent = agent
         self._key = api_key if api_key is not None else os.environ.get("PAST_API_KEY", "")
         self.api, self.timeout = api, timeout
         self._open = opener or urllib.request.urlopen
@@ -141,7 +145,9 @@ class PastMemory:
                      f"points (threshold {h.threshold_points:g}). {h.reason}")
         if h.source:
             text += f" Source: {h.source}."
-        return self.remember(f"hypothesis-{h.id}", text, "explorer")
+        who = f"explorer:{self.agent}" if self.agent else "explorer"
+        key = f"hypothesis-{self.agent}-{h.id}" if self.agent else f"hypothesis-{h.id}"
+        return self.remember(key, text, who)
 
 
 def as_prompt_block(recalled: Sequence[dict[str, Any]]) -> str:
