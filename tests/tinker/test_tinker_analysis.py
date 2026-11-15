@@ -4,13 +4,13 @@ denominator warning, and the item-resampling bootstrap."""
 import numpy as np
 
 from clharness.tinker.analysis import analyze, final_avg_acc, forgetting, r_heatmap_svg
-from clharness.tinker.rows import TinkerRow, Tokens, write_tinker_rows
+from clharness.tinker.rows import TinkerRow, Tokens, append_tinker_row, write_tinker_rows
 
 
-def _row(arm, seed, r, est=1.0, items_path="x.npy"):
+def _row(arm, seed, r, est=1.0, items_path="x.npy", smoke=False):
     return TinkerRow(arm=arm, seed=seed, model="Qwen/Qwen3-8B", status="finished",
                      r_matrix=r, items_path=items_path, tokens=Tokens(train=10),
-                     est_usd=est)
+                     est_usd=est, smoke=smoke)
 
 
 NAIVE_R = [[0.90, None, None], [0.80, 0.90, None], [0.70, 0.85, 0.90]]
@@ -87,6 +87,28 @@ def test_seed_only_fallback_without_item_files(tmp_path):
     out = analyze(rows_path=rows_path, out_dir=tmp_path / "out", n_boot=200, seed=0)
     gc = out["arms"]["replay-200"]["gap_closed"]
     assert abs(gc["mean"] - ((0.8567 - 0.8167) / (0.9333 - 0.8167))) < 0.06
+
+
+def test_a_later_smoke_row_does_not_leak_into_the_metrics(tmp_path):
+    """The review reproduction: `clh tinker-run --smoke` appends to the same rows.jsonl,
+    so a smoke row written after the real naive s0 row used to replace it in _by_arm
+    (0.50 instead of 0.80) and its 50-item array could break the bootstrap."""
+    rows_path = _write_planted(tmp_path)
+    base = analyze(rows_path=rows_path, out_dir=tmp_path / "a", n_boot=500, seed=0)
+    smoke_items = np.zeros((3, 3, 50), dtype=np.float32)  # the smaller smoke shape
+    smoke_items[:, :, :25] = 1.0
+    items_path = tmp_path / "items" / "naive-s0-smoke.npy"
+    np.save(items_path, smoke_items)
+    append_tinker_row(rows_path, _row("naive", 0, [[0.50, 0.50, 0.50]], est=0.01,
+                                      items_path=str(items_path), smoke=True))
+    out = analyze(rows_path=rows_path, out_dir=tmp_path / "b", n_boot=500, seed=0)
+    for arm in ("naive", "replay-200", "joint"):
+        b, o = base["arms"][arm], out["arms"][arm]
+        assert o["final_avg_acc"]["mean"] == b["final_avg_acc"]["mean"]
+        assert o["forgetting"]["mean"] == b["forgetting"]["mean"]
+    assert (out["arms"]["replay-200"]["gap_closed"]["mean"]
+            == base["arms"]["replay-200"]["gap_closed"]["mean"])
+    assert out["smoke_rows_skipped"] == 1
 
 
 def test_heatmap_svg_renders(tmp_path):

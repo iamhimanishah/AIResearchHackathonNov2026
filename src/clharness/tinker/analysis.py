@@ -8,7 +8,8 @@ to every arm, so the pairing honest rows share is kept. If joint - naive < 0.03 
 closed carries an "unstable denominator" warning (analysis/PREREG.md section 10).
 
 Writes results/tinker/analysis.json and analysis.md. `clh tinker-figures` renders the
-R[stage, task] heatmap from the same rows.
+R[stage, task] heatmap from the same rows. Rows with smoke=True never reach a metric —
+they are pipeline checks, not data — but they still count toward the budget in rows.py.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ def _full_items(row: TinkerRow) -> np.ndarray | None:
 def _by_arm(rows: list[TinkerRow]) -> dict[str, dict[int, TinkerRow]]:
     out: dict[str, dict[int, TinkerRow]] = {}
     for r in rows:
-        if r.status == "finished":
+        if r.status == "finished" and not r.smoke:
             out.setdefault(r.arm, {})[r.seed] = r
     return out
 
@@ -115,6 +116,7 @@ def analyze(
     out: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "rows": str(rows_path), "n_boot": n_boot, "seed": seed, "tasks": TASK_ORDER,
+        "smoke_rows_skipped": sum(1 for r in rows if r.smoke and r.status == "finished"),
         "arms": {}, "warnings": [],
     }
 
@@ -214,7 +216,9 @@ def _markdown(analysis: dict[str, Any]) -> str:
     lines = [
         "# C5 — second task sequence (Tinker, exploratory)",
         "",
-        f"generated {analysis['generated_at']} · tasks: {' → '.join(analysis['tasks'])}",
+        f"generated {analysis['generated_at']} · tasks: {' → '.join(analysis['tasks'])}"
+        + (f" · {analysis['smoke_rows_skipped']} smoke row(s) skipped"
+           if analysis.get("smoke_rows_skipped") else ""),
         "",
         "| arm | seeds | final avg acc | 95% CI | gap closed | 95% CI | forgetting | 95% CI | est $ |",
         "|---|---|---|---|---|---|---|---|---|",
