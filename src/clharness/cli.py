@@ -15,6 +15,7 @@
   clh run SPEC... [--modal] [--out F]       run specs, append one result row each
   clh fetch-items FILE...                   per-item files of finished runs, from Modal to results/items/
   clh item-profile FILE...                  per arm: fragile-core and other forgetting, selection half
+  clh forget-sets FILE... [--out DIR]       per arm: repeatability, dose vs target, timing, answer drift
   clh tinker-manifest                       draw the frozen C5 subsample into manifests/tinker-c5.json
   clh tinker-run --arm A --seed N [--smoke] [--dry-run]
                                             one C5 arm on Tinker; --smoke is 50/50 per task
@@ -540,6 +541,28 @@ def cmd_item_profile(args) -> int:
     return 0 if any(p["seeds"] for p in profiles) else 1
 
 
+def cmd_forget_sets(args) -> int:
+    """Which questions are forgotten, when and how: repeatability across seeds, dose vs target,
+    timing, answer drift, margins and state drift, selection half (analysis/forgetting.py)."""
+    from clharness.analysis.forgetting import analyze, format_report
+    from clharness.spec import read_rows
+
+    rows = {}
+    for path in args.files:
+        for row in read_rows(path):
+            rows[row.spec_hash] = row
+    res = analyze(list(rows.values()), REPO_ROOT, stream=None if args.any_stream else args.stream)
+    report = format_report(res)
+    print(report)
+    if args.out:
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "summary.json").write_text(json.dumps(res, indent=1, sort_keys=True, default=float) + "\n")
+        (out / "summary.md").write_text(report)
+        print(f"wrote {out}/summary.json and summary.md")
+    return 0 if res["arms"] else 1
+
+
 def cmd_tinker_manifest(args) -> int:
     """Draw the frozen C5 subsample. Downloads the three HF datasets (once, cached)."""
     from clharness.tinker import data as tdata
@@ -712,6 +735,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("item-profile", help="per arm: share of the fragile core and of other known questions forgotten")
     p.add_argument("files", nargs="+", help="JSONL files of result rows whose item files are under results/items/")
     p.set_defaults(fn=cmd_item_profile)
+    p = sub.add_parser("forget-sets", help="per arm: which questions are forgotten, when and how (exploratory)")
+    p.add_argument("files", nargs="+", help="JSONL files of result rows whose item files are under results/items/")
+    p.add_argument("--stream", default="code:10000000+legal:10000000", help="only rows on this stream")
+    p.add_argument("--any-stream", action="store_true", help="use rows on every stream")
+    p.add_argument("--out", default=None, help="also write summary.json and summary.md here")
+    p.set_defaults(fn=cmd_forget_sets)
     p = sub.add_parser("export-schema", help="write the run-spec and result-row JSON Schemas")
     p.add_argument("--out", default=str(REPO_ROOT / "configs" / "schema"))
     p.set_defaults(fn=cmd_export_schema)

@@ -85,6 +85,8 @@ clh train configs/smoke.yaml
 clh baseline-evals configs/baseline-candidates.yaml [--limit-items N]   # deliverable 2 table
 clh train configs/pilot/cuda-check.yaml --name cuda-check-b
 clh compare-runs results/runs/cuda-check-a results/runs/cuda-check-b   # bitwise repeatability diff
+clh item-profile results/rows.*.jsonl          # per arm: fragile core vs other questions forgotten
+clh forget-sets results/rows.*.jsonl --out results/analysis/forgetting   # why: see below
 ```
 
 Fresh GPU box: `bash scripts/remote_setup.sh` (uv, env, data rebuild + verify).
@@ -108,9 +110,37 @@ src/clharness/
   evals/perplexity.py      held-out NLL / PPL on fixed chunks
   train/loop.py    the driver: domain order, token budgets, gradient-token counter, checkpoints
   train/hooks.py   Hook protocol (on_checkpoint, select_batch, ...) — policies plug in here
-  train/measure.py EvalHook, ProbeHook
+  train/measure.py EvalHook, ProbeHook, ItemDriftHook
+  analysis/forgetting.py  which questions are forgotten, when and how (exploratory)
   wandb_log.py     wandb + metrics.jsonl
 ```
+
+## Mechanism probes (exploratory)
+
+Per-item files in each checkpoint folder, copied by `clh fetch-items` with the rest:
+
+| File | What | Written by |
+|---|---|---|
+| `items_<task>.npy` | per question: 1 right, 0 wrong | every run |
+| `choices_<task>.npy`, `gold_<task>.npy` | the option picked, the right option | every run |
+| `loglik_<task>.npz` | per question and option: `raw` log-likelihood and the `score` the pick is the argmax of (length-normalised for acc_norm); NaN-padded | every run since 2026-11-15 |
+| `drift_<task>.npz` | per question and layer: `cos` (cosine of the last prompt token's residual to the base model's) and `norm_ratio` | bench `fast-mech` only |
+
+`configs/bench/fast-mech.yaml` is `fast.yaml` with `eval.item_drift_layers: [7, 13, 22]`.
+Training and evals are identical (tested). Its rows have their own spec hash, so a test arm on
+it needs its control on it too.
+
+`clh forget-sets` reads those files, selection half only, and reports per arm:
+- **Repeatability:** a held-out seed's losses predicted by how many other seeds lost the
+  question (AUC; 0.5 = random).
+- **Dose or target:** the slope of the arm's losses on each question's fragility in the other
+  arms, against a simulated dose-only null.
+- **Timing:** losses already there after the first domain, and recoveries.
+- **Answer drift:** whether seeds that lose a question pick the same wrong option.
+- **Margins and state drift:** base margins and cosine drift of lost vs kept questions, when the
+  new files exist.
+
+`analysis.forgetting.agent_summary` turns the result into a few lines for an agent prompt.
 
 ## Notes that affect interpretation
 
