@@ -70,6 +70,13 @@ _SAFE_BUILTINS = {
 }
 
 
+def _is_no_grad(node: ast.AST) -> bool:
+    """`@torch.no_grad()`, exactly: the one decorator a hook method has a good reason to carry."""
+    return (isinstance(node, ast.Call) and not node.args and not node.keywords
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "no_grad"
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "torch")
+
+
 def validate_source(source: str) -> list[str]:
     """Problems with a proposed technique's source. Empty means it may be executed."""
     if len(source) > MAX_SOURCE_CHARS:
@@ -112,8 +119,8 @@ def validate_source(source: str) -> list[str]:
         elif isinstance(node, ast.FunctionDef):
             if node.name.startswith("__") and node.name != "__init__":
                 problems.append(f"line {line}: the method {node.name!r} is not allowed")
-            if node.decorator_list:
-                problems.append(f"line {line}: decorators are not allowed")
+            if any(not _is_no_grad(d) for d in node.decorator_list):
+                problems.append(f"line {line}: the only decorator allowed is @torch.no_grad()")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "__" in node.value:
             problems.append(f"line {line}: a string containing '__' is not allowed")
     return problems[:12]
