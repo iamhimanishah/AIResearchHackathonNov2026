@@ -32,7 +32,7 @@ from clharness.config import REPO_ROOT
 BASE_ROWS = ("results/rows.phase0.remeasured.jsonl", "results/rows.phase0.jsonl",
              "results/rows.reference.remeasured.jsonl", "results/agent/rows.jsonl", "results/rows.explore.jsonl")
 THEMES = "analysis/explore_themes.json"
-DECIDED = ("confirmed", "confirmed_with_cost", "refuted", "not_replicated")
+DECIDED_LABELS = ("confirmed", "confirmed with cost", "refuted", "not replicated")
 UNITS = {"retention": "points of retention", "core_forgotten": "pp of the fragile core",
          "noncore_forgotten": "pp of the other known questions"}
 PREDICTED = {"less_forgetting": "less forgetting", "more_forgetting": "more forgetting",
@@ -101,7 +101,7 @@ def record(h: explore.Hypothesis, arms: Sequence[explore.Arm]) -> dict[str, Any]
             "c": read(control, h.control_spec_hashes)}
 
 
-def _status(h: explore.Hypothesis) -> str:
+def status(h: explore.Hypothesis) -> str:
     """The stored verdict, with the stricter label a confirmed result gets when it learned legal
     worse than its control by more than the margin (the --skeptic rule, applied to every record)."""
     if h.status == "confirmed" and h.acquisition_ok is False:
@@ -109,18 +109,56 @@ def _status(h: explore.Hypothesis) -> str:
     return h.status.replace("_", " ")
 
 
-def _row(inst: str, r: dict[str, Any]) -> str:
+def cells(inst: str, r: dict[str, Any]) -> list[str]:
+    """One hypothesis as the nine table cells, plain text. The page renders the same cells."""
     h: explore.Hypothesis = r["h"]
     measured = "n/a" if h.effect_points is None else f"{h.effect_points:+.1f} (needs {h.threshold_points:.1f})"
-    return (f"| {inst} {h.id} | {_cell(h.question, 150)} | {_cell(_describe(r['test'], h), 110)} | "
-            f"{_cell(_describe(r['control']), 90)} | {PREDICTED[h.prediction.direction]}, "
-            f"{h.prediction.size_points:g} {UNITS[h.outcome]} | {measured} | "
-            f"{_num(r['t']['core'], '{:.0f}%')} / {_num(r['c']['core'], '{:.0f}%')} | "
-            f"{_num(r['t']['legal'], '{:.3f}')} / {_num(r['c']['legal'], '{:.3f}')} | **{_status(h)}** |")
+    return [f"{inst} {h.id}", _cell(h.question, 150), _cell(_describe(r["test"], h), 110),
+            _cell(_describe(r["control"]), 90),
+            f"{PREDICTED[h.prediction.direction]}, {h.prediction.size_points:g} {UNITS[h.outcome]}", measured,
+            f"{_num(r['t']['core'], '{:.0f}%')} / {_num(r['c']['core'], '{:.0f}%')}",
+            f"{_num(r['t']['legal'], '{:.3f}')} / {_num(r['c']['legal'], '{:.3f}')}", status(h)]
 
 
-HEAD = ("| Hypothesis | Question | Tested | Against | Predicted before the run | Measured effect | "
-        "Core lost, test / control | Legal ratio, test / control | Verdict |\n|---|---|---|---|---|---|---|---|---|")
+COLUMNS = ["Hypothesis", "Question", "Tested", "Against", "Predicted before the run", "Measured effect",
+           "Core lost, test / control", "Legal ratio, test / control", "Verdict"]
+
+
+def _row(inst: str, r: dict[str, Any]) -> str:
+    c = cells(inst, r)
+    return "| " + " | ".join(c[:-1]) + f" | **{c[-1]}** |"
+
+
+def totals(i: dict[str, Any]) -> dict[str, Any]:
+    """The counts for one instance, from its records and rows."""
+    c = Counter(status(h) for h in i["hyps"])
+    own = [h for h in i["hyps"] if h.new_technique]
+    full = [r for r in i["rows"] if not r.spec.name.endswith("-probe")]
+    fin = sum(r.status == "finished" for r in full)
+    return {"n": len(i["hyps"]), "confirmed": c["confirmed"], "confirmed with cost": c["confirmed with cost"],
+            "refuted": c["refuted"], "inconclusive": c["inconclusive"], "rejected": c["rejected"],
+            "running": c["running"] + c["accepted"], "own": len(own),
+            "own_run": sum(bool(h.test_spec_hashes) and h.status != "rejected" for h in own),
+            "fin": fin, "bad": len(full) - fin,
+            "usd": sum((r.cost.est_usd or 0) for r in i["rows"] if r.cost)}
+
+
+def gather(folders: Sequence[Path] | None = None, themes_path: Path | None = None,
+           repo_root: Path = REPO_ROOT) -> dict[str, Any]:
+    """Everything the summary and the page print: instances, per-hypothesis records, themes."""
+    folders = list(folders) if folders is not None else sorted(
+        p for p in (repo_root / "results/agent").glob("explore-*") if (p / "hypotheses.jsonl").exists())
+    instances = [load_instance(f) for f in folders]
+    row_files = [p for p in [repo_root / x for x in BASE_ROWS] + [f / "rows.jsonl" for f in folders] if p.exists()]
+    arms = explore.read_arms(row_files, repo_root)
+    themes_path = themes_path or repo_root / THEMES
+    themes = json.loads(themes_path.read_text())["themes"] if themes_path.exists() else []
+    recs = {(i["name"], h.id): record(h, arms) for i in instances for h in i["hyps"]}
+    return {"instances": instances, "arms": arms, "themes": themes, "recs": recs,
+            "sources": row_files + [f / "hypotheses.jsonl" for f in folders]}
+
+
+HEAD = "| " + " | ".join(COLUMNS) + " |\n" + "|---" * len(COLUMNS) + "|"
 
 
 def render(instances: Sequence[dict[str, Any]], arms: Sequence[explore.Arm], themes: Sequence[dict[str, Any]],
@@ -144,21 +182,15 @@ def render(instances: Sequence[dict[str, Any]], arms: Sequence[explore.Arm], the
            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     total: Counter[str] = Counter()
     for i in instances:
-        c = Counter(_status(h) for h in i["hyps"])
-        own = [h for h in i["hyps"] if h.new_technique]
-        own_run = [h for h in own if h.test_spec_hashes and h.status != "rejected"]
-        full = [r for r in i["rows"] if not r.spec.name.endswith("-probe")]
-        fin = sum(r.status == "finished" for r in full)
-        usd = sum((r.cost.est_usd or 0) for r in i["rows"] if r.cost)
-        out.append(f"| {i['name']} | {len(i['hyps'])} | {c['confirmed']} | {c['confirmed with cost']} | {c['refuted']} "
-                   f"| {c['inconclusive']} | {c['rejected']} | {c['running'] + c['accepted']} | {len(own)} / {len(own_run)} "
-                   f"| {fin} / {len(full) - fin} | ${usd:.0f} | "
+        t = totals(i)
+        out.append(f"| {i['name']} | {t['n']} | {t['confirmed']} | {t['confirmed with cost']} | {t['refuted']} "
+                   f"| {t['inconclusive']} | {t['rejected']} | {t['running']} | {t['own']} / {t['own_run']} "
+                   f"| {t['fin']} / {t['bad']} | ${t['usd']:.0f} | "
                    + (f"${i['model_usd']:.2f} ({i['model_calls']}) |" if i["calls_logged"] else "not committed |"))
-        total.update(c)
-        total.update({"n": len(i["hyps"]), "own": len(own), "own_run": len(own_run), "fin": fin,
-                      "bad": len(full) - fin, "usd": usd, "musd": i["model_usd"], "calls": i["model_calls"]})
+        total.update(t)
+        total.update({"musd": i["model_usd"], "calls": i["model_calls"]})
     out += [(f"| **all** | {total['n']} | {total['confirmed']} | {total['confirmed with cost']} | {total['refuted']} | "
-            f"{total['inconclusive']} | {total['rejected']} | {total['running'] + total['accepted']} | "
+            f"{total['inconclusive']} | {total['rejected']} | {total['running']} | "
             f"{total['own']} / {total['own_run']} | {total['fin']} / {total['bad']} | ${total['usd']:.0f} | "
             f"${total['musd']:.2f} ({total['calls']}), where committed |"), "",
             "Compute is the rows' own estimate (`cost.est_usd`), probes included. Runs counts full runs only."]
@@ -177,8 +209,7 @@ def render(instances: Sequence[dict[str, Any]], arms: Sequence[explore.Arm], the
         out += [_row(k[0], recs[k]) for k in present]
         used.update(present)
 
-    rest = [k for k, r in recs.items() if k not in used and _status(r["h"]) in
-            ("confirmed", "confirmed with cost", "refuted", "not replicated")]
+    rest = [k for k, r in recs.items() if k not in used and status(r["h"]) in DECIDED_LABELS]
     if rest:
         out += ["", "## Other decided hypotheses", "", HEAD] + [_row(k[0], recs[k]) for k in rest]
 
@@ -192,7 +223,7 @@ def render(instances: Sequence[dict[str, Any]], arms: Sequence[explore.Arm], the
             measured = "n/a" if h.effect_points is None else f"{h.effect_points:+.1f} (needs {h.threshold_points:.1f})"
             why = f": {_cell(h.reason, 120)}" if h.status == "rejected" else ""
             out.append(f"| {inst} {h.id} | {_cell(h.new_technique.title or h.question, 110)} | "
-                       f"{len(h.checks)} of 3 | {UNITS[h.outcome]} | {measured} | {_status(h)}{why} |")
+                       f"{len(h.checks)} of 3 | {UNITS[h.outcome]} | {measured} | {status(h)}{why} |")
 
     out += ["", "## Every hypothesis", "", HEAD] + [_row(k[0], r) for k, r in recs.items()]
     out += ["", "## Built from", ""] + [f"- `{s}`" for s in sources]
@@ -205,15 +236,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--themes", type=Path, default=REPO_ROOT / THEMES)
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results/agent/explore_summary.md")
     args = parser.parse_args(argv)
-    folders = args.folders or sorted(p for p in (REPO_ROOT / "results/agent").glob("explore-*")
-                                     if (p / "hypotheses.jsonl").exists())
-    instances = [load_instance(f) for f in folders]
-    row_files = [REPO_ROOT / p for p in BASE_ROWS] + [f / "rows.jsonl" for f in folders]
-    arms = explore.read_arms([p for p in row_files if p.exists()])
-    themes = json.loads(args.themes.read_text())["themes"] if args.themes.exists() else []
-    rel = [str(p.relative_to(REPO_ROOT)) if p.is_relative_to(REPO_ROOT) else p.name for p in row_files if p.exists()]
-    rel += [str((f / "hypotheses.jsonl").relative_to(REPO_ROOT)) if f.is_relative_to(REPO_ROOT) else f.name
-            for f in folders]
+    g = gather(args.folders or None, args.themes)
+    instances, arms, themes = g["instances"], g["arms"], g["themes"]
+    rel = [str(p.relative_to(REPO_ROOT)) if p.is_relative_to(REPO_ROOT) else p.name for p in g["sources"]]
     args.out.write_text(render(instances, arms, themes, rel))
     print(f"wrote {args.out} ({sum(len(i['hyps']) for i in instances)} hypotheses, {len(instances)} instances)")
     return 0

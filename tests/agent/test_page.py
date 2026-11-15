@@ -109,3 +109,25 @@ def test_runs_table_separates_lr_controls_and_shows_per_domain_acquisition(tmp_p
     assert "no_mitigation @ lr=3e-05" in html
     assert "code ppl" in html and "legal ppl" in html and "Acquisition ppl</th>" not in html.split("Runs (2)")[1]
     assert "1.128" in html and "0.754" in html and "1.170" not in html
+
+
+def test_page_opens_on_the_preregistered_results_and_agent_findings(tmp_path):
+    out = tmp_path / "agent"
+    (out / "explore-x").mkdir(parents=True)
+    hyp = {"id": "h001", "created_at": "2026-11-15T00:00:00+00:00", "author": "model", "origin": "follow_up",
+           "question": "Does <b>this</b> help?", "claim": "c", "control": "no-mitigation", "status": "confirmed",
+           "prediction": {"direction": "less_forgetting", "size_points": 1.0}, "effect_points": 1.5,
+           "threshold_points": 1.2, "acquisition_ok": False}
+    (out / "explore-x" / "hypotheses.jsonl").write_text(json.dumps(hyp) + "\n")
+    (tmp_path / "analysis").mkdir()
+    (tmp_path / "analysis" / "grid_analysis.json").write_text(json.dumps({"confirmatory": [{
+        "config": "freeze+wavg", "n_pairs": 3, "delta": 0.0143, "ci": [-0.0073, 0.038], "p_holm": 0.234,
+        "acquisition_gate": {"legal": {"passes": True}}, "rule1_significant": False,
+        "vs_lr_control": {"delta": -0.0063, "ci": [-0.0283, 0.0167]}}]}))
+    (tmp_path / "figures").mkdir()
+    (tmp_path / "figures" / "frontier.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'><script>x</script></svg>")
+    html = render(out, refresh_s=None)
+    assert html.index("Pre-registered results") < html.index("What the research agents found") < html.index("<h2>Status")
+    assert "+1.43 (-0.73 to +3.80)" in html and '<span class="bad">no</span>' in html
+    assert "confirmed with cost" in html and "Does &lt;b&gt;this&lt;/b&gt; help?" in html
+    assert "<script>" not in html  # a figure carrying a script is not inlined
