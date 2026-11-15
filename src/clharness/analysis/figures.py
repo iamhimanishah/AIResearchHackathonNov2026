@@ -389,19 +389,27 @@ def per_task(analysis: dict[str, Any], half: str, tag: str) -> str:
 
 
 def cost(analysis: dict[str, Any], half: str, tag: str) -> str:
-    """Retention gain over no-mitigation against extra GPU-hours (PREREG 9). Y bars are the
-    paired interval of the gain; the cost table itself carries no uncertainty."""
+    """Retention gain over no-mitigation against extra forward tokens, in millions (PREREG 9,
+    Amendment 4: forward tokens are measured, a wall-clock difference of short runs is noise).
+    The dot is the paired delta vs no-mitigation and the bar is its paired 95% interval, so
+    both come from one estimator (red-team RT-26). A configuration with no paired seed falls
+    back to the unpaired mean gain from the cost table and has no bar."""
     rows = analysis.get(f"cost_{half}", [])
     by_label = {c["config"]: c for c in _configs(analysis, half)}
-    pts = [r for r in rows if _finite(r["retention_gain"], r["extra_gpu_hours"])]
+
+    def gain(r: dict[str, Any]) -> float:
+        c = by_label.get(r["config"])
+        return c["vs_base"]["delta"] if c and c.get("vs_base") else r["retention_gain"]
+
+    pts = [r for r in rows if _finite(gain(r), r["extra_forward_tokens"])]
     w, h = 940, 520
     if not pts:
         return _empty(f"cost — {tag}", "no cost rows")
-    xs = [r["extra_gpu_hours"] for r in pts]
-    ys = [100 * r["retention_gain"] for r in pts]
+    xs = [r["extra_forward_tokens"] / 1e6 for r in pts]
+    ys = [100 * gain(r) for r in pts]
     ax = _Axes(_nice(min(xs + [0]), max(xs + [0])), _nice(min(ys + [0]), max(ys + [0]), 0.12),
-               (70, 36, w - 16, h - 70), x_fmt="{:.2f}", y_fmt="{:+.1f}")
-    o = [_title(f"retention gain vs extra GPU-hours — {tag}")] + ax.frame()
+               (70, 36, w - 16, h - 70), x_fmt="{:.0f}", y_fmt="{:+.1f}")
+    o = [_title(f"retention gain vs extra forward tokens — {tag}")] + ax.frame()
     if ax.x0 < 0 < ax.x1:
         o.append(f"<line x1='{ax.X(0):.1f}' x2='{ax.X(0):.1f}' y1='{ax.t}' y2='{ax.b}' "
                  f"stroke='{MUTED}' stroke-dasharray='3 3'/>")
@@ -410,19 +418,18 @@ def cost(analysis: dict[str, Any], half: str, tag: str) -> str:
                  f"stroke='{MUTED}' stroke-dasharray='3 3'/>")
     for i, r in enumerate(pts):
         color = COLORS[i % len(COLORS)]
-        x, y = r["extra_gpu_hours"], 100 * r["retention_gain"]
+        x, y = r["extra_forward_tokens"] / 1e6, 100 * gain(r)
         c = by_label.get(r["config"])
         if c and c.get("vs_base") and _finite(c["vs_base"]["lo"], c["vs_base"]["hi"]):
             o.append(_err_v(ax, 100 * c["vs_base"]["lo"], 100 * c["vs_base"]["hi"], ax.X(x), color))
         o.append(_dot(ax, x, y, color, 3.6,
-                      f"{r['config']}: {y:+.1f} pts for {x:+.2f} GPU-h"))
+                      f"{r['config']}: {y:+.1f} pts for {x:.0f}M extra forward tokens"))
         o.append(f"<text x='{ax.X(x) + 6:.1f}' y='{ax.Y(y) - 4:.1f}' font-size='8.5' "
                  f"fill='{MUTED}'>{_esc(r['config'][:34])}</text>")
     o.append(f"<text x='{(ax.l + ax.r) / 2:.0f}' y='{h - 26}' text-anchor='middle' font-size='10' "
-             f"fill='{MUTED}'>extra GPU-hours vs no-mitigation &#8594;</text>")
+             f"fill='{MUTED}'>extra forward tokens vs no-mitigation, millions &#8594;</text>")
     o.append(f"<text x='{ax.l}' y='{h - 10}' font-size='9' fill='{MUTED}'>"
-             "retention gain over no-mitigation, points (bars: 95% paired interval vs "
-             "no-mitigation)</text>")
+             "paired retention gain over no-mitigation, points (bars: its 95% paired interval)</text>")
     return _svg(w, h, o)
 
 

@@ -397,8 +397,12 @@ def cmd_grid_analysis(args) -> int:
     from clharness.spec import read_rows
 
     rows = [r for path in args.files for r in read_rows(path)]
+    # fake rows with planted effects use margins and the rule-4 control derived from the rows;
+    # real rows use the values PREREG 0.4 froze from phase 0
     report = analyze(rows, confirmatory=args.confirmatory, n_boot=args.n_boot, seed=args.seed,
-                     allow_simulated=args.allow_simulated)
+                     allow_simulated=args.allow_simulated, frozen=not args.planted)
+    for w in report["warnings"]:
+        print(f"WARNING {w}", file=sys.stderr)
     if report["rows"]["excluded_backend"]:
         print(f"excluded {report['rows']['excluded_backend']} non-real-backend rows: "
               + ", ".join(report["excluded_backend_rows"]))
@@ -442,7 +446,11 @@ def cmd_plan_replication(args) -> int:
     from clharness.spec import read_rows
 
     rows = [r for path in args.files for r in read_rows(path)]
-    plan = replication_specs(rows, allow_simulated=args.allow_simulated)
+    try:
+        plan = replication_specs(rows, allow_simulated=args.allow_simulated)
+    except ValueError as e:  # e.g. no seed-0 reference row: refuse cleanly, plan nothing
+        print(f"REFUSED {e}", file=sys.stderr)
+        return 1
     specs = plan["specs"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

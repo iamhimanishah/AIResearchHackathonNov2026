@@ -144,6 +144,10 @@ def test_blinding_hides_the_report_half_and_keeps_the_ranking():
         assert all(math.isnan(b.report_mean_delta) for b in row.retention.boundaries)
         assert not row.retention.report_only
     assert blind(rows[0]).retention.selection == rows[0].retention.selection
+    # the seed-0 reference arm lives in its own file; without it replication planning refuses
+    # (red-team RT-01), so the ranking comparison reads it too, blinded the same way
+    ref_path = REPO / "results" / "rows.reference.remeasured.jsonl"
+    rows, blinded = rows + _a1_rows(ref_path), blinded + blinded_rows(ref_path)
     open_, closed = replication_specs(rows), replication_specs(blinded)
     assert [s.spec_hash() for s in open_["specs"]] == [s.spec_hash() for s in closed["specs"]]
     for key in ("ranking", "selection"):  # by JSON, so NaN == NaN (the 'vs_reference' column)

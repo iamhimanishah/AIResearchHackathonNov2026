@@ -16,19 +16,18 @@ def rows():
 
 @pytest.fixture(scope="module")
 def screening(rows):
-    return A.analyze(rows, confirmatory=False, n_boot=500, allow_simulated=True)
+    return A.analyze(rows, confirmatory=False, n_boot=500, allow_simulated=True, frozen=False)
 
 
 @pytest.fixture(scope="module")
 def confirmatory(rows):
-    return A.analyze(rows, confirmatory=True, n_boot=2000, allow_simulated=True)
+    return A.analyze(rows, confirmatory=True, n_boot=2000, allow_simulated=True, frozen=False)
 
 
 def test_retention_main_effects_and_planted_pairs_are_recovered(screening):
     checks = A.check_planted(screening, PLANTED)
     mains = [c for c in checks if c["fit"] == "effects_retention_selection" and "×" not in c["effect"]]
     assert {c["effect"] for c in mains} == set(PLANTED["retention_main_effects"])
-    assert all(c["inside"] for c in mains), [c for c in mains if not c["inside"]]
     # the planted pairs are read through their alias chains in the factorial
     chains = screening["alias_chains_retention_selection"]["effects"]
     for pair in ("distill×replay", "lora×replay"):
@@ -50,9 +49,11 @@ def test_main_fit_is_six_techniques_plus_the_reference_interaction(screening):
 
 def test_selection_variants_and_off_design_rows_stay_out_of_the_fit(rows, screening):
     fitted = screening["effects_retention_selection"]["n_rows"]
+    in_fit = set(A.factorial()) | set(A.HALVES)
     excluded = [r for r in rows if r.status == "finished"
                 and (A.selection_of(r.spec) is not None or A.lr_of(r.spec) is not None
-                     or not A.is_design_spec(r.spec))]
+                     or not A.is_design_spec(r.spec)
+                     or frozenset(r.spec.technique_names()) not in in_fit)]
     assert fitted == screening["rows"]["finished"] - len(excluded)
     assert screening["off_design_rows"] == ["fake-distill-10.0-s1"]
 
@@ -294,7 +295,7 @@ def test_duplicate_spec_hashes_keep_one_row(rows, screening):
     """Loading the same run twice (e.g. an old-split noise file next to the remeasured one)
     must not double a configuration's seeds."""
     doubled = rows + rows
-    out = A.analyze(doubled, n_boot=200, allow_simulated=True)
+    out = A.analyze(doubled, n_boot=200, allow_simulated=True, frozen=False)
     assert out["rows"]["duplicates_dropped"] == len(rows)
     assert out["rows"]["finished"] == screening["rows"]["finished"]
     # and it prefers the row measured the current way when both exist
@@ -315,7 +316,8 @@ def test_screen_decisions_use_only_seed_0_rows(rows, screening):
     the screen never promoted — decisions re-derive from the seed-0 rows only (PREREG 6.3)."""
     screen = A.group([r for r in rows if r.status == "finished" and r.spec.seed == A.SCREEN_SEED])
     ref = A.find(screen, A.REFERENCE)
-    margins = A.acquisition_margins(A.find(screen, A.NO_MITIGATION))
+    # margins come from every no-mitigation seed (red-team RT-24), the ranking from seed 0
+    margins = A.acquisition_margins(A.find(A.group(rows), A.NO_MITIGATION))
     expected = A.promote(screen, ref, margins=margins)
     assert [(d["config"], d["promoted"]) for d in screening["promotion"]] == [
         (d["config"], d["promoted"]) for d in expected]
@@ -346,14 +348,14 @@ def test_rule4_fails_when_lower_lr_rows_are_missing(rows):
     """Trivially holding only applies when lower-LR arms ran but all fail the gate; absent rows
     are missing evidence, and rule 4 must not pass."""
     no_lr = [r for r in rows if A.lr_of(r.spec) is None]
-    out = A.analyze(no_lr, confirmatory=True, n_boot=300, allow_simulated=True)
+    out = A.analyze(no_lr, confirmatory=True, n_boot=300, allow_simulated=True, frozen=False)
     assert out["lr_control"]["arms"] == [] and out["lr_control"]["chosen"] is None
     assert out["confirmatory"], "expected a promoted family on the fake rows"
     assert all(not d["rule4_beats_lr_control"] for d in out["confirmatory"])
     # present-but-gated-out still holds trivially: 3e-5 fails the gate on the fake rows, so
     # a world with ONLY 3e-5 rows yields arms-without-a-chosen and rule 4 holds
     only_bad = [r for r in rows if A.lr_of(r.spec) in (None, 3e-5)]
-    out2 = A.analyze(only_bad, confirmatory=True, n_boot=300, allow_simulated=True)
+    out2 = A.analyze(only_bad, confirmatory=True, n_boot=300, allow_simulated=True, frozen=False)
     assert out2["lr_control"]["arms"] and out2["lr_control"]["chosen"] is None
     assert all(d["rule4_beats_lr_control"] for d in out2["confirmatory"])
 
@@ -406,3 +408,147 @@ def test_planted_effects_recover_across_fake_seeds():
         checks = A.check_planted(rep, PLANTED)
         ok += sum(c["inside"] for c in checks) >= math.ceil(0.85 * len(checks))
     assert ok >= 6, "recovery should hold on most seeds, not 46% of them"
+
+
+# ---------------------------------------------------------------------------------------------
+# Red-team fixes (docs/reviews/red-team-57fa138.md)
+# ---------------------------------------------------------------------------------------------
+
+
+def test_main_effects_cover_the_planted_values_across_datasets():
+    """Coverage over several fake datasets, not one: on a single dataset all six 95% intervals
+    contain the planted value only about half the time (0.9^6)."""
+    inside = []
+    for s in range(10):
+        finished = [r for r in fake_rows(seed=s) if r.status == "finished"]
+        fit = A.fit_effects(A.fit_rows(finished), lambda r: r.retention.selection.mean_delta,
+                            sigma=A.SIGMA_NOISE, interactions=A.main_interactions())
+        for name, value in PLANTED["retention_main_effects"].items():
+            e = fit["effects"][name]
+            inside.append(e["lo"] <= value <= e["hi"])
+    assert sum(inside) / len(inside) >= 0.8, sum(inside) / len(inside)
+
+
+def test_rt01_gate_fails_closed_without_a_reference(rows):
+    configs = A.group(rows)
+    x = A.find(configs, frozenset({"distill", "freeze", "replay"}))
+    assert not A.acquisition_gate(x, None)["passes"]
+    no_ref0 = [r for r in rows if not (r.spec.seed == 0 and A.find(A.group([r]), A.REFERENCE))]
+    out = A.analyze(no_ref0, n_boot=100, allow_simulated=True, frozen=False)
+    assert out["screen_reference"] is None and out["warnings"]
+    assert not any(d["promoted"] for d in out["promotion"])
+    assert not any(d.get("promoted") for d in out["selection_screen"])
+
+
+def test_rt01_replication_refuses_without_a_reference(rows):
+    from clharness.analysis.replication import replication_specs
+
+    no_ref0 = [r for r in rows if r.spec.seed == 0 and not A.find(A.group([r]), A.REFERENCE)]
+    with pytest.raises(ValueError, match="reference"):
+        replication_specs(no_ref0, allow_simulated=True)
+
+
+def test_rt05_items_path_is_read_from_the_repo_root(tmp_path, monkeypatch):
+    from clharness.config import REPO_ROOT
+    from clharness.spec import ResultRow
+
+    path = REPO_ROOT / "results" / "rows.reference.remeasured.jsonl"
+    row = ResultRow.model_validate_json(path.read_text().splitlines()[0])
+    assert row.items_path and not row.items_path.startswith("/")
+    if not (REPO_ROOT / row.items_path).exists():
+        pytest.skip("item files not in this checkout")
+    monkeypatch.chdir(tmp_path)  # anywhere but the repo root
+    got = A.checkpoint_items(row, "arc_easy", "selection")
+    assert got is not None and len(got[0]) == 250
+
+
+def test_rt05_markdown_prints_the_bootstrap_mode(confirmatory):
+    md = A.to_markdown(confirmatory)
+    assert "| Bootstrap |" in md and "| parametric |" in md
+
+
+def test_rt08_a_local_copy_never_replaces_a_real_row(rows):
+    real = next(r for r in rows if r.status == "finished").model_copy(update={"backend": "modal"})
+    local = real.model_copy(update={"backend": "local"})
+    for order in ([real, local], [local, real]):
+        kept, n = A.dedupe_rows(order)
+        assert n == 1 and kept[0].backend == "modal"
+
+
+def test_rt09_rows_off_their_token_budget_are_invalid(rows, screening):
+    r = next(r for r in rows if r.status == "finished" and A.lr_of(r.spec) is None
+             and r.spec.technique_names() == [])
+    off = r.model_copy(update={"cost": r.cost.model_copy(
+        update={"gradient_tokens": int(r.spec.gradient_tokens() * 1.02)})})
+    assert A.token_problem(r) is None and "over 1%" in A.token_problem(off)
+    out = A.analyze([off if x is r else x for x in rows], n_boot=100, allow_simulated=True, frozen=False)
+    assert out["rows"]["invalid_tokens"] == 1
+    assert out["rows"]["finished"] == screening["rows"]["finished"] - 1
+    assert any(d["name"] == r.spec.name and "gradient tokens" in d["reason"] for d in out["not_finished"])
+
+
+def test_rt10_claim_arms_outside_the_design_stay_out_of_the_fit(rows, screening):
+    names = {r.spec.name for r in A.fit_rows([r for r in rows if r.status == "finished"])}
+    assert not any(n.startswith(("lora-r8", "freeze-bottom")) for n in names)
+    assert screening["effects_retention_selection"]["n_rows"] == len(names)
+
+
+def test_rt11_distill_lora_is_labelled_as_aliased_with_freeze_wavg(screening):
+    eff = screening["effects_retention_selection"]["effects"]
+    assert eff["distill×lora"]["aliased_with"] == ["freeze×wavg"]
+    assert eff["lr_rewarm×replay"]["aliased_with"] == []
+    assert "freeze×wavg" not in screening["effects_retention_selection"]["dropped"]
+
+
+def test_rt24_frozen_margins_and_lr_control_are_the_default(rows):
+    out = A.analyze(rows, confirmatory=True, n_boot=200, allow_simulated=True)
+    assert out["frozen_decision_values"] and out["acquisition_margins"] == A.FROZEN_MARGINS
+    lc = out["lr_control"]
+    # the fake rows plant 3e-5 as learning too little, so the rule would pick 5e-5; frozen L wins
+    assert lc["chosen_label"] == "no-mitigation-lr3e-05" and lc["derived_label"] == "no-mitigation-lr5e-05"
+    assert all(d["vs_lr_control"]["config"] == "no-mitigation-lr3e-05" for d in out["confirmatory"])
+    # frozen L absent: missing evidence, rule 4 fails
+    no_l = [r for r in rows if A.lr_of(r.spec) != 3e-5]
+    out2 = A.analyze(no_l, confirmatory=True, n_boot=200, allow_simulated=True)
+    assert out2["lr_control"]["chosen"] is None
+    assert all(not d["rule4_beats_lr_control"] for d in out2["confirmatory"])
+
+
+def test_rt25_collapse_sensitivity_majority_rate_and_secondary_outcomes(rows, confirmatory):
+    sens = confirmatory["collapse_sensitivity"]
+    assert set(sens) == set(confirmatory["collapse_flags"])
+    by_name = {r.spec.name: r for r in rows}
+    for name, s in sens.items():
+        h = by_name[name].retention.report
+        kept = [p.delta for t, p in h.per_task.items() if t not in s["collapsed"]]
+        assert s["report"]["without_collapsed"] == pytest.approx(sum(kept) / len(kept))
+        assert s["selection"]["primary"] == by_name[name].retention.selection.mean_delta
+    assert confirmatory["majority_rate"] == {"pubmedqa_pqal": 0.58}
+    md = A.to_markdown(confirmatory)
+    assert "Majority-class rate: pubmedqa_pqal 0.58" in md
+    sec = confirmatory["configs_selection"][0]["secondary"]
+    assert set(sec) == {"acquisition_end_of_stream", "general_ppl_ratio"}
+
+
+def test_rt27_markdown_without_no_mitigation_rows(rows):
+    no_base = [r for r in rows if not (r.spec.technique_names() == [] and A.lr_of(r.spec) is None)]
+    out = A.analyze(no_base, confirmatory=True, n_boot=100, allow_simulated=True, frozen=False)
+    assert "sanity_reference_vs_no_mitigation" not in out
+    assert "not computed" in A.to_markdown(out)
+
+
+def test_rt24_a_frozen_control_that_fails_the_gate_stays_but_warns(rows):
+    """Frozen means frozen: on the fake rows 3e-5 is planted to fail the gate, so the frozen
+    control is still the comparator and the report says it fails."""
+    out = A.analyze(rows, n_boot=100, allow_simulated=True)
+    assert out["lr_control"]["chosen_label"] == "no-mitigation-lr3e-05"
+    assert any("fails the acquisition gate" in w for w in out["warnings"])
+    derived = A.analyze(rows, n_boot=100, allow_simulated=True, frozen=False)
+    assert not any("fails the acquisition gate" in w for w in derived["warnings"])
+
+
+def test_markdown_renders_an_older_confirmatory_json(confirmatory):
+    """A confirmatory JSON written before bootstrap_mode existed still renders."""
+    old = dict(confirmatory)
+    old["confirmatory"] = [{k: v for k, v in d.items() if k != "bootstrap_mode"} for d in old["confirmatory"]]
+    assert "| ? |" in A.to_markdown(old)

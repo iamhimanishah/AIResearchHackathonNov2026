@@ -36,15 +36,22 @@ def _at_seed(spec: RunSpec, seed: int) -> RunSpec:
 
 
 def replication_specs(rows: Iterable[ResultRow], seeds: Sequence[int] = REPLICATION_SEEDS,
-                      allow_simulated: bool = False) -> dict[str, Any]:
+                      allow_simulated: bool = False, frozen: bool = True) -> dict[str, Any]:
     """The runs still to launch for replication, with the rankings they follow from.
 
     `rows`: every result row at hand (screen, controls, anything already replicated). Rows of
     specs that are already finished are left out of `specs`, so calling this again after some
     replication runs have landed returns only what is missing, and the ranking does not move.
     """
-    rows, _ = A.dedupe_rows(list(rows))
-    report = A.analyze(rows, confirmatory=False, n_boot=200, allow_simulated=allow_simulated)
+    rows, _ = A.dedupe_rows(list(rows))  # real-backend rows win ties (A._row_rank, red-team RT-08)
+    # `frozen`: the margins frozen in PREREG 0.4 (real rows); False derives them (fake rows)
+    report = A.analyze(rows, confirmatory=False, n_boot=200, allow_simulated=allow_simulated,
+                       frozen=frozen)
+    if report["screen_reference"] is None:
+        # without the seed-0 reference arm the gate cannot be applied, and the ranking would
+        # pick configurations that fail it: refuse rather than launch paid runs (red-team RT-01)
+        raise ValueError("no seed-0 reference-arm row (replay+lr_rewarm) in these rows; include "
+                         "results/rows.reference.remeasured.jsonl before planning replication")
     usable = [r for r in rows if r.status == "finished"
               and (allow_simulated or r.backend in A.REAL_BACKENDS)]
     screen = A.group([r for r in usable if r.spec.seed == A.SCREEN_SEED])
