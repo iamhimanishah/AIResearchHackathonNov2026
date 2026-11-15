@@ -98,10 +98,57 @@ activation-based selection is fourth in the cut order.
 | `replay` (B2), `wavg` (B6), `lr_rewarm` | done, with tiny-model tests; no real-model run yet |
 | Selection (B3): `random`, `loss`, `act_nov` on `replay` | done, with tiny-model tests; `sae_rare` not built |
 | `lora`, `freeze` (B4), `distill` (B5) | done, with tiny-model tests; no real-model run yet |
-| Reference arm (B1) | specs written and checked through `config_from_spec`; needs a fast-bench run |
+| Reference arm (B1) | run at seeds 0 to 2 on the frozen bench; see Results so far |
+| Combinations | every run of the screening design trains on the tiny model (`tests/test_screen_combos.py`); only single techniques and replay plus distil-on-replay have run on a GPU |
 | Sanity runs on a GPU | all eight specs in `configs/bench/specs/sanity/` finished on Modal H100s at commit 314150a; rows in `results/rows.sanity.jsonl` (four steps per domain, so only status and cost mean anything) |
 
 Sanity results will be added to this file from result rows only, never typed in.
+
+## Results so far
+
+A snapshot, written by a script that reads the row files and typed by nobody. Sources:
+`results/rows.plumbing.jsonl`, `results/rows.sanity.jsonl`, `results/rows.phase0.remeasured.jsonl`,
+`results/rows.phase0.jsonl` and `results/rows.reference.remeasured.jsonl`, as of 14 November.
+The analysis behind `make reproduce-figures` is the authority; this table is for orientation.
+
+### Sanity runs: does each technique run on the real model?
+
+Four optimizer steps per domain on a Modal H100. Only status and cost mean anything here.
+
+| Spec | Status | Wall clock (s) | Est. cost ($) | Gradient tokens | Forward-only tokens | Trainable parameters |
+|---|---|---|---|---|---|---|
+| `plumbing` | finished | 305 | 0.33 | 524,288 | 0 | 999,885,952 |
+| `sanity-distill` | finished | 342 | 0.38 | 524,288 | 524,288 | 999,885,952 |
+| `sanity-freeze` | finished | 309 | 0.34 | 524,288 | 0 | 348,948,608 |
+| `sanity-lora` | finished | 390 | 0.43 | 524,288 | 0 | 6,522,880 |
+| `sanity-lr-rewarm` | finished | 438 | 0.48 | 524,288 | 0 | 999,885,952 |
+| `sanity-replay` | finished | 323 | 0.35 | 524,288 | 0 | 999,885,952 |
+| `sanity-replay-distill-on-replay` | finished | 315 | 0.35 | 524,288 | 25,600 | 999,885,952 |
+| `sanity-replay-select-actnov` | finished | 343 | 0.38 | 524,288 | 102,400 | 999,885,952 |
+| `sanity-replay-select-loss` | finished | 341 | 0.37 | 524,288 | 102,400 | 999,885,952 |
+| `sanity-wavg` | finished | 297 | 0.33 | 524,288 | 0 | 999,885,952 |
+
+### First full runs on the frozen bench
+
+Code then legal, 10M tokens each. Retention is the change in the multiple-choice mean against the base model, in points; perplexity ratios are trained / base at the end of the stream. Mean (SD across seeds).
+
+| Arm | Seeds | Retention, report half | Retention, selection half | Legal perplexity ratio | General perplexity ratio |
+|---|---|---|---|---|---|
+| no mitigation, lr 1e-4 | 5 | -6.44 (1.15) | -5.72 (0.59) | 0.787 | 1.386 |
+| replay, lr 1e-4 | 1 | -5.60 | -5.70 | 0.790 | 1.295 |
+| lr_rewarm, lr 1e-4 | 1 | -4.90 | -3.40 | 0.738 | 1.183 |
+| lr_rewarm+replay, lr 1e-4 | 3 | -3.13 (0.85) | -3.37 (0.38) | 0.744 | 1.120 |
+| no mitigation, lr 5e-05 | 3 | -2.80 (0.46) | -2.43 (0.55) | 0.759 | 1.131 |
+| no mitigation, lr 3e-05 | 3 | -1.07 (0.80) | -1.47 (0.15) | 0.754 | 1.055 |
+
+What the full runs say so far, with replay alone and re-warm alone at one seed each:
+
+- The reference arm keeps about 3 points more than no mitigation and learns legal slightly
+  better, so it did not buy retention by learning less.
+- Re-warm does most of that. Replay alone is inside the seed noise on the multiple-choice mean,
+  though it shows on general-text perplexity.
+- Lowering the learning rate to 3e-5 with no technique forgets less than the reference arm at
+  1e-4, at nearly the same legal perplexity. Any technique at 1e-4 has to beat that control.
 
 ## Decisions that cross workstreams
 

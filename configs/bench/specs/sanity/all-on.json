@@ -1,0 +1,60 @@
+{
+  "name": "sanity-all-on",
+  "seed": 0,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 262144
+    },
+    {
+      "name": "legal",
+      "tokens": 262144
+    }
+  ],
+  "optim": {},
+  "techniques": [
+    {
+      "name": "distill",
+      "params": {
+        "weight": 1.0,
+        "top_k": 64
+      }
+    },
+    {
+      "name": "freeze",
+      "params": {
+        "bottom_layers": 13
+      }
+    },
+    {
+      "name": "lora",
+      "params": {
+        "rank": 8
+      }
+    },
+    {
+      "name": "lr_rewarm",
+      "params": {
+        "rewarm_steps": 8,
+        "min_lr_ratio": 0.1,
+        "schedule": "cosine"
+      }
+    },
+    {
+      "name": "replay",
+      "params": {
+        "share": 0.05,
+        "source": "general"
+      }
+    },
+    {
+      "name": "wavg",
+      "params": {
+        "alpha": 0.25
+      }
+    }
+  ],
+  "notes": "Four steps per domain: the screen's all-on arm, to check memory with the teacher copy and adapters together. Its numbers mean nothing.",
+  "parent_spec_hash": null
+}

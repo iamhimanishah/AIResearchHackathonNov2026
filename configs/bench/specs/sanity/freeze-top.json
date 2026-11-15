@@ -1,0 +1,25 @@
+{
+  "name": "sanity-freeze-top",
+  "seed": 0,
+  "bench": "fast",
+  "stream": [
+    {
+      "name": "code",
+      "tokens": 262144
+    },
+    {
+      "name": "legal",
+      "tokens": 262144
+    }
+  ],
+  "techniques": [
+    {
+      "name": "freeze",
+      "params": {
+        "bottom_layers": 0,
+        "top_layers": 13
+      }
+    }
+  ],
+  "notes": "Four steps per domain: a memory and plumbing check for a published-claims arm. Its numbers mean nothing."
+}
