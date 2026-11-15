@@ -395,3 +395,97 @@ def test_no_grad_is_the_one_decorator_allowed():
     assert validate_source(head + "    @torch.no_grad()\n    def on_step_end(self, ctx, stats):\n        return None\n") == []
     for decorator in ("@staticmethod", "@torch.jit.script", "@torch.no_grad", "@torch.enable_grad()"):
         assert validate_source(head + f"    {decorator}\n    def on_step_end(self, ctx, stats):\n        return None\n")
+
+
+# ---------------------------------------------------------------------------------------------
+# Exa in the loop: Scout candidates reach the proposer (A), prior work before launch (B), and the
+# model chooses the next search (C)
+# ---------------------------------------------------------------------------------------------
+
+from clharness.agent.contracts import Source
+from clharness.agent.search import FakeSearch
+
+
+def _src(i: int, query: str = "q") -> Source:
+    return Source(id=f"src-{i}", query=query, url=f"https://arxiv.org/abs/2608.{i:05d}",
+                  title=f"Paper {i} <b>", snippet="spaced review lowers forgetting", published="2026-08-18",
+                  retrieved_at="2026-11-15T00:00:00+00:00")
+
+
+def test_scout_candidates_are_quoted_with_their_papers(tmp_path):
+    result = {"candidates": [{"name": "Spaced Repetition Training", "description": "review old rows",
+                              "source_ids": ["src-1"]}],
+              "sources": [_src(1).model_dump(mode="json"), _src(2).model_dump(mode="json")]}
+    (tmp_path / "cands").mkdir()
+    (tmp_path / "cands" / "a.json").write_text(json.dumps(result))
+    path = ex.scout_candidates_path(tmp_path / "cands")
+    block = ex.scout_sources(path)
+    assert block.startswith("Scout candidates, found through Exa search:")
+    assert "Spaced Repetition Training" in block and "https://arxiv.org/abs/2608.00001" in block
+    assert "2608.00002" not in block  # only the papers the candidate cites
+    assert "<b>" not in block and "&lt;b&gt;" in block  # web text cannot close the quote tag
+
+
+def test_the_proposer_sees_scout_candidates_and_the_exa_instructions(tmp_path, have):
+    llm = FakeLLM().queue("explorer", {"hypotheses": [_hyp()]})
+    _cycle(tmp_path, have, llm=llm, sources="Scout candidates, found through Exa search:\nX")
+    assert "Scout candidates" in llm.prompts("explorer")[0]
+    assert "next_search" in json.dumps(ex.Proposal.model_json_schema())
+
+
+def test_prior_work_is_asked_before_launch_and_stored_with_citations(tmp_path, have):
+    props = [_hyp(claim="helps", techniques=[{"name": "replay", "params": {"share": 0.25}}]),
+             _hyp(claim="lr too high", lr=3e-4)]
+    search = FakeSearch()
+    question = ex.ask_prior_work("helps", lambda q: ("", ())).question
+    search.results[question] = (_src(7, question),)
+    backend = FakeModal(lambda spec: (0.6, 0.76))
+    out, _ = _cycle(tmp_path, have, llm=FakeLLM().queue("explorer", {"hypotheses": props}),
+                    backend=backend, go=True, prior_work=search.answer)
+    by_claim = {h.claim: h for h in out}
+    pw = by_claim["helps"].prior_work
+    assert pw is not None and pw.answer.startswith("fake answer") and pw.citations[0].url.endswith("00007")
+    assert by_claim["lr too high"].prior_work is None  # refused by the gate: nothing to check
+    assert [c for c in search.calls if c[1] == "answer"] == [(question, "answer")]
+    stored = ex.load_hypotheses(tmp_path / "explore" / "hypotheses.jsonl")
+    assert stored[0].prior_work.citations[0].url.endswith("00007")
+    log = DecisionLog(tmp_path / "explore" / "decisions.jsonl")
+    assert log.verify().ok
+    entry = next(d for d in log.entries() if d.key.startswith("explore/prior_work"))
+    assert entry.data["prior_work"][0]["citations"][0]["url"].endswith("00007")
+    # gate first, then prior work, then the launch
+    states = [d.key.split("#")[0] for d in log.entries()]
+    assert states.index("explore/gate") < states.index("explore/prior_work")
+
+
+def test_a_failing_prior_work_search_never_stops_the_cycle(tmp_path, have):
+    backend = FakeModal(lambda spec: (0.6, 0.76))
+    out, _ = _cycle(tmp_path, have, llm=FakeLLM().queue("explorer", {"hypotheses": [_hyp()]}),
+                    backend=backend, go=True, prior_work=FakeSearch(fail=True).answer)
+    assert out[0].prior_work.error and out[0].status in ("confirmed", "inconclusive", "refuted")
+    assert len(backend.spawned) == 2
+
+
+def test_the_model_chooses_the_next_search_and_it_runs_once(tmp_path, have):
+    backend = FakeModal(lambda spec: (0.6, 0.76))
+    llm = FakeLLM().queue("explorer", {"hypotheses": [_hyp()], "next_search": "spaced repetition replay LLM"})
+    _cycle(tmp_path, have, llm=llm, backend=backend, go=True)
+    out = tmp_path / "explore"
+    req = json.loads((out / ex.NEXT_SEARCH_NAME).read_text())
+    assert req["query"] == "spaced repetition replay LLM" and req["used"] is False
+    asked = []
+
+    def search(query, where):
+        asked.append(query)
+        return '<source>\n{"url": "https://arxiv.org/abs/2608.17530"}\n</source>'
+
+    text = ex.run_next_search(out, say=lambda s: None, search=search)
+    assert asked == ["spaced repetition replay LLM"] and "2608.17530" in text
+    assert json.loads((out / ex.NEXT_SEARCH_NAME).read_text())["used"] is True
+    assert ex.run_next_search(out, say=lambda s: None, search=search) == ""  # once only
+    log = DecisionLog(out / "decisions.jsonl")
+    assert log.verify().ok
+    keys = [d.key.split("#")[0] for d in log.entries()]
+    assert "explore/next_search" in keys and "explore/search" in keys
+    entry = next(d for d in log.entries() if d.key.startswith("explore/search"))
+    assert entry.data["urls"] == ["https://arxiv.org/abs/2608.17530"]

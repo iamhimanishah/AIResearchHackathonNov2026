@@ -15,6 +15,7 @@ logged or stored.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Sequence
 from typing import Any, Protocol
@@ -98,6 +99,27 @@ class ExaSearch:
             ))
         return tuple(sources)
 
+    def answer(self, question: str) -> tuple[str, tuple[Source, ...]]:
+        """`exa.answer(question)`: a short answer grounded in web search, with its citations.
+        Used by the explore loop's prior-work check: has this already been tested?"""
+        try:
+            response = self._sdk().answer(question, text=False, timeout=self.timeout)
+        except SearchError:
+            raise
+        except Exception as exc:  # any SDK or network failure is a SearchError
+            raise SearchError(f"{type(exc).__name__}: {exc}") from exc
+        now = utc_iso(self._clock.now())
+        text = _field(response, "answer") or ""
+        cites = []
+        for item in _field(response, "citations") or ():
+            url = _field(item, "url")
+            if url:
+                cites.append(Source(
+                    id=source_id(question, url), query=question, url=url,
+                    title=str(_field(item, "title") or "")[:300], snippet="",
+                    published=_field(item, "published_date", "publishedDate"), retrieved_at=now))
+        return (text if isinstance(text, str) else json.dumps(text))[:2000], tuple(cites)
+
 
 class FakeSearch:
     """Returns scripted sources per query; records every (query, objective) it was asked."""
@@ -113,3 +135,10 @@ class FakeSearch:
         if self.fail:
             raise SearchError("fake search failure")
         return tuple(self.results.get(query, ()))
+
+    def answer(self, question: str) -> tuple[str, tuple[Source, ...]]:
+        """Scripted: the answer is a fixed sentence, the citations are `results[question]`."""
+        self.calls.append((question, "answer"))
+        if self.fail:
+            raise SearchError("fake search failure")
+        return "fake answer: tested once, mixed results", tuple(self.results.get(question, ()))
