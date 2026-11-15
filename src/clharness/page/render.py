@@ -33,6 +33,7 @@ th{background:#f6f8fa}td.n{text-align:right;font-variant-numeric:tabular-nums}
 .ok{color:#1a7f37;font-weight:600}.bad{color:#cf222e;font-weight:600}.muted{color:#656d76}
 .tag{display:inline-block;padding:0 6px;border-radius:10px;background:#eaeef2;font-size:12px}
 .ref{background:#fff8c5}code{font-size:12px}
+h3{font-size:15px;margin:20px 0 6px}.fig{margin:16px 0;max-width:940px}.fig svg{width:100%;height:auto}
 """
 
 
@@ -272,6 +273,97 @@ def _explore(out: Path) -> str:
                            and p.name.startswith("explore-"))] if path.is_dir())
 
 
+def _pts(x: Any, lo: Any = None, hi: Any = None) -> str:
+    text = f"{100 * float(x):+.2f}"
+    return text if lo is None or hi is None else f"{text} ({100 * float(lo):+.2f} to {100 * float(hi):+.2f})"
+
+
+def _prereg(out: Path) -> str:
+    """The pre-registered analysis next to the rendered dir (`../analysis/grid_analysis.json`, written
+    by `clh grid-analysis --confirmatory`) and its figures, so the page opens on the results."""
+    a = _json(out.parent / "analysis" / "grid_analysis.json")
+    if not a.get("confirmatory") and not a.get("claims"):
+        return ""
+    html = ["<h2>Pre-registered results (report half)</h2>",
+            ('<p class="muted">From <code>results/analysis/grid_analysis.json</code>. Differences are in points '
+            "of the four-task multiple-choice mean against the published reference arm (replay plus "
+            "learning-rate re-warming); positive means less forgetting. A configuration wins only if it is "
+            "significant, larger than twice the noise, learns the new domain within the margin, and beats "
+            "plain training at the lower learning rate.</p>")]
+    rows = []
+    for c in a.get("confirmatory") or []:
+        lr, gate = c.get("vs_lr_control") or {}, c.get("acquisition_gate") or {}
+        wins = all(c.get(k) for k in ("rule1_significant", "rule2_large_enough", "rule3_learns_enough",
+                                      "rule4_beats_lr_control"))
+        rows.append([escape(str(c.get("config", ""))), str(c.get("n_pairs", "")),
+                     _pts(c["delta"], *c["ci"]), _num(c.get("p_holm"), ".3f"),
+                     "pass" if all(g.get("passes") for g in gate.values()) else "fail",
+                     _pts(lr["delta"], *lr["ci"]) if lr.get("ci") else "",
+                     '<span class="ok">yes</span>' if wins else '<span class="bad">no</span>'])
+    if rows:
+        html += ["<h3>Best configurations against the published recipe</h3>",
+                 _table(["Configuration", "Seeds", "Δ vs reference (95% CI)", "p (Holm)", "Learns enough",
+                         "Δ vs lower learning rate (95% CI)", "Wins"], rows, numeric={1, 3})]
+    rows = []
+    for c in a.get("claims") or []:
+        unit = c.get("outcome") == "retention"
+        delta = _pts(c["delta"], c.get("lo"), c.get("hi")) if unit else \
+            f"{c['delta']:+.3f} ({c['lo']:+.3f} to {c['hi']:+.3f})"
+        rows.append([str(c.get("id", "")), escape(str(c.get("claim", ""))), escape(str(c.get("source", ""))),
+                     escape(f"{c.get('arm')} vs {c.get('comparator')}"),
+                     "retention, points" if unit else escape(str(c.get("outcome", ""))), delta,
+                     str(c.get("n_pairs", "")), escape(str(c.get("verdict", "")))])
+    if rows:
+        html += ["<h3>Published claims tested on this bench (exploratory)</h3>",
+                 _table(["#", "Claim", "Source", "Arm vs comparator", "Outcome", "Δ (95% CI)", "Seeds",
+                         "Verdict"], rows, numeric={0, 6})]
+    for name in ("frontier", "claims", "effects"):
+        figure = out.parent / "figures" / f"{name}.svg"
+        if figure.exists():
+            svg = figure.read_text(encoding="utf-8")
+            if svg.lstrip().startswith("<svg") and "<script" not in svg.lower():
+                html.append(f'<div class="fig">{svg}</div>')
+    return "".join(html)
+
+
+def _agent_findings(out: Path) -> str:
+    """What the explore instances found, by theme: the same cells as results/agent/explore_summary.md
+    (clharness.agent.explore_summary), computed from the hypothesis and row files. Exploratory."""
+    from clharness.agent import explore_summary as es
+
+    folders = sorted(p for p in out.glob("explore-*") if (p / "hypotheses.jsonl").exists()) if out.is_dir() else []
+    if not folders:
+        return ""
+    g = es.gather(folders)
+    head = ["Instance", "Hypotheses", "Confirmed", "Confirmed with cost", "Refuted", "Inconclusive",
+            "Refused by the gate", "Still running", "Agent-written techniques run", "Full runs", "Compute (est.)"]
+    rows = []
+    for i in g["instances"]:
+        t = es.totals(i)
+        rows.append([escape(i["name"]), *(str(t[k]) for k in ("n", "confirmed", "confirmed with cost", "refuted",
+                                                               "inconclusive", "rejected", "running")),
+                     f"{t['own_run']} of {t['own']}", str(t["fin"]), f"${t['usd']:.0f}"])
+    html = ["<h2>What the research agents found (exploratory)</h2>",
+            ('<p class="muted">Each hypothesis was written by a model before its runs; code decided what could '
+            "run and gave the verdict: one configuration at two seeds against one control, selection half. "
+            "A positive effect means the tested configuration forgot less. Core lost is the share of the "
+            "fragile-core questions wrong at the end; legal ratio is legal perplexity after training over "
+            "the base model's (lower = learned more). Leads, not results; not part of the pre-registered "
+            "analysis.</p>"), _table(head, rows, numeric=set(range(1, 11)))]
+    used: set[tuple[str, ...]] = set()
+    for theme in g["themes"]:
+        keys = [k for k in (tuple(x.split(":", 1)) for x in theme["hypotheses"]) if k in g["recs"]]
+        if keys:
+            html += [f"<h3>{escape(theme['title'])}</h3>", f"<p>{escape(theme['text'])}</p>",
+                     _table(es.COLUMNS, [[escape(c) for c in es.cells(k[0], g["recs"][k])] for k in keys])]
+            used.update(keys)
+    rest = [k for k, r in g["recs"].items() if k not in used and es.status(r["h"]) in es.DECIDED_LABELS]
+    if rest:
+        html += ["<h3>Other decided hypotheses</h3>",
+                 _table(es.COLUMNS, [[escape(c) for c in es.cells(k[0], g["recs"][k])] for k in rest])]
+    return "".join(html)
+
+
 def _decisions(out: Path) -> str:
     rows = []
     for d in DecisionLog(out / "decisions.jsonl").entries():
@@ -302,6 +394,8 @@ def render(out_dir: str | Path, rows_path: str | Path | None = None,
         f"<title>Remember: results</title><style>{STYLE}</style></head><body>",
         "<h1>Remember: continual-learning results</h1>",
         f'<p class="muted">Read-only view of <code>{escape(str(out))}</code>.</p>',
+        _prereg(out),
+        _agent_findings(out),
         "<h2>Status</h2>", _summary(state, out),
         "<h2>Report (frozen set)</h2>", _report(report),
         f"<h2>Runs ({len(latest)})</h2>", _runs(latest, opened, _own_boundary(rows_file)),
