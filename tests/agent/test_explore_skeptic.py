@@ -158,8 +158,10 @@ def test_last_nights_records_load_and_resolve_unchanged_with_the_flag_off(tmp_pa
     before = ex.load_hypotheses(out / "hypotheses.jsonl")
     assert before and all(not h.replicated and not h.challenged and h.challenges is None for h in before)
     after = ex.cycle(out, [have], resolve_only=True, git_sha=SHA, say=lambda s: None)
-    assert [(h.id, h.status, h.effect_points, h.reason) for h in after] == \
-           [(h.id, h.status, h.effect_points, h.reason) for h in before]
+    # A record still "running" (its runs never landed) only gains a "rows not in yet" note.
+    def key(hs):
+        return [(h.id, h.status, h.effect_points, None if h.status == "running" else h.reason) for h in hs]
+    assert key(after) == key(before)
     assert {h.status for h in after} <= {"accepted", "rejected", "running", "confirmed", "refuted", "inconclusive"}
 
 
