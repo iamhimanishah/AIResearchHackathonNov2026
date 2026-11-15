@@ -266,7 +266,8 @@ half, over the paired replication seeds:
    of the primary outcome across the 5 no-mitigation noise-floor seeds (section 6.1).
    **σ_noise = 1.15 points** (report half, frozen from phase 0, section 0.4), so the threshold
    is 2.30 points.
-3. **Learns enough, and does not damage code:** on **each** trained domain (code and legal),
+3. **Learns enough, and does not damage code:** on **each** trained domain (code and legal; a
+   configuration missing either domain fails, amendment 5),
    the mean own-boundary perplexity ratio of X is at most m_d × that of R, with
    m_d = max(1.05, exp(2 × SD_d)) from the noise floor (section 0.2). Both margins are frozen at
    1.05. For legal this is acquisition; for code it is a damage guard (A15).
@@ -276,7 +277,9 @@ half, over the paired replication seeds:
    - X must beat L with the same tests as rules 1 and 2: the paired bootstrap interval for
      primary(X) − primary(L) excludes 0 after Holm correction across the promoted
      configurations, and that Δ is above 2 × σ_noise.
-   - If no lower-LR arm passes the gate, rule 4 holds trivially, and the report says so.
+   - If no lower-LR arm passes the gate, rule 4 holds trivially, and the report says so. If the
+     lower-LR rows are **absent** from the analysis, rule 4 **fails**: leaving them out cannot
+     waive it (amendment 5).
    - Rule 4 applies to the factorial family only. The selection family compares selection
      signals with random selection, where the learning rate plays no part.
 
@@ -309,9 +312,9 @@ of it, and every spec is accepted by the real plugins.
   wavg = replay·lr_rewarm·freeze.
 - **Resolution IV:** no main effect is aliased with a pairwise interaction.
 - Among the resolution IV choices, these generators put **both controls inside the design**:
-  F01 is no-mitigation (shared with noise-floor seed 0) and F02 is the reference arm.
+  F01 is no-mitigation (shared with noise-floor seed 0) and F04 is the reference arm.
 
-**Block 2, reference halves (2 runs).** `replay` alone and `lr_rewarm` alone. With F01 and F02
+**Block 2, reference halves (2 runs).** `replay` alone and `lr_rewarm` alone. With F01 and F04
 they complete the 2×2 of the reference recipe. That makes replay × lr_rewarm estimable, even
 though the factorial aliases it with lora × distill and freeze × wavg.
 
@@ -350,7 +353,7 @@ a chain:
 | freeze×replay = lr_rewarm×wavg |
 
 **Block 3, selection on replay (4 runs).** The reference arm with `select` set to `loss` or
-`act_nov` (`layer` 13 for act_nov), each with `keep: high` and `keep: low`. The control is F02,
+`act_nov` (`layer` 13 for act_nov), each with `keep: high` and `keep: low`. The control is F04,
 the same arm with random selection.
 
 **Known couplings:**
@@ -436,7 +439,8 @@ Comparators come from phase 0 (no-mitigation, the reference arm, LR 3e-5) or fro
   in the published direction.
   - Retention uses the paired hierarchical bootstrap (section 7).
   - Acquisition uses the log own-boundary perplexity ratio of the named domain, with a
-    bootstrap over paired seeds.
+    **paired t interval** over seeds (df = n − 1). Amendment 2: this was a bootstrap over paired
+    seeds, which at 3 seeds excludes 0 in about 25% of no-effect cases.
 - **Other verdicts:** "opposite" means the interval excludes 0 the other way. "Not reproduced
   (interval includes 0)" otherwise. "Too few seeds" means fewer than 2 paired seeds.
 - **A magnitude test** reports our effect next to the published number, with no pass or fail.
@@ -470,8 +474,10 @@ Comparators come from phase 0 (no-mitigation, the reference arm, LR 3e-5) or fro
 - **Screening attribution (exploratory):** least squares of the selection-half primary outcome
   on 0/1 technique indicators, over the design rows (factorial, halves and replications; not
   selection variants or off-design rows):
-  - **Main fit:** the 6 main effects plus replay × lr_rewarm, which the halves make estimable.
-    A coefficient reads as "what switching this on changes".
+  - **Main fit:** the 6 main effects plus replay × lr_rewarm, and its two alias partners in the
+    factorial (lora × distill, freeze × wavg). The halves make all three estimable separately.
+    A coefficient reads as "what switching this on changes". (Amendment 3: without the partner
+    columns, their effects leaked into replay × lr_rewarm.)
   - **Chain fit:** on the factorial runs only, the 6 main effects plus one column per alias
     chain. Each chain estimate is the sum of the pairs in its chain, and it is reported with
     all of their names.
@@ -504,8 +510,9 @@ and leaves the row `finished`; the analysis flags it.
 - All arms in a comparison use the same **gradient tokens** (`spec.gradient_tokens()`).
 - Extra forward-only compute, such as teacher passes for `distill` or scoring passes for
   `select`, is recorded in `cost.extra_forward_tokens`. It does not count against the match.
-  It enters the cost-adjusted ranking: retention gained per extra GPU-hour, and per byte
-  shipped.
+  It enters the cost-adjusted ranking: retention gained per extra forward token, and per byte
+  shipped. Amendment 4: this was per extra GPU-hour, but wall-clock differences between runs are
+  mostly noise.
 - LoRA's own learning rate differs from full fine-tuning. That is part of the technique's
   definition and is stated in `TECHNIQUES.md`.
 
@@ -538,7 +545,12 @@ This file will change, and the rules for how keep the results honest:
 
 | # | Time (PT) | Change | Reason | Report half seen? |
 |---|---|---|---|---|
-| — | — | (none yet) | — | — |
+| 1 | 2026-11-14 17:46 | Section 6.2: the reference arm is F04 in the text, as in the table (the text said F02) | Text error found by the independent review. No rule changes | No: no technique-comparison or claim-arm rows existed |
+| 2 | 2026-11-14 17:46 | Section 6.5: claim acquisition tests use a paired t interval over seeds (df = n − 1) instead of a bootstrap over paired seeds | Review simulation: a 3-seed percentile bootstrap excludes 0 in about 25% of no-effect cases, which would decide claim 5's two acquisition tests | No: no claim-arm rows existed |
+| 3 | 2026-11-14 17:46 | Section 7: the main fit adds the alias partners of replay × lr_rewarm (lora × distill, freeze × wavg) | Review simulation: planting only lora × distill showed up as replay × lr_rewarm. The halves make the partners estimable | No |
+| 4 | 2026-11-14 17:46 | Section 9: the cost ranking divides by extra forward tokens, not extra GPU-hours | Wall-clock differences between runs are noise; for example, the lower-LR controls scored about 300 points per "extra GPU-hour" | No |
+| 5 | 2026-11-14 17:46 | Sections 5 and 0.2, made explicit: rule 4 fails when the lower-LR rows are absent (it still holds trivially when they are present and fail the gate); a configuration missing an acquisition domain fails rule 3 | The code waived rule 4 when its rows were left out, and passed a configuration with a domain missing | No |
+| — | 2026-11-14 | Implementation fixes, with no rule change (PR #9, independent review): screen-time decisions (promotion, selection screen, lower-LR control, margins) use seed-0 rows only; rows are de-duplicated by spec hash; σ_noise is pinned at the frozen 1.15 points; finished rows from non-real backends are excluded unless explicitly allowed | Make the code do what sections 0, 3, 5 and 6.3 already say | No |
 
 ---
 
