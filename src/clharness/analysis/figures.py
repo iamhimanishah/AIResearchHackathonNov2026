@@ -175,7 +175,7 @@ def frontier(analysis: dict[str, Any], half: str, tag: str) -> str:
     if not pts:
         return _empty(f"frontier — {tag}", "no configurations with legal acquisition")
     xs = [v for _, a, _ in pts for v in (a["lo"], a["hi"])]
-    ys = [v for _, _, r in pts for v in (r["lo"], r["hi"])]
+    ys = [100 * v for _, _, r in pts for v in (r["lo"], r["hi"])]
     ax = _Axes(_nice(min(xs), max(xs)), _nice(min(ys), max(ys)), (70, 36, w - 16, h - 90),
                y_fmt="{:+.1f}")
     o = [_title(f"frontier — protected-set retention vs legal acquisition, {tag}")] + ax.frame()
@@ -186,13 +186,13 @@ def frontier(analysis: dict[str, Any], half: str, tag: str) -> str:
     # the curve to beat: no-mitigation at 1e-4, 5e-5 and 3e-5 connected in LR order
     lr_pts = sorted(((c, a, r) for c, a, r in pts if not c["techniques"]), key=lambda t: -_lr(t[0]))
     if len(lr_pts) >= 2:
-        d = " ".join(f"{'M' if i == 0 else 'L'}{ax.X(a['mean']):.1f},{ax.Y(r['mean']):.1f}"
+        d = " ".join(f"{'M' if i == 0 else 'L'}{ax.X(a['mean']):.1f},{ax.Y(100 * r['mean']):.1f}"
                      for i, (_, a, r) in enumerate(lr_pts))
         o.append(f"<path d='{d}' fill='none' stroke='{WARN}' stroke-width='2'/>")
 
     # Pareto frontier (exploratory view of the same two axes)
     pareto_names = set(analysis.get(f"pareto_{half}", []))
-    front = sorted((a["mean"], r["mean"]) for c, a, r in pts if c["config"] in pareto_names)
+    front = sorted((a["mean"], 100 * r["mean"]) for c, a, r in pts if c["config"] in pareto_names)
     if len(front) >= 2:
         d = " ".join(f"{'M' if i == 0 else 'L'}{ax.X(x):.1f},{ax.Y(y):.1f}"
                      for i, (x, y) in enumerate(front))
@@ -200,13 +200,13 @@ def frontier(analysis: dict[str, Any], half: str, tag: str) -> str:
 
     for c, a, r in pts:
         color = ACCENT if _is_reference(c) else WARN if not c["techniques"] else "#9ca3af"
-        o.append(_err_h(ax, a["lo"], a["hi"], ax.Y(r["mean"]), color))
-        o.append(_err_v(ax, r["lo"], r["hi"], ax.X(a["mean"]), color))
-        o.append(_dot(ax, a["mean"], r["mean"], color, 4.2 if _is_reference(c) else 3,
+        o.append(_err_h(ax, a["lo"], a["hi"], ax.Y(100 * r["mean"]), color))
+        o.append(_err_v(ax, 100 * r["lo"], 100 * r["hi"], ax.X(a["mean"]), color))
+        o.append(_dot(ax, a["mean"], 100 * r["mean"], color, 4.2 if _is_reference(c) else 3,
                       f"{c['config']}: ret {100 * r['mean']:+.1f} pts, acq {a['mean']:.3f}"))
         if _is_reference(c) or not c["techniques"]:
             name = "reference arm" if _is_reference(c) else f"no-mitigation lr{_lr(c):g}"
-            o.append(f"<text x='{ax.X(a['mean']) + 7:.1f}' y='{ax.Y(r['mean']) - 5:.1f}' "
+            o.append(f"<text x='{ax.X(a['mean']) + 7:.1f}' y='{ax.Y(100 * r['mean']) - 5:.1f}' "
                      f"font-size='9' fill='{INK}'>{_esc(name)}</text>")
     o.append(_legend([("reference arm", ACCENT), ("no-mitigation at lower LR (the curve to beat)", WARN),
                       ("other configurations", "#9ca3af"), ("Pareto frontier", MUTED)], ax.l, h - 12))

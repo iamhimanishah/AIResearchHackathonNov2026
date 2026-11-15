@@ -47,6 +47,16 @@ def test_frontier_marks_the_reference_arm_and_the_lr_curve(confirmatory, tmp_pat
     assert "reference arm" in text and "curve to beat" in text
 
 
+def test_frontier_y_axis_is_in_points_not_fractions(confirmatory, tmp_path):
+    """The y axis is labelled 'points' — the ticks must be the delta x100, not the raw
+    fraction (fake data spans several points, so a tick > 0.5 must exist)."""
+    F.render_all(confirmatory, tmp_path)
+    root = ET.fromstring((tmp_path / "frontier.svg").read_text())
+    y_ticks = [float(e.text) for e in root.iter()
+               if e.tag.endswith("text") and e.get("text-anchor") == "end"]
+    assert y_ticks and max(abs(v) for v in y_ticks) > 0.5
+
+
 def test_claims_lists_every_test_with_a_verdict(confirmatory, tmp_path):
     F.render_all(confirmatory, tmp_path)
     text = (tmp_path / "claims.svg").read_text()

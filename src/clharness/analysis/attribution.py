@@ -591,7 +591,7 @@ def config_summaries(configs: dict[str, Config], half: Half, base: Config | None
         out.append({
             "config": cfg.label, "key": cfg.key, "techniques": sorted(cfg.techniques),
             "selection": list(cfg.selection) if cfg.selection else None,
-            "lr": cfg.lr, "n_seeds": len(cfg.rows),
+            "lr": cfg.lr, "n_seeds": len(cfg.by_seed()),
             "retention": arm_bootstrap(cfg, half, nb, seed, items),
             "per_task": {t: _seed_interval([_half(r, half).per_task[t].delta for r in cfg.rows],
                                           rng, nb)
