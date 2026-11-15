@@ -15,11 +15,14 @@ import random
 from typing import Any
 
 from clharness.analysis.design import (
+    CLAIM_ARMS,
+    CLAIM_SEEDS,
     HALVES,
     LR_CONTROLS,
     NO_MITIGATION,
     REFERENCE,
     SELECTION,
+    claim_spec,
     factorial,
     lr_of,
     selection_of,
@@ -78,6 +81,14 @@ PLANTED: dict[str, Any] = {
     "lr_control_effects": {
         "5e-05": {"retention": 0.025, "log_acquisition": 0.020},
         "3e-05": {"retention": 0.045, "log_acquisition": 0.060},
+    },
+    # published-claims arms with non-design parameters (PREREG 6.5), as offsets from the
+    # no-mitigation baseline. lora-r8, freeze-bottom and replay-5 use the technique effects above.
+    "claim_arm_effects": {
+        "replay-25": {"retention": 0.040, "log_acquisition": 0.020},
+        "replay+distill-on-replay": {"retention": 0.037, "log_acquisition": 0.015},
+        "lora-r256": {"retention": 0.022, "log_acquisition": 0.050},
+        "freeze-top": {"retention": 0.025, "log_acquisition": 0.020},
     },
     "retention_selection_effects": {
         "loss/high": 0.004,
@@ -144,10 +155,14 @@ def _half(rng: random.Random, mean_delta: float) -> HalfRetention:
     return HalfRetention(per_task=per_task, mean_delta=mean)
 
 
-def _finished(spec: RunSpec, rng: random.Random) -> ResultRow:
+def _finished(spec: RunSpec, rng: random.Random, claim_arm: str | None = None) -> ResultRow:
     techs = tuple(spec.technique_names())
     selection = selection_of(spec)
     ret, acq = _effects(techs, selection, lr_of(spec))
+    if claim_arm in PLANTED["claim_arm_effects"]:
+        e = PLANTED["claim_arm_effects"][claim_arm]
+        ret = PLANTED["baseline_retention_mean_delta"] + e["retention"]
+        acq = PLANTED["baseline_log_ppl_ratio"] + e["log_acquisition"]
     ret += rng.gauss(0, PLANTED["seed_noise_sd"])  # shared by both halves: it is run-level noise
     selection, report = _half(rng, ret), _half(rng, ret)
     # In the pilot runs most of the forgetting happened in the first domain.
@@ -252,6 +267,12 @@ def fake_rows(seed: int = 0) -> list[ResultRow]:
         add(REFERENCE, range(1, 3), sel)
     for lr in LR_CONTROLS:  # the lower-LR no-mitigation controls (PREREG A13)
         rows.extend(_finished(design_spec(NO_MITIGATION, s, lr=lr), rng) for s in range(3))
+    have = {r.spec_hash for r in rows}
+    for arm in CLAIM_ARMS:  # the published-claims family (PREREG 6.5), seeds 0-2
+        for s in CLAIM_SEEDS:
+            x = claim_spec(arm, s)
+            if x.spec_hash() not in have:  # replay-5 at seed 0 is the screen's replay-only half
+                rows.append(_finished(x, rng, claim_arm=arm))
 
     rows.append(_failed(design_spec(failed_screen, 0), "infrastructure: GPU preempted 3 times"))
     rows.append(_failed(_spec(("distill", "freeze"), 0), "out of memory in the teacher forward"))

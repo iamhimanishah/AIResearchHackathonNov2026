@@ -74,7 +74,7 @@ def test_row_rules():
 
 def test_fake_rows_cover_the_cases_and_round_trip(tmp_path):
     rows = fake_rows(0)
-    assert 40 <= len(rows) <= 55  # the pre-registered study: screen, replication, LR controls, failures
+    assert 55 <= len(rows) <= 75  # the pre-registered study: screen, replication, LR controls, claims, failures
     assert {r.status for r in rows} == {"finished", "failed", "invalid"}
     assert len({r.spec_hash for r in rows}) == len(rows)  # every row is a distinct experiment
     assert sum(1 for r in rows if not r.spec.techniques and not r.spec.optim) == 5  # noise-floor seeds

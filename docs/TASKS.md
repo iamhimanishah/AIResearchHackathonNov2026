@@ -442,6 +442,8 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
     - answer collapse (A9) and the acquisition measure (A2b);
     - the lower-LR controls (A13): rule 4 of the win rule, with no-mitigation at 5e-5 and 3e-5
       at seeds 0–2. Seed 0 is A5's calibration run, so 4 runs are new.
+    - the published-claims family (6.5, A14): 7 claim arms at 3 seeds, 20 new runs, about $25,
+      exploratory, run with the screen.
   - Still open before the freeze:
     - σ_noise, from C3;
     - three provisional items (invalid-run rules, MBPP, matched compute).

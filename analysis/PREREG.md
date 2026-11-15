@@ -126,8 +126,9 @@ H100, at the executor's $3.95 per GPU-hour.
 | Already spent: noise floor (5) + code→legal calibration (3) | 8 | about $10 |
 | **Phase 0, still to run:** 7 runs + re-measuring 7 (CPU, under $0.10) | 7 | **about $9**; **cap $12** with retries |
 | Phase 1, screen (22 specs; no-mitigation-s0 and reference-s0 come from phase 0) | 20 | about $25 |
+| Phase 1, published-claims arms (section 6.5; 21 specs, `replay-5` at seed 0 is the screen's replay-only half) | 20 | about $25 |
 | Phase 2, replication (top 3 × seeds 1–2) + selection family (2 × seeds 1–2) | 10 | about $13 |
-| **Still to spend on the whole study** | **37** | **about $47**; under $65 with retries |
+| **Still to spend on the whole study** | **57** | **about $72**; under $95 with retries |
 
 That is well inside the $700 Modal cap in DIRECTION.md. Phase 0 runs in parallel in about
 20 minutes.
@@ -148,7 +149,7 @@ less?
 3. The reference arm against no-mitigation. This is a sanity check that the reference arm
    works on this bench.
 
-Everything else is **exploratory**: the screening effects, the interactions, the second task
+Everything else is **exploratory**, including the published-claims family (section 6.5): the screening effects, the interactions, the second task
 sequence and the per-task breakdowns. These are reported with intervals, but they are not
 claimed as wins.
 
@@ -351,6 +352,70 @@ Specs that match the committed `no-mitigation-s0`, `reference-s0`, `replay-only-
 ### 6.4 Follow-ups (exploratory)
 If time remains, the agent may run one fold-over or targeted pair to separate one alias group
 (section 6.2). Results are exploratory.
+
+### 6.5 Published-claims family (decided; exploratory)
+This section is Member A's proposal (`docs/published-claims.md`), adopted before the freeze.
+Besides ranking techniques, the study tests published forgetting claims on the frozen bench
+and reports, for each one, whether it reproduced. Because the bench holds model, stream and
+budget constant, a claim that fails here is still informative.
+- **The family is exploratory.** It is not part of the win rule (section 5) and has no Holm
+  correction. Every test is reported, whatever its result.
+- **It is code:** `CLAIMS`, `CLAIM_ARMS` and `claims_specs()` in
+  `src/clharness/analysis/design.py`. `clh grid-analysis --confirmatory` writes the claims
+  table.
+
+**Claim arms** (3 seeds each, 0–2, run with the screen in phase 1):
+
+| Arm | Techniques and parameters | New runs |
+|---|---|---|
+| `replay-5` | replay at 5% (the design default) | 2 (seed 0 is the screen's replay-only half) |
+| `replay-25` | replay at 25% (the paper's own level) | 3 |
+| `replay+distill-on-replay` | replay 5% + `distill` with `rows: replay` | 3 |
+| `lora-r8` | LoRA rank 8 (the design default) | 3 |
+| `lora-r256` | LoRA rank 256 | 3 |
+| `freeze-bottom` | freeze the bottom 13 layers (the design default) | 3 |
+| `freeze-top` | freeze the top 13 layers (`bottom_layers: 0, top_layers: 13`) | 3 |
+| **Total** | | **20 runs, about $25** |
+
+Comparators come from phase 0 (no-mitigation, the reference arm, LR 3e-5) or from the screen
+(rewarm-only).
+
+**Tests** (arm − comparator, report half):
+
+| # | Published claim (source) | Arm vs comparator | Outcome | Published sign |
+|---|---|---|---|---|
+| 1 | Replay plus LR re-warm beats no mitigation (Ibrahim et al. 2024) | reference vs no-mitigation | retention | + |
+| 2 | Peak LR is the main knob (Ibrahim et al. 2024) | LR 3e-5 vs no-mitigation | retention | + |
+| 2 | …warmup barely matters (same) | rewarm-only vs no-mitigation | retention | magnitude only (seed 0 only) |
+| 3 | Replay is worth about 1 to 3 points at 1B (Abbes et al. 2026) | replay-5 vs no-mitigation; replay-25 vs no-mitigation; replay-25 vs replay-5 | retention | + |
+| 5 | LoRA forgets less and learns less; higher rank learns more (Biderman et al. 2024) | lora-r8 vs no-mitigation (retention and legal acquisition); lora-r256 vs lora-r8 (legal acquisition) | retention / acq_legal | +, +, − |
+| 6 | Distilling on replay tokens beats plain replay (Beyond One-Hot Replay, 2026) | replay+distill-on-replay vs replay-5 | retention | + |
+| 7 | Freezing the top half beats freezing the bottom half (Freeze Deep, Train Shallow, 2026) | freeze-top vs freeze-bottom | retention | + |
+
+**Covered elsewhere or not tested:**
+- Claim 4 (Reptile averaging stacks with replay): there is no plugin, so it is not tested
+  unless B builds one before the freeze.
+- Claim 8 (selection rarely beats random): answered by the selection family (6.3b). It
+  reproduces if neither signal wins.
+- Claim 9 (averaging roughly matches 10% replay): compared through the screen's `wavg` and
+  `replay` main effects, as a magnitude only.
+
+**What "reproduced" means** (fixed before any claims run is read):
+- **A directional test reproduces** if the paired 95% interval of (arm − comparator) excludes 0
+  in the published direction.
+  - Retention uses the paired hierarchical bootstrap (section 7).
+  - Acquisition uses the log own-boundary perplexity ratio of the named domain, with a
+    bootstrap over paired seeds.
+- **Other verdicts:** "opposite" means the interval excludes 0 the other way. "Not reproduced
+  (interval includes 0)" otherwise. "Too few seeds" means fewer than 2 paired seeds.
+- **A magnitude test** reports our effect next to the published number, with no pass or fail.
+- **The lower-LR caution:** every retention row also reports the arm against the chosen
+  lower-LR control (rule 4's L). So a claim that reproduces against 1e-4 but loses to just
+  lowering the learning rate says so.
+- **Different parameters:** a claim tested with parameters other than the paper's says so in
+  its row. For example, our replay share is 5% and 25%, while Abbes et al. also used 50%.
+- **Cautions** for the write-up: our learning rate is harsh and our budget tiny (20M tokens
+  against billions). A failure to reproduce may reflect that, not a fault in the paper.
 
 ## 7. Statistics
 
@@ -586,6 +651,16 @@ checkpoint, so it isn't an outcome of this study.
 | **Equal gradient tokens; extra reported as cost (default)** | Matches the bench design and the row's `Cost` fields | Distillation gets about 1.3× FLOPs "free" in the primary test |
 | Equal FLOPs | Strictest fairness | Needs FLOP accounting per technique; complex |
 | Equal wall-clock | What a practitioner pays | Depends on GPU and noise; hard to reproduce |
+
+### A14. Published-claims family: **decided**, exploratory, 3 seeds, 20 new runs
+Proposed by Member A (`docs/published-claims.md`), adopted on 2026-11-14 before the freeze.
+
+| Option | Pros | Cons |
+|---|---|---|
+| **Exploratory family, 3 seeds, all four testable claims (chosen)** | Anchors the results in published work; novelty (one bench, many papers' claims); no change to the win rule | About $25; 20 more runs in phase 1 |
+| Confirmatory, with Holm across claims | Stronger claims | Many tests, so it is hard to pass; these are not the study's main question |
+| Only claims the screen already covers (no new arms) | Free | Leaves out the 4 claims that need parameter changes |
+| Single seed per arm | Cheaper (about $9) | At 1 seed the noise (SD about 1.1 points between two arms) swamps most published effects |
 
 ### A13. Lower-learning-rate controls: **decided**, added to the win rule as rule 4
 Decided on 2026-11-14, before the freeze.
