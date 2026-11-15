@@ -179,3 +179,23 @@ def test_extra_eval_bench_trains_identically_and_keeps_the_protected_items():
     for task in ("arc_easy", "hellaswag", "piqa", "pubmedqa_pqal"):
         assert wider[task]["indices"] == frozen[task]["indices"], task
         assert wider[task]["docs_sha256"] == frozen[task]["docs_sha256"], task
+
+
+def test_a_run_that_died_part_way_is_not_measured_as_finished(tmp_path):
+    """Remove the last domain's checkpoint: the directory must be refused, not scored."""
+    import shutil
+
+    run = _run_dir(tmp_path)
+    shutil.rmtree(run / "checkpoints" / "ckpt_0002")
+    with pytest.raises(ValueError, match="incomplete run"):
+        measure_run(run, ["code", "biomedical"])
+
+
+def test_a_technique_may_not_silently_replace_a_spec_optim_override():
+    spec = RunSpec(name="x", seed=0, stream=[{"name": "code", "tokens": 4096}],
+                   optim={"lr": 5e-5}, techniques=[{"name": "lora", "params": {"rank": 8}}])
+    with pytest.raises(ValueError, match="replaced by a technique"):
+        config_from_spec(spec)
+    keeps = RunSpec(name="x", seed=0, stream=[{"name": "code", "tokens": 4096}],
+                    optim={"lr": 5e-5}, techniques=[{"name": "lora", "params": {"rank": 8, "lr": None}}])
+    assert config_from_spec(keeps).optim.lr == 5e-5

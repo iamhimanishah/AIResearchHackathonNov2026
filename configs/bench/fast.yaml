@@ -2,9 +2,9 @@
 # A run spec (src/clharness/spec.py) names this file as `bench: fast` and overrides only the
 # seed, the stream, the optimizer and the techniques. Everything else is fixed here.
 #
-# Confirmed by one no-mitigation run on 2026-11-14 (results/rows.calibration.jsonl): 18 minutes
-# on an H100, multiple-choice mean down 10.7 points on the selection half and 6.2 on the report
-# half. Calibrated on 2026-11-14 (docs/TASKS.md, A5): 64 sequences per step, and the stream
+# Confirmed by five no-mitigation seeds on 2026-11-14 (results/rows.phase0.remeasured.jsonl):
+# about 18 minutes on an H100, multiple-choice mean down 5.7 points on the selection half and
+# 6.4 on the report half. Calibrated on 2026-11-14 (docs/TASKS.md, A5): 64 sequences per step, and the stream
 # code then legal, because legal is learned (held-out perplexity about 24% below base) while
 # biomedical was not.
 #

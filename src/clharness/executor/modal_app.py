@@ -177,7 +177,10 @@ def remeasure(spec_json: str) -> str:
     if not row_file.exists() or not (run_dir / "checkpoints").exists():
         return f"MISSING {spec.name} {spec.spec_hash()[:12]}: no saved row or run directory\n"
     old = ResultRow.model_validate_json(row_file.read_text())
-    return row_to_line(remeasure_row(old, run_dir))
+    try:
+        return row_to_line(remeasure_row(old, run_dir))
+    except Exception as e:  # noqa: BLE001 - one bad run must not abort the batch
+        return f"MISSING {spec.name} {spec.spec_hash()[:12]}: {type(e).__name__}: {e}\n"
 
 
 @app.local_entrypoint()

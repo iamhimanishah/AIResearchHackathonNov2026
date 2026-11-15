@@ -54,7 +54,15 @@ def config_from_spec(spec: RunSpec, output_dir: str | None = None) -> RunConfig:
     from clharness.techniques import apply_config_overrides
 
     # last, so a technique's own settings win (lr_rewarm switches on the per-domain schedule)
-    return apply_config_overrides(RunConfig.model_validate(raw))
+    before = RunConfig.model_validate(raw)
+    cfg = apply_config_overrides(before)
+    # A technique must not silently replace an optimizer value the spec set explicitly: the spec
+    # would hash as one experiment and run as another.
+    clobbered = sorted(k for k in spec.optim if getattr(cfg.optim, k) != getattr(before.optim, k))
+    if clobbered:
+        raise ValueError(f"optim override(s) {clobbered} in the spec are replaced by a technique's own "
+                         "setting; remove them from the spec or set them through the technique's params")
+    return cfg
 
 
 def _now() -> str:

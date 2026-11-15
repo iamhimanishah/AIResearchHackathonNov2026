@@ -88,6 +88,12 @@ def measure_run(run_dir: str | Path, trained_domains: list[str]) -> dict[str, An
     if len(ckpts) < 2:
         raise ValueError(f"{run_dir}: need the base checkpoint and at least one more, found {len(ckpts)}")
     (_, base_metrics, base_dir), (final_meta, final_metrics, final_dir) = ckpts[0], ckpts[-1]
+    # A run that died part-way leaves a directory that looks finished up to its last checkpoint.
+    # Refuse it: the last checkpoint must be the boundary of the last trained domain, and every
+    # trained domain must have its boundary, in stream order.
+    done = [meta["domain"] for meta, _, _ in ckpts[1:] if meta["is_domain_boundary"]]
+    if done != list(trained_domains) or not final_meta["is_domain_boundary"]:
+        raise ValueError(f"{run_dir}: incomplete run: domain boundaries {done}, expected {list(trained_domains)}")
     tasks = sorted(p.stem.removeprefix("items_") for p in base_dir.glob("items_*.npy")
                    if (final_dir / p.name).exists())
     if not tasks:
