@@ -165,3 +165,30 @@ def test_report_and_agent_summary_render(planted):
 def test_auc_handles_ties():
     assert fg._auc(np.array([1.0, 1.0, 0.0, 0.0]), np.array([True, False, True, False])) == 0.5
     assert fg._auc(np.array([2.0, 1.0]), np.array([True, False])) == 1.0
+
+
+def test_arms_sharing_a_name_are_labelled_by_the_parameter_that_differs(tmp_path):
+    """Two LoRA arms at different ranks: the labels say which is which (no primes)."""
+    rng = np.random.default_rng(3)
+    frag = _fragility(rng)
+    rows = []
+    for rank in (8, 256):
+        for seed in range(2):
+            spec = _spec(seed, techniques=[a1.TechniqueSpec(name="lora", params={"rank": rank})])
+            _write(tmp_path, spec, _p(frag, 0.0), rng)
+            rows.append(_row(spec))
+    arms = fg.load_arms(rows, tmp_path)
+    assert sorted(arms) == ["lora[lora.rank=256]", "lora[lora.rank=8]"]
+    assert not any("'" in a for a in arms)
+
+
+def test_summary_records_its_inputs_and_warns_that_readings_depend_on_the_pool(planted):
+    root, rows = planted
+    res = fg.analyze(rows, root, inputs=["results/b.jsonl", "results/a.jsonl"])
+    assert res["inputs"] == ["results/a.jsonl", "results/b.jsonl"]
+    assert res["pool"] == sorted(fg.load_arms(rows, root))
+    text = fg.format_report(res)
+    assert "Built from: `results/a.jsonl`, `results/b.jsonl`" in text
+    assert "clh forget-sets results/a.jsonl results/b.jsonl" in text
+    assert "The reading depends on the pool" in text
+    assert "relative to this pool of 4 arms" in fg.agent_summary(res)

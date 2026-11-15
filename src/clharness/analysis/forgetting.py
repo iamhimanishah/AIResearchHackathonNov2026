@@ -31,6 +31,7 @@ The report half is never indexed: every array is cut to `half_indices(task, n)[0
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import math
@@ -166,9 +167,10 @@ def _eval_manifest() -> dict[str, Any]:
 def load_arms(rows: Sequence[Any], repo_root: Path = REPO_ROOT, stream: str | None = FROZEN_STREAM
               ) -> dict[str, list[RunItems]]:
     """Finished rows on `stream` (None = any) with local item files, grouped into arms. Arms that
-    share a display name but differ in parameters get primes, as in item_profile."""
-    groups: dict[str, list[RunItems]] = {}
-    names: dict[str, str] = {}
+    share a display name but differ in parameters are named by the parameters that differ, e.g.
+    `lora[lora.rank=256]`, so a reader can tell which configuration a line is."""
+    by_key: dict[str, list[RunItems]] = {}
+    specs: dict[str, Any] = {}
     seen: dict[str, set[int]] = {}
     for row in rows:
         if row.status != "finished" or (stream is not None and _stream(row.spec) != stream):
@@ -180,14 +182,45 @@ def load_arms(rows: Sequence[Any], repo_root: Path = REPO_ROOT, stream: str | No
         if run is None:
             continue
         seen[key].add(row.spec.seed)
-        if key not in names:
-            name = run.arm
-            while name in names.values():
-                name += "'"
-            names[key] = name
-        run.arm = names[key]
-        groups.setdefault(names[key], []).append(run)
+        specs.setdefault(key, row.spec)
+        by_key.setdefault(key, []).append(run)
+    names = _arm_labels(specs)
+    groups: dict[str, list[RunItems]] = {}
+    for key, runs in by_key.items():
+        for run in runs:
+            run.arm = names[key]
+        groups[names[key]] = runs
     return {k: sorted(v, key=lambda r: r.seed) for k, v in sorted(groups.items())}
+
+
+def _arm_labels(specs: dict[str, Any]) -> dict[str, str]:
+    """Display name per arm key: `_arm_name`, plus the parameters that differ between arms sharing
+    that name (bench, optimizer settings other than lr, technique parameters)."""
+    def params(spec: Any) -> dict[str, Any]:
+        p: dict[str, Any] = {"bench": spec.bench}
+        p.update({f"optim.{k}": v for k, v in spec.optim.items() if k != "lr"})
+        p.update({f"{t.name}.{k}": v for t in spec.techniques for k, v in t.params.items()})
+        return p
+
+    by_name: dict[str, list[str]] = {}
+    for key, spec in specs.items():
+        by_name.setdefault(_arm_name(spec), []).append(key)
+    out: dict[str, str] = {}
+    for name, keys in by_name.items():
+        if len(keys) == 1:
+            out[keys[0]] = name
+            continue
+        ps = {k: params(specs[k]) for k in keys}
+        differing = sorted({p for d in ps.values() for p in d
+                            if len({json.dumps(q.get(p), sort_keys=True) for q in ps.values()}) > 1})
+        for k in keys:
+            # only the parameters this arm sets: the arm with all defaults keeps the plain name
+            suffix = ",".join(f"{p}={ps[k][p]}" for p in differing if p in ps[k])
+            out[k] = f"{name}[{suffix}]" if suffix else name
+        if len({out[k] for k in keys}) < len(keys):  # cannot happen with distinct keys; stay unique
+            for k in keys:
+                out[k] = f"{out[k]}@{hashlib.sha256(k.encode()).hexdigest()[:6]}"
+    return out
 
 
 # --- repeatability -------------------------------------------------------------------------------
@@ -380,7 +413,11 @@ def state_drift(runs: Sequence[RunItems]) -> dict[int, dict[str, float]]:
 
 # --- report --------------------------------------------------------------------------------------
 
-def analyze(rows: Sequence[Any], repo_root: Path = REPO_ROOT, stream: str | None = FROZEN_STREAM) -> dict[str, Any]:
+def analyze(rows: Sequence[Any], repo_root: Path = REPO_ROOT, stream: str | None = FROZEN_STREAM,
+            inputs: Sequence[str] = ()) -> dict[str, Any]:
+    """`inputs`: the row files the rows came from, recorded so the summary can be rebuilt. The
+    dose-or-target reading of an arm depends on the other arms in the pool (each question's
+    fragility is its loss rate in the OTHER arms), so the pool is recorded too."""
     arms = load_arms(rows, repo_root, stream)
     per_arm = {}
     for a, runs in arms.items():
@@ -388,6 +425,7 @@ def analyze(rows: Sequence[Any], repo_root: Path = REPO_ROOT, stream: str | None
                       "timing": timing(runs), "answer_drift": answer_drift(runs),
                       "margins": margins(runs), "state_drift": state_drift(runs)}
     return {"half": "selection", "stream": stream, "status": "exploratory",
+            "inputs": sorted(inputs), "pool": sorted(arms),
             "arms": per_arm, "dose_and_target": dose_and_target(arms)}
 
 
@@ -397,7 +435,11 @@ def _pct(x: float | None) -> str:
 
 def format_report(res: dict[str, Any]) -> str:
     lines = [f"# Forgetting structure (exploratory, {res['half']} half, stream {res['stream']})", ""]
-    rep = [(a, v["repeatability"]) for a, v in res["arms"].items() if v["repeatability"]]
+    if res.get("inputs"):
+        lines += ["Built from: " + ", ".join(f"`{p}`" for p in res["inputs"])
+                  + f" ({len(res.get('pool', []))} arms with item files). Rebuild: "
+                  + "`clh forget-sets " + " ".join(res["inputs"]) + " --out results/analysis/forgetting`", ""]
+    rep =[(a, v["repeatability"]) for a, v in res["arms"].items() if v["repeatability"]]
     if rep:
         lines += ["## Repeatability: do seeds lose the same questions?",
                   "AUC of 'lost by k other seeds' for a held-out seed's losses; 0.5 = random.", "",
@@ -412,7 +454,12 @@ def format_report(res: dict[str, Any]) -> str:
                    "slope expected if every arm only set a dose (simulated null, 95% band). Below the band = protects "
                    "fragile questions beyond its dose; above = concentrates the damage on them. If the relative slope "
                    "tracks the loss rate across the plain learning-rate arms, the additive model does not hold; "
-                   "then compare arms only at similar loss rates."), "",
+                   "then compare arms only at similar loss rates."),
+                  ("**The reading depends on the pool.** A question's fragility is its loss rate in the OTHER "
+                   f"arms listed here ({len(res.get('pool', []))} arms), so adding or removing arms can move a slope "
+                   "across the band (rebuilt with more arms, no-mitigation and the reference arm moved from "
+                   "targeted to dose only). Quote a reading together with its pool, never as a property of "
+                   "the arm alone."), "",
                   "arm | seeds | loss rate | slope | if dose only | relative | reading", "---|---|---|---|---|---|---"]
         for d in sorted(res["dose_and_target"], key=lambda d: d["relative_slope"]):
             lines.append(f"{d['arm']} | {len(d['seeds'])} | {_pct(d['loss_rate'])} | {d['slope']:.2f} | "
@@ -443,6 +490,9 @@ def agent_summary(res: dict[str, Any], max_arms: int = 8) -> str:
     if reps:
         lines.append("- seeds lose the same questions: held-out-seed AUC "
                      + ", ".join(f"{r['auc']:.2f}" for r in reps) + " (0.5 = random)")
+    if res["dose_and_target"]:
+        lines.append(f"- dose-or-target readings below are relative to this pool of {len(res.get('pool', []))} "
+                     "arms; adding arms can change them")
     for d in sorted(res["dose_and_target"], key=lambda d: d["relative_slope"])[:max_arms]:
         lines.append(f"- {d['arm']}: loses {_pct(d['loss_rate'])} of known questions; fragility slope "
                      f"{d['slope']:.2f} vs {d['null_slope']:.2f} if it only set a dose -> {d['reading']}")

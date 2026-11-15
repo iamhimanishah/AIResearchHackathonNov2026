@@ -551,7 +551,12 @@ def cmd_forget_sets(args) -> int:
     for path in args.files:
         for row in read_rows(path):
             rows[row.spec_hash] = row
-    res = analyze(list(rows.values()), REPO_ROOT, stream=None if args.any_stream else args.stream)
+    inputs = []
+    for path in args.files:  # recorded repo-relative, so the summary says how to rebuild it
+        p = Path(path).resolve()
+        inputs.append(str(p.relative_to(REPO_ROOT)) if p.is_relative_to(REPO_ROOT) else str(path))
+    res = analyze(list(rows.values()), REPO_ROOT, stream=None if args.any_stream else args.stream,
+                  inputs=inputs)
     report = format_report(res)
     print(report)
     if args.out:
