@@ -389,12 +389,13 @@
  ],
  "cost_selection": [
   {
-   "config": "lr_rewarm",
-   "est_usd": 1.21,
+   "config": "no-mitigation-lr3e-05",
+   "est_usd": 1.3099999999999998,
    "extra_forward_tokens": 0.0,
-   "extra_gpu_hours": -0.007144444444444453,
-   "gain_per_extra_gpu_hour": null,
-   "retention_gain": 0.02319998741149902,
+   "extra_gpu_hours": 0.019031481481481483,
+   "gain_per_extra_forward_token": null,
+   "gain_per_extra_gpu_hour": 2.2348932826914556,
+   "retention_gain": 0.042533330122629796,
    "update_bytes": 3999543808
   },
   {
@@ -402,17 +403,9 @@
    "est_usd": 1.2833333333333332,
    "extra_forward_tokens": 0.0,
    "extra_gpu_hours": 0.011800000000000033,
+   "gain_per_extra_forward_token": null,
    "gain_per_extra_gpu_hour": 2.785310485942208,
    "retention_gain": 0.032866663734118146,
-   "update_bytes": 3999543808
-  },
-  {
-   "config": "no-mitigation-lr3e-05",
-   "est_usd": 1.3099999999999998,
-   "extra_forward_tokens": 0.0,
-   "extra_gpu_hours": 0.019031481481481483,
-   "gain_per_extra_gpu_hour": 2.2348932826914556,
-   "retention_gain": 0.042533330122629796,
    "update_bytes": 3999543808
   },
   {
@@ -420,8 +413,19 @@
    "est_usd": 1.2766666666666666,
    "extra_forward_tokens": 0.0,
    "extra_gpu_hours": 0.011216666666666708,
+   "gain_per_extra_forward_token": null,
    "gain_per_extra_gpu_hour": 2.098068174245977,
    "retention_gain": 0.023533331354459126,
+   "update_bytes": 3999543808
+  },
+  {
+   "config": "lr_rewarm",
+   "est_usd": 1.21,
+   "extra_forward_tokens": 0.0,
+   "extra_gpu_hours": -0.007144444444444453,
+   "gain_per_extra_forward_token": null,
+   "gain_per_extra_gpu_hour": null,
+   "retention_gain": 0.02319998741149902,
    "update_bytes": 3999543808
   },
   {
@@ -429,6 +433,7 @@
    "est_usd": 1.33,
    "extra_forward_tokens": 0.0,
    "extra_gpu_hours": 0.023438888888888953,
+   "gain_per_extra_forward_token": null,
    "gain_per_extra_gpu_hour": 0.008532844976554778,
    "retention_gain": 0.0002000004053115817,
    "update_bytes": 3999543808
@@ -470,7 +475,10 @@
    "lr_rewarm\u00d7replay": []
   },
   "df": 6,
-  "dropped": [],
+  "dropped": [
+   "distill\u00d7lora",
+   "freeze\u00d7wavg"
+  ],
   "effects": {
    "(baseline)": {
     "aliased_with": [],
@@ -505,28 +513,29 @@
   "residual_sd": 0.00531455464168534,
   "se_source": "residual"
  },
+ "excluded_backend_rows": [],
  "halves_read": [
   "selection"
  ],
  "lr_control": {
   "arms": [
    {
-    "acquisition": 0.8962332858550277,
+    "acquisition": 0.8969355878039691,
     "config": "no-mitigation-lr5e-05",
     "key": "f43fd3301cd6",
     "lr": 5e-05,
-    "n_seeds": 3,
+    "n_seeds": 1,
     "passes_acquisition_gate": true,
-    "selection_primary": -0.024333332975705464
+    "selection_primary": -0.018999993801116943
    },
    {
-    "acquisition": 0.8801311829859486,
+    "acquisition": 0.8800269242129892,
     "config": "no-mitigation-lr3e-05",
     "key": "b9e4657d1205",
     "lr": 3e-05,
-    "n_seeds": 3,
+    "n_seeds": 1,
     "passes_acquisition_gate": true,
-    "selection_primary": -0.014666666587193808
+    "selection_primary": -0.015999987721443176
    }
   ],
   "chosen": "b9e4657d1205",
@@ -535,7 +544,8 @@
  "noise_floor": {
   "config": "no-mitigation",
   "n_seeds": 5,
-  "sigma_selection": 0.00593296327839512
+  "sigma_noise": 0.0115,
+  "sigma_selection_measured": 0.00593296327839512
  },
  "not_finished": [],
  "off_design_rows": [],
@@ -546,6 +556,8 @@
  "promotion": [],
  "reference": "lr_rewarm+replay",
  "rows": {
+  "duplicates_dropped": 0,
+  "excluded_backend": 0,
   "failed": 0,
   "finished": 16,
   "invalid": 0,
