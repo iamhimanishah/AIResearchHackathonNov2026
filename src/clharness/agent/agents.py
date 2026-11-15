@@ -17,15 +17,18 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from .cards import CardStore
-from .context import build_analyst_prompt, build_planner_prompt
+from .context import build_analyst_prompt, build_planner_prompt, build_scout_prompt
 from .contracts import (
+    Candidate,
     CitedNumber,
     FailureEntry,
     Finding,
     Lesson,
+    ParamSpec,
     Prereg,
     Proposal,
     SelectionRow,
+    Source,
     TriedEntry,
     atomic_write_text,
     check_numbers,
@@ -33,18 +36,21 @@ from .contracts import (
     read_jsonl,
     utc_iso,
 )
-from .llm import InvalidOutput, LLMClient
+from .llm import InvalidOutput, LLMClient, LLMError
 from .roles import (
     CallMeta,
     Clock,
     InMemoryMemory,
     PlanRequest,
     ReadRequest,
+    ScoutRequest,
+    ScoutResult,
     StubAnalyst,
     StubPlanner,
     SystemClock,
     run_prompt,
 )
+from .search import SearchClient, SearchError
 
 
 class LLMPlanner:
@@ -196,6 +202,119 @@ class LLMAnalyst:
 
     def deterministic_findings(self, request: ReadRequest) -> tuple[Finding, ...]:
         return self._stub.deterministic_findings(request)
+
+
+# Queries the Scout's search step sends. Source preference (papers) is phrased in the query and
+# the objective, not as a domain filter. Each query is one Exa search.
+SCOUT_QUERIES: tuple[tuple[str, str], ...] = (
+    (("research papers on mitigating catastrophic forgetting during continual pre-training "
+      "of language models, 2025 and 2026"),
+     ("Find papers that propose a concrete training-time method that reduces forgetting of "
+      "general ability while a pretrained LLM is further trained on new-domain text. Rank first "
+      "papers with a named method and measured results; exclude surveys, fine-tuning-only "
+      "instruction tuning and RL papers. Pull the method's mechanism and reported effect.")),
+    ("new method to reduce forgetting when continually pretraining an LLM on a new domain",
+     ("Find recent arXiv or conference papers with a method that could be built as a hook on a "
+      "standard training loop (loss term, gradient or parameter update rule, data mixing or "
+      "learning-rate schedule). Rank first methods with ablations; exclude benchmark-only "
+      "papers. Pull the update rule, its hyperparameters and the compute overhead.")),
+)
+MAX_SCOUT_SOURCES = 20
+
+
+class CandidateDraft(BaseModel):
+    name: str
+    description: str
+    mechanism: str
+    why_not_in_catalog: str
+    expected_effect: str
+    params: dict[str, ParamSpec] = Field(default_factory=dict)
+    est_cost_multiplier: float = Field(gt=0)
+    source_ids: list[str] = Field(min_length=1)
+
+
+class ScoutDraft(BaseModel):
+    candidate: CandidateDraft | None = None
+    skip_reason: str | None = None  # set when candidate is null
+
+
+class LLMScout:
+    """Searches the web with Exa, then asks a model for at most one candidate technique.
+
+    Code runs the search (the model never holds the key or a tool) and the model reads the
+    results as untrusted data. The candidate must cite sources that were actually returned and
+    must not reuse a catalog name. Never raises: any failure is a skip with a reason.
+    """
+
+    def __init__(self, llm: LLMClient, search: SearchClient, cards: CardStore | None = None,
+                 clock: Clock | None = None,
+                 queries: Sequence[tuple[str, str]] = SCOUT_QUERIES) -> None:
+        self.llm = llm
+        self.search = search
+        self.cards = cards or CardStore()
+        self.clock = clock or SystemClock()
+        self.queries = tuple(queries)
+
+    def gather(self) -> tuple[tuple[Source, ...], list[str]]:
+        """Run every query; return sources deduplicated by URL and one error string per failure."""
+        seen: dict[str, Source] = {}
+        errors: list[str] = []
+        for query, objective in self.queries:
+            try:
+                found = self.search.search(query, objective)
+            except SearchError as exc:
+                errors.append(str(exc))
+                continue
+            for src in found:
+                seen.setdefault(src.url, src)
+        return tuple(seen.values())[:MAX_SCOUT_SOURCES], errors
+
+    def scout(self, request: ScoutRequest) -> ScoutResult:
+        sources, errors = self.gather()
+        if not sources:
+            reason = "search returned nothing" + (f": {errors[0]}" if errors else "")
+            return ScoutResult(skipped_reason=reason)
+        prompt = build_scout_prompt(
+            card=self.cards.card("scout"), skills=self.cards.skills_for("scout", "scout"),
+            catalog=request.catalog, findings=request.findings, search_results=sources,
+            schema=ScoutDraft,
+        )
+        try:
+            draft, meta = run_prompt(self.llm, prompt, ScoutDraft)
+        except LLMError as exc:
+            return ScoutResult(sources=sources, skipped_reason=f"model failed: {exc}")
+        item = draft.candidate
+        if item is None:
+            return ScoutResult(sources=sources, meta=meta,
+                               skipped_reason=draft.skip_reason or "model skipped")
+        known = {s.id for s in sources}
+        cited = [sid for sid in item.source_ids if sid in known]
+        problem = None
+        if not cited:
+            problem = f"candidate cites no returned source: {item.source_ids[:3]}"
+        elif item.name.strip().lower() in {n.lower() for n in request.catalog.names()}:
+            problem = f"candidate {item.name!r} is already in the catalog"
+        if problem:
+            return ScoutResult(sources=sources, meta=meta, skipped_reason=problem)
+        candidate = Candidate(
+            **item.model_dump(exclude={"source_ids", "params"}), params=item.params,
+            source_ids=tuple(cited), created_at=utc_iso(self.clock.now()),
+        )
+        marked = tuple(s.model_copy(update={"used": s.id in cited}) for s in sources)
+        return ScoutResult(candidate=candidate, sources=marked, meta=meta)
+
+
+def write_scout_result(result: ScoutResult, out_dir: str | Path) -> Path:
+    """Write the candidate card (or the skip) with every source it saw, as one JSON file."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = (result.candidate.created_at if result.candidate else
+             (result.sources[0].retrieved_at if result.sources else "none"))
+    name = result.candidate.name if result.candidate else "skip"
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{stamp}-{name}".lower()).strip("-")[:80]
+    path = out / f"{slug}.json"
+    atomic_write_text(path, result.model_dump_json(indent=2) + "\n")
+    return path
 
 
 def _full(row_id: str, rows: Mapping[str, object]) -> str:
