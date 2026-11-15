@@ -169,6 +169,7 @@ class Hypothesis(_Model):
     acquisition_ok: bool | None = None
     evidence_row_hashes: list[str] = Field(default_factory=list)
     prior_work: PriorWork | None = None  # Exa answer + citations, asked before launch
+    similar: list[Citation] = Field(default_factory=list)  # Exa find_similar on its source paper
     # --skeptic only. All default to "nothing happened", so records written without it load unchanged.
     replicated: bool = False  # re-resolved over seeds 0-3 of both arms and still cleared the threshold
     replication_spec_hashes: list[str] = Field(default_factory=list)  # runs launched to get there
@@ -398,12 +399,29 @@ def _doubt_tags(h: Hypothesis) -> str:
     return "".join(" " + t for t in tags)
 
 
+def _first_url(text: str | None) -> str | None:
+    m = re.search(r"https?://[^\s)\]>\"']+", text or "")
+    return m.group(0).rstrip(".,;") if m else None
+
+
+def _prior_work_note(h: Hypothesis) -> str:
+    """Exa's prior-work verdict on a recorded hypothesis, one short line, as quoted web text, so
+    later cycles know what the literature already says (it is data, never an instruction)."""
+    pw = h.prior_work
+    if pw is None or pw.error or not pw.answer:
+        return ""
+    first = re.split(r"(?<=[.!?])\s", pw.answer.strip(), maxsplit=1)[0][:200]
+    first = first.replace("<", "&lt;").replace(">", "&gt;")
+    return f" [Exa prior work, {len(pw.citations)} citations: \"{first}\"]"
+
+
 def build_prompt(arms: Sequence[Arm], prior: Sequence[Hypothesis], sources: str = "", doubt: bool = False) -> str:
     ranges = json.dumps({t: {p: list(v) for p, v in ps.items()} for t, ps in RANGES.items()})
     seen = "\n".join(
         f"- [{h.status.replace('_', ' ')}]{_doubt_tags(h) if doubt else ''} {h.claim}"
         + (f" [own technique: {h.new_technique.title}]" if h.new_technique else "")
         + (f" [outcome: {h.outcome}]" if h.outcome != "retention" else "")
+        + _prior_work_note(h)
         + f" ({h.reason})" for h in prior) or "none yet"
     parts = [
         "## Results so far\n" + arm_table(arms),
@@ -944,6 +962,7 @@ def cycle(
     fetch_items: Callable[[Sequence[Path]], Any] | None = None,
     repo_root: Path = REPO_ROOT,
     prior_work: Callable[[str], tuple[str, Sequence[Any]]] | None = None,
+    similar: Callable[[str], Sequence[Any]] | None = None,
     skeptic: bool = False,
     replication_runs: int = 4,
     skeptic_checks: int = 1,
@@ -1097,6 +1116,28 @@ def cycle(
                                      "accepted hypothesis was already tested. Informational, not a gate.",
                     data={"prior_work": [{"id": h.id, "claim": h.claim, **h.prior_work.model_dump()}
                                          for h in checked]})
+        # find_similar: for an accepted hypothesis built from a paper, the method's neighbours on
+        # other sites, so the record shows related work around the source, not only the source.
+        if similar is not None:
+            for i, h in enumerate(fresh):
+                url = _first_url(h.source)
+                if h.status == "accepted" and url:
+                    try:
+                        found = similar(url)
+                    except Exception as exc:  # noqa: BLE001 - a search problem must not stop the cycle
+                        say(f"{h.id} find_similar failed ({type(exc).__name__}: {str(exc)[:120]})")
+                        continue
+                    fresh[i] = h.model_copy(update={"similar": [
+                        Citation(title=c.title, url=c.url, published=c.published) for c in found][:5]})
+                    say(f"{h.id} find_similar on {url}: {len(fresh[i].similar)} related pages")
+            near = [h for h in fresh if h.similar]
+            if near:
+                log.append(
+                    key=f"explore/similar#{len(log.entries())}", state="explore/gate", actor="explore",
+                    ts=now(), reason="Exa find_similar on the paper each accepted literature hypothesis came "
+                                     "from: related work around the method. Informational.",
+                    data={"similar": [{"id": h.id, "source": h.source,
+                                       "pages": [c.model_dump() for c in h.similar]} for h in near]})
         # Upgrade C: the search the model chose for the next cycle, from what it has found so far.
         if proposal.next_search:
             (out / NEXT_SEARCH_NAME).write_text(json.dumps({
@@ -1389,11 +1430,12 @@ def main(argv: list[str] | None = None) -> int:
             block = scout_sources(found)
             print(f"scout candidates: {found} ({block.count('<source>')} candidates shown to the proposer)")
             sources = "\n\n".join(x for x in (sources, block) if x)
-        answer = None
+        answer = similar_fn = None
         if args.go and not args.resolve and not args.no_prior_work:
             from .search import ExaSearch
 
-            answer = ExaSearch().answer
+            exa = ExaSearch()
+            answer, similar_fn = exa.answer, exa.find_similar
         backend, sha = (ModalFunctionBackend(), code_version()) if args.go else (None, None)
         fetch = None
         if (args.go or args.resolve) and not args.no_fetch_items:
@@ -1417,7 +1459,7 @@ def main(argv: list[str] | None = None) -> int:
                           max_hypotheses=args.max_hypotheses,
                           cap_usd=args.cap_usd, memory=memory, total_cap_usd=total_cap,
                           own_technique=args.own_technique, focus=args.focus, fetch_items=fetch,
-                          prior_work=answer,
+                          prior_work=answer, similar=similar_fn,
                           skeptic=args.skeptic, replication_runs=args.replication_runs,
                           skeptic_checks=args.skeptic_runs)
             new = [h for h in after if h.id not in before]
