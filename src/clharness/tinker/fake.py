@@ -22,7 +22,7 @@ class FakeFuture:
     def __init__(self, value: Any):
         self._value = value
 
-    def result(self) -> Any:
+    def result(self, timeout: float | None = None) -> Any:
         return self._value
 
     def __await__(self) -> Iterator[Any]:

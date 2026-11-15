@@ -132,3 +132,26 @@ def test_unknown_arm_fails_cleanly(tmp_path):
                          examples=_examples(4, 2), service=FakeService(),
                          types=FakeTypes, manifest_path=__file__, items_dir=tmp_path)
     assert row.status == "failed" and "unknown arm" in row.reason
+
+
+def test_a_dead_session_times_out_into_a_failed_row(tmp_path, capsys):
+    """A Tinker call that never returns (a session lost in a network outage) must fail the run
+    with the tokens spent so far, not hang it forever. Every blocking call passes the timeout."""
+    seen = []
+
+    class StuckFuture(FakeFuture):
+        def result(self, timeout=None):
+            seen.append(timeout)
+            raise TimeoutError("no response")
+
+    class StuckService(FakeService):
+        def create_lora_training_client(self, *a, **kw):
+            fut = super().create_lora_training_client(*a, **kw)  # a future of the client
+            fut.result().optim_step = lambda params: StuckFuture(None)
+            return fut
+
+    row = _run(service=StuckService(), items_dir=tmp_path)
+    assert row.status == "failed" and row.reason.startswith("TimeoutError")
+    assert row.tokens.train == 0  # tokens count only once a step returns; it stuck on step 1
+    assert seen == [runner.RESULT_TIMEOUT_S]
+    assert "[naive s0] stage 1/3" in capsys.readouterr().err  # progress is visible in the log

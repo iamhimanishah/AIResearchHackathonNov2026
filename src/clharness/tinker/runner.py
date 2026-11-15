@@ -18,6 +18,7 @@ prefix cache would bill repeated prompt prefixes at $0.039/M.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -46,11 +47,20 @@ BATCH_SIZE = 32
 MAX_LEN = 256
 EPOCHS = 2
 EVAL_WINDOW = 40  # eval items scored concurrently per window
+# A Tinker call that has not returned in this long is treated as a dead session: the run fails
+# with a TimeoutError row (tokens spent so far recorded) instead of hanging forever, as all 9 core
+# runs did after a network outage on 2026-11-14. Normal calls take seconds.
+RESULT_TIMEOUT_S = 900.0
 
 # Tinker list price for Qwen/Qwen3-8B, $/M tokens (thinkingmachines.ai/tinker/pricing,
 # dated 2026-10-19, per docs/TASKS.md card C5).
 PRICE_PER_MTOK = {"train": 0.44, "sample": 0.60, "prefill": 0.195}
 BUDGET_USD = 70.0  # C5 cap: 70% of one member's Tinker credit
+
+
+def _progress(msg: str) -> None:
+    """One timestamped line on stderr, flushed, so a stalled run is visible in its log."""
+    print(f"{datetime.now(UTC).astimezone().strftime('%H:%M:%S')} {msg}", file=sys.stderr, flush=True)
 
 
 def _now() -> str:
@@ -160,7 +170,7 @@ def _score_eval_items(sc, types, items: list[Encoded], v_tokens: list[list[int]]
         scores = [[0.0] * len(v_tokens) for _ in chunk]
         for i, l, fut, n in calls:
             counter["prefill"] += len(chunk[i].prompt) + n
-            lps = fut.result()
+            lps = fut.result(timeout=RESULT_TIMEOUT_S)
             scores[i][l] = sum(x for x in lps[-n:] if x is not None)
         correct += [int(np.argmax(s)) == e.label for s, e in zip(scores, chunk)]
     return correct
@@ -211,7 +221,7 @@ def run_arm(
         schedule = build_schedule(arm, n_train, epochs=epochs, batch_size=batch_size,
                                   seed=seed, replay_per_task=replay_per_task)
         tc = service.create_lora_training_client(
-            base_model=model, rank=lora_rank, seed=seed).result()
+            base_model=model, rank=lora_rank, seed=seed).result(timeout=RESULT_TIMEOUT_S)
         encode = _encode(tc.get_tokenizer())
         encoded = {
             t: {"train": [encode_row(TASKS[t], r, encode, max_len) for r in examples[t]["train"]],
@@ -223,21 +233,27 @@ def run_arm(
         items = np.full((len(schedule.stages), len(TASK_ORDER), n_eval), np.nan,
                         dtype=np.float32)
         replay_share_tokens: list[float] = []
+        tag = f"[{arm} s{seed}]"
         for st in schedule.stages:
             stage_replay = stage_total = 0
-            for batch in st.batches:
+            _progress(f"{tag} stage {st.index + 1}/{len(schedule.stages)}: {len(st.batches)} steps")
+            for step, batch in enumerate(st.batches, 1):
                 datums = [_datum(types, encoded[it.task]["train"][it.index]) for it in batch]
                 fb = tc.forward_backward(datums, "cross_entropy")
                 op = tc.optim_step(types.AdamParams(learning_rate=lr))
-                fb.result()
-                op.result()
+                fb.result(timeout=RESULT_TIMEOUT_S)
+                op.result(timeout=RESULT_TIMEOUT_S)
                 for it in batch:
                     n = encoded[it.task]["train"][it.index].n_tokens
                     tokens["train"] += n
                     stage_total += n
                     stage_replay += n if it.replay else 0
+                if step % 25 == 0 or step == len(st.batches):
+                    _progress(f"{tag} stage {st.index + 1} step {step}/{len(st.batches)}, "
+                              f"${est_usd(tokens):.2f} so far")
             replay_share_tokens.append(stage_replay / stage_total if stage_total else 0.0)
-            sc = tc.save_weights_and_get_sampling_client().result()
+            sc = tc.save_weights_and_get_sampling_client().result(timeout=RESULT_TIMEOUT_S)
+            _progress(f"{tag} stage {st.index + 1}: scoring {len(schedule.tasks_seen_at(st.index))} task(s)")
             row: list[float | None] = [None] * len(TASK_ORDER)
             for task in schedule.tasks_seen_at(st.index):
                 ti = TASK_ORDER.index(task)
