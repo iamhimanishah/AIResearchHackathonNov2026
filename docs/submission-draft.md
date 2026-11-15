@@ -38,11 +38,21 @@ What we found:
   against −6.4 with no mitigation.
 - Simply lowering the learning rate does better: −1.1 points, with the same learning of the
   new domain. The recipe's schedule is, in effect, a learning-rate cut.
-- TO FILL: one sentence on the screen and replication (which configurations came closest to the
-  lower-learning-rate control, and by how much, with the interval).
-- TO FILL: one sentence on the published-claims table (how many of the claims tested
-  reproduced on the bench).
-- TO FILL: one sentence on what the research agent proposed and concluded overnight.
+- Of 14 technique combinations screened, only two kept learning the new domain within the
+  pre-registered margin. Replicated at 3 seeds, the better one (freezing, re-warming, replay and
+  weight averaging together) beat the published recipe by 2.1 points (95% CI 0.8 to 3.4) but
+  was level with simply lowering the learning rate (+0.1 points, 95% CI −1.1 to +1.2). No
+  configuration met the pre-registered win rule.
+- Of six published claims tested on the bench, two reproduced (replay plus re-warming beats no
+  mitigation; the peak learning rate is the main knob), one reproduced in part (LoRA forgets
+  less and learns less, but rank 256 learned the legal text less than rank 8, the opposite of
+  the claim), and three did not (replay alone at 5% or 25%, distillation on replay tokens,
+  freezing the top half instead of the bottom).
+- TO CHECK (justin): overnight the research agent proposed five follow-up hypotheses from the
+  results. Code refused one, confirmed one (a learning rate of 1e-5 forgets 1.8 points less than
+  3e-5 but learns the legal text less, as the agent predicted), and found three inconclusive at
+  two seeds, including the first technique the agent wrote itself (freezing only normalization
+  parameters, +0.2 points).
 
 Everything reported rebuilds from committed result rows with `make reproduce`.
 
@@ -60,8 +70,12 @@ So that nothing in it is typed from memory. Check each against its file before s
 | No mitigation at lr 3e-5, report half | −1.07 points, 3 seeds | `results/rows.phase0.remeasured.jsonl`, `results/rows.phase0.jsonl` |
 | Legal perplexity after legal training | 0.787 (1e-4), 0.744 (reference), 0.754 (3e-5) | same files, `acquisition.own_boundary_ppl_ratio` |
 | Run length and cost | 17 to 27 minutes, about $1.20 to $1.45 | `cost` in any row |
-| Runs on Modal so far | 19 full control and calibration runs, 38 in the grid, plus short checks | row files under `results/` |
-| Mean learning rate of the reference arm | 5.54e-5 against 9.2e-5 for no mitigation | peter's review, posted in the team channel; TO VERIFY from `train/lr` in a run's metrics before quoting |
+| Runs on Modal | 100 runs with committed rows (85 full runs, 15 short plumbing and sanity checks), 31.4 H100-hours of training, about $124 | every row file under `results/` except fake and tinker, counted once per spec hash (the `remeasured` files re-score runs already counted); `cost.wall_clock_s`, `cost.est_usd`. Re-measurement jobs and uncommitted checks are not included |
+| Mean learning rate | reference arm 5.54e-5, no mitigation 9.20e-5, no mitigation at 3e-5 2.76e-5 | computed from the schedule itself (`lr_at` in `src/clharness/train/loop.py`, `configs/bench/fast.yaml`, `lr_rewarm` defaults); matches peter's review. The committed run files do not log `train/lr` |
+| Screen | 14 technique combinations; 2 pass the acquisition gate | `results/analysis/grid_analysis.md`, "Promotion" |
+| Best configuration vs reference arm, report half | +2.13 points (95% CI +0.80 to +3.43), Holm p = 0.006, 3 seeds; vs the 3e-5 control +0.07 (−1.07 to +1.23) | `results/analysis/grid_analysis.md`, "Confirmatory tests" |
+| Published claims | 6 tested: 2 reproduced, 1 in part, 3 not; claim 4 not tested (no Reptile plugin) | `results/analysis/grid_analysis.md`, "Published claims" |
+| Research agent overnight | 5 hypotheses: 1 refused by the code gate, 1 confirmed (lr 1e-5: +1.80 points vs 3e-5 on the selection half, threshold 1.19; legal ratio 0.777 vs 0.754), 3 inconclusive; 9 runs at 2 seeds; exploratory | `results/agent/explore-justin/hypotheses.jsonl`, `rows.jsonl` (as of commit 4c2039f; TO CHECK with justin for later cycles) |
 
 The pre-registered win rule cannot be met on this bench: a technique would have to beat the
 3e-5 control by more than 2.30 points, and that control loses only 1.07. Say this plainly. The
@@ -74,14 +88,15 @@ differences and intervals, never as "no technique helps".
 |---|---|
 | Research rigour | Frozen bench; noise floor from 5 seeds; pre-registration with a logged amendment history; a published reference arm and lower-learning-rate controls; selection and report halves of the eval items kept apart; three rounds of independent review with the fixes in git |
 | Novelty | All techniques under one protocol at matched compute; a table of published claims tested for reproduction; the finding that learning rate dominates and that the published recipe is partly a learning-rate cut |
-| Results | The control table above; TO FILL: screen, replication, claims table. Live results page |
-| Autonomy and self-improvement | The launcher runs the pre-registered grid unattended and resumably; the explore loop proposes hypotheses from results, a code gate accepts or refuses them, and verdicts feed the next cycle. Be exact: tonight's screen was launched by a deterministic launcher on a person's go, and the Conductor reads real data but launches nothing. TO FILL: what the overnight loop did |
+| Results | The control table above; the confirmatory table (best configuration +2.1 points over the published recipe, level with the lower-learning-rate control); the claims table (2 of 6 reproduced, 1 in part). Live results page |
+| Autonomy and self-improvement | The launcher runs the pre-registered grid unattended and resumably; the explore loop proposes hypotheses from results, a code gate accepts or refuses them, and verdicts feed the next cycle. Be exact: tonight's screen was launched by a deterministic launcher on a person's go, and the Conductor reads real data but launches nothing. Overnight the explore loop proposed 5 hypotheses; the code gate refused 1, and 4 ran at 2 seeds each: 1 confirmed, 3 inconclusive, one of them a technique the agent wrote (TO CHECK: justin, for later cycles) |
 | Interpretability and reproducibility | Hash-chained decision log; every row carries its spec, commit and cost; failed and invalid runs are rows too; `make reproduce`; this honest limits list |
 
 ## Sponsor challenges
 
 - **Modal.** One GPU per experiment, 10 in parallel, launched by name from a deployed app that
-  refuses callers at a different commit. TO FILL: total runs and total GPU-hours.
+  refuses callers at a different commit. 100 runs with committed rows, 31.4 H100-hours of
+  training, about $124 (facts table above).
 - **Exa.** The Scout searches with Exa inside the agent loop and writes claim cards with their
   sources; the explore loop turns them into gated hypotheses. Point to
   `src/clharness/agent/search.py` and to `read_inbox` in `src/clharness/agent/explore.py`. The
@@ -106,8 +121,8 @@ differences and intervals, never as "no technique helps".
 | 0:00 to 0:15 | Title card, then one line of the bench config | The problem: models forget when they keep learning, and published fixes cannot be compared. We built a bench that holds everything constant: 20 minutes, about a dollar a run |
 | 0:15 to 0:40 | Terminal: the launcher's dry run, then the decision log scrolling, then the Modal dashboard with 10 GPUs | One command launches the pre-registered grid on Modal. Every wave and every row is logged in a hash-chained file. It resumes if interrupted and stops at a budget cap |
 | 0:40 to 1:05 | Results page: the runs table with the per-domain perplexity columns, then the frontier figure | What each configuration kept and what it learned. The controls: no mitigation loses 6.4 points, the published recipe 3.1, a lower learning rate 1.1 |
-| 1:05 to 1:25 | The claims figure or table | TO FILL: published claims tested on the same bench, and how many reproduced |
-| 1:25 to 1:45 | Hypotheses file and the explore decision log; a claim card with its Exa source | The research agent proposes its own follow-ups from the results and the literature. Code decides what runs. TO FILL: one hypothesis it proposed and what it found |
+| 1:05 to 1:25 | The claims figure or table | We tested six published claims on the same bench: two reproduced, one in part, three did not |
+| 1:25 to 1:45 | Hypotheses file and the explore decision log; a claim card with its Exa source | The research agent proposes its own follow-ups from the results and the literature. Code decides what runs. It asked whether an even lower learning rate keeps helping: at 1e-5 the model forgets less but learns the legal text less, as it predicted (TO CHECK: justin) |
 | 1:45 to 2:00 | `make reproduce` finishing; the limits list | Everything rebuilds from committed rows in seconds. One small model, a short stream: here is what we do not claim |
 
 Record the screen segments on Sunday morning once the page shows real results. The first 40
