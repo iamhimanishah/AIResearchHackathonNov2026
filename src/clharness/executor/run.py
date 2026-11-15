@@ -22,6 +22,15 @@ from clharness.spec import Cost, ResultRow, RunSpec
 GPU_USD_PER_HOUR = {"H100": 3.95, "A100-80GB": 2.50, "A100": 2.10, "L40S": 1.95, "A10G": 1.10}
 
 
+# Where a run's per-item files live in a clone, relative to the repo root. Rows point here, so
+# the pointer means the same thing on every machine; `clh fetch-items` fills it from the cloud.
+ITEMS_ROOT = "results/items"
+
+
+def items_path(spec: RunSpec) -> str:
+    return f"{ITEMS_ROOT}/{run_name(spec)}/checkpoints"
+
+
 def run_name(spec: RunSpec) -> str:
     """Directory name of a run: the spec hash, so the same experiment always lands in one place."""
     return spec.spec_hash()[:16]
@@ -75,7 +84,7 @@ def run_spec(
     measured.pop("gradient_tokens")
     return ResultRow(
         status="invalid" if invalid else "finished", reason=invalid, finished_at=_now(),
-        cost=cost, items_path=str(run_dir / "checkpoints"), **measured, **common,
+        cost=cost, items_path=items_path(spec), **measured, **common,
     )
 
 
@@ -129,5 +138,6 @@ def remeasure_row(row: ResultRow, run_dir: str | Path) -> ResultRow:
     invalid = measured.pop("invalid_reason")
     measured.pop("gradient_tokens")
     data = row.model_dump()
-    data.update(status="invalid" if invalid else "finished", reason=invalid, **measured)
+    data.update(status="invalid" if invalid else "finished", reason=invalid,
+                items_path=items_path(row.spec), **measured)
     return ResultRow.model_validate(data)

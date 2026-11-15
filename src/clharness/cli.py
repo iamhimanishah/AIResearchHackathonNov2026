@@ -13,6 +13,7 @@
   clh fake-rows [--out F] [--seed N]        invented result rows with planted effects
   clh export-schema [--out DIR]             JSON Schemas of the run spec and result row
   clh run SPEC... [--modal] [--out F]       run specs, append one result row each
+  clh fetch-items FILE...                   per-item files of finished runs, from Modal to results/items/
 """
 
 from __future__ import annotations
@@ -447,6 +448,40 @@ def cmd_run(args) -> int:
     return worst
 
 
+def cmd_fetch_items(args) -> int:
+    """Download the per-item checkpoint files of every finished run in the given row files from
+    the Modal work volume into results/items/, and point the rows at them."""
+    import subprocess
+
+    from clharness.executor.run import items_path, run_name
+    from clharness.spec import read_rows, write_rows
+
+    missing = 0
+    for path in args.files:
+        rows, changed = read_rows(path), False
+        for i, row in enumerate(rows):
+            if row.retention is None or row.backend != "modal":
+                continue
+            local = REPO_ROOT / items_path(row.spec)
+            if not list(local.glob("ckpt_*/items_*.npy")):
+                local.parent.mkdir(parents=True, exist_ok=True)
+                remote = f"runs/{run_name(row.spec)}/checkpoints"
+                res = subprocess.run(["modal", "volume", "get", "--force", args.volume, remote, str(local.parent)],
+                                     capture_output=True, text=True)
+                if res.returncode != 0 or not list(local.glob("ckpt_*/items_*.npy")):
+                    missing += 1
+                    print(f"MISSING {row.spec.name} {row.spec_hash[:12]}: {res.stderr.strip()[-200:]}", file=sys.stderr)
+                    continue
+                print(f"fetched {row.spec.name} -> {items_path(row.spec)}")
+            if row.items_path != items_path(row.spec):  # older rows pointed into the cloud volume
+                rows[i] = row.model_copy(update={"items_path": items_path(row.spec)})
+                changed = True
+        if changed:
+            write_rows(path, rows)
+            print(f"updated items_path in {path}")
+    return 1 if missing else 0
+
+
 def cmd_export_schema(args) -> int:
     from clharness.spec import json_schemas
 
@@ -489,6 +524,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gpu", default="H100", help="Modal GPU type (with --modal)")
     p.add_argument("--detach", action="store_true", help="with --modal: keep running after this terminal closes")
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("fetch-items", help="download finished runs' per-item files from the Modal volume into results/items/")
+    p.add_argument("files", nargs="+", help="JSONL files of result rows")
+    p.add_argument("--volume", default="clh-work")
+    p.set_defaults(fn=cmd_fetch_items)
     p = sub.add_parser("export-schema", help="write the run-spec and result-row JSON Schemas")
     p.add_argument("--out", default=str(REPO_ROOT / "configs" / "schema"))
     p.set_defaults(fn=cmd_export_schema)
