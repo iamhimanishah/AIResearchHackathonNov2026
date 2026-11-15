@@ -112,8 +112,16 @@ def launch(
     stage: str = "design",
     plan_reason: str | None = None,
     plan_data: dict | None = None,
+    tag: str | None = None,
 ) -> dict[str, int]:
-    """Run every spec that has no finished row yet. Returns counts by final status."""
+    """Run every spec that has no finished row yet. Returns counts by final status.
+
+    `stage` names the decision-log keys ("design/plan", "replication/launch#1", ...); `tag` is
+    the same thing under the name the explore loop uses."""
+    if tag is not None:
+        stage = tag
+    if plan_reason is None and stage != "design":
+        plan_reason = f"Runs accepted by the gate for {stage}."
     out.mkdir(parents=True, exist_ok=True)
     rows_path = out / "rows.jsonl"
     log = DecisionLog(out / "decisions.jsonl")
