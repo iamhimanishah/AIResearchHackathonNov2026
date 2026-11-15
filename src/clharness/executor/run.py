@@ -18,7 +18,8 @@ from typing import Any
 from clharness.config import REPO_ROOT, OptimCfg, RunConfig, load_yaml_with_includes
 from clharness.spec import Cost, ResultRow, RunSpec
 
-# Rough on-demand price per GPU-hour, for the cost estimate in the row and the budget guard.
+# Rough on-demand price per GPU-hour, for the cost estimate in the row. This module has no budget
+# guard: the cap is enforced by whoever launches (agent/launch_design.py, the Conductor).
 GPU_USD_PER_HOUR = {"H100": 3.95, "A100-80GB": 2.50, "A100": 2.10, "L40S": 1.95, "A10G": 1.10}
 
 
@@ -147,5 +148,5 @@ def remeasure_row(row: ResultRow, run_dir: str | Path) -> ResultRow:
     measured.pop("gradient_tokens")
     data = row.model_dump()
     data.update(status="invalid" if invalid else "finished", reason=invalid,
-                items_path=items_path(row.spec), **measured)
+                items_path=items_path(row.spec), remeasured_at=_now(), **measured)
     return ResultRow.model_validate(data)

@@ -184,6 +184,13 @@
         "report": {
           "$ref": "#/$defs/HalfRetention"
         },
+        "report_only": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TaskRetention"
+          },
+          "title": "Report Only",
+          "type": "object"
+        },
         "selection": {
           "$ref": "#/$defs/HalfRetention"
         }
@@ -414,6 +421,18 @@
       ],
       "default": null,
       "title": "Reason"
+    },
+    "remeasured_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Remeasured At"
     },
     "retention": {
       "anyOf": [

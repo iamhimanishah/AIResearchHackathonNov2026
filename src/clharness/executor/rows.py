@@ -98,6 +98,16 @@ def measure_run(run_dir: str | Path, trained_domains: list[str]) -> dict[str, An
                    if (final_dir / p.name).exists())
     if not tasks:
         raise ValueError(f"{run_dir}: no per-item eval files in the base and final checkpoints")
+    # Only the protected tasks enter the halves and the mean. Anything else a bench scores
+    # (fast-extra's two report-only tasks, MBPP in the September runs) is reported apart.
+    protected = set(_pinned_split())
+    extra = [t for t in tasks if t not in protected] if protected & set(tasks) else []
+    tasks = [t for t in tasks if t not in extra]
+    report_only = {}
+    for task in extra:
+        b, f = np.load(base_dir / f"items_{task}.npy"), np.load(final_dir / f"items_{task}.npy")
+        report_only[task] = TaskRetention(base=float(np.nanmean(b)), final=float(np.nanmean(f)),
+                                          delta=float(np.nanmean(f) - np.nanmean(b)), n_items=len(b))
 
     selection = _half(base_dir, final_dir, tasks, 0)
     report = _half(base_dir, final_dir, tasks, 1)
@@ -138,7 +148,8 @@ def measure_run(run_dir: str | Path, trained_domains: list[str]) -> dict[str, An
         reasons.append("non-finite score or perplexity")
 
     return {
-        "retention": Retention(selection=selection, report=report, boundaries=boundaries),
+        "retention": Retention(selection=selection, report=report, boundaries=boundaries,
+                               report_only=report_only),
         "acquisition": Acquisition(ppl_ratio=ratios, mean_ppl_ratio=mean_ratio,
                                    general_ppl_ratio=ratio("general"),
                                    own_boundary_ppl_ratio=own, mean_own_boundary_ppl_ratio=geomean(own)),

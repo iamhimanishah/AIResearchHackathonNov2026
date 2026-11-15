@@ -27,16 +27,18 @@ Five no-mitigation seeds on the frozen bench (`results/rows.noise.jsonl`):
 | Measure | Mean | SD across seeds |
 |---|---|---|
 | MC mean, all items | −6.08 points | 0.78 |
-| MC mean, selection half | −6.50 points | 1.06 |
-| MC mean, report half | −5.66 points | 0.68 |
+| MC mean, selection half (pinned split) | −5.72 points | 0.59 |
+| MC mean, report half (pinned split) | −6.44 points | 1.15 |
 | Legal perplexity ratio | 0.787 | 0.002 |
 
 Per task (all items): ARC-Easy SD 1.0, HellaSwag 1.9, PIQA 0.5, PubMedQA 2.8.
 
-From the all-items SD, the difference between two arms has a standard deviation of about 1.1
-points at one seed each and about 0.64 at three seeds each. So an effect of roughly 1.3 points is
-detectable at two standard deviations with three seeds. The published effects below are 1 to 5
-points. Pairing seeds with the reference arm may tighten this; that is not measured yet.
+The report half is the primary metric, and its SD is 1.15 points. The difference between two
+arms on it has a standard deviation of about 1.6 points at one seed each and about 0.94 at three
+seeds each, so roughly 1.9 points is detectable at two standard deviations with three seeds; the
+pre-registration requires more than 2.30. The published effects below are 1 to 5 points, so the
+smaller ones may not be resolvable here. Pairing seeds with the reference arm may tighten this;
+a same-seed, same-configuration pair differed by about a point, so the gain is limited.
 
 ## Claims
 

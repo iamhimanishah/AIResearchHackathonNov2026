@@ -136,6 +136,10 @@ class Retention(_Strict):
     selection: HalfRetention
     report: HalfRetention
     boundaries: list[BoundaryRetention] = Field(default_factory=list)
+    # Tasks scored but not part of the protected set (bench fast-extra: WinoGrande and
+    # ARC-Challenge). Over all of a task's items, never split, and never part of `mean_delta` or
+    # of any selection: they are for reading next to published tables only.
+    report_only: dict[str, TaskRetention] = Field(default_factory=dict)
 
 
 class Acquisition(_Strict):
@@ -171,6 +175,9 @@ class ResultRow(_Strict):
     attempt: int = Field(default=1, ge=1)
     started_at: str | None = None  # ISO 8601, UTC
     finished_at: str | None = None
+    # Set when the measured parts were recomputed from the run's saved files (no retraining).
+    # A row with this set and its original share a spec hash; this one is the current one.
+    remeasured_at: str | None = None
     retention: Retention | None = None
     acquisition: Acquisition | None = None
     cost: Cost | None = None

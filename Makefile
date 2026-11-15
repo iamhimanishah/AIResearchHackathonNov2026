@@ -43,14 +43,18 @@ clean-smoke:
 REPORTED_ROWS ?= results/rows.phase0.remeasured.jsonl results/rows.phase0.jsonl \
                  results/rows.reference.remeasured.jsonl $(wildcard results/agent/rows.jsonl)
 REPRO_OUT ?= results/analysis
+# Set to --confirmatory once replication is finished, to also run the pre-registered tests on
+# the report half:  make reproduce-figures CONFIRMATORY=--confirmatory
+CONFIRMATORY ?=
 
 reproduce: reproduce-figures   ## what a reader should run: tables and page from committed rows
 
 reproduce-figures:             ## tables, analysis report and results page from committed rows
 	$(UV) run clh validate-row $(REPORTED_ROWS)
-	$(UV) run clh grid-analysis $(REPORTED_ROWS) --out $(REPRO_OUT)
+	$(UV) run clh grid-analysis $(REPORTED_ROWS) $(CONFIRMATORY) --out $(REPRO_OUT)
 	$(UV) run clh figures $(REPRO_OUT)/grid_analysis.json --out results/figures
-	@echo "analysis written to $(REPRO_OUT), figures to results/figures"
+	$(UV) run python -m clharness.page --dir results/agent --write results/page.html
+	@echo "analysis written to $(REPRO_OUT), figures to results/figures, page to results/page.html"
 
 reproduce-runs:                ## retrain the phase 0 controls on Modal (needs `modal setup` and the huggingface secret)
 	$(UV) run clh run --modal $$(grep -v '^#' configs/bench/phase0.txt) \

@@ -160,6 +160,7 @@ def test_remeasure_keeps_the_run_and_replaces_only_measurements(tmp_path):
     assert new.acquisition.ppl_ratio == {"code": pytest.approx(0.8), "biomedical": pytest.approx(0.5)}
     assert new.acquisition.own_boundary_ppl_ratio == {"code": pytest.approx(0.5), "biomedical": pytest.approx(0.5)}
     assert new.retention.selection.mean_delta == pytest.approx(-0.5)
+    assert new.remeasured_at is not None and old.remeasured_at is None
 
 
 def test_extra_eval_bench_trains_identically_and_keeps_the_protected_items():
@@ -199,3 +200,18 @@ def test_a_technique_may_not_silently_replace_a_spec_optim_override():
     keeps = RunSpec(name="x", seed=0, stream=[{"name": "code", "tokens": 4096}],
                     optim={"lr": 5e-5}, techniques=[{"name": "lora", "params": {"rank": 8, "lr": None}}])
     assert config_from_spec(keeps).optim.lr == 5e-5
+
+
+def test_tasks_outside_the_protected_set_never_enter_the_halves_or_the_mean(tmp_path):
+    """A bench may score extra tasks (fast-extra). They are reported apart, over all items."""
+    run = _run_dir(tmp_path)
+    for ckpt, score in (("ckpt_0000", 1.0), ("ckpt_0001", 1.0), ("ckpt_0002", 0.25)):
+        items = np.zeros(40, dtype=np.float32)
+        items[: int(40 * score)] = 1
+        np.save(run / "checkpoints" / ckpt / "items_winogrande.npy", items)
+    m = measure_run(run, ["code", "biomedical"])
+    r = m["retention"]
+    assert set(r.selection.per_task) == set(r.report.per_task) == set(TASKS)
+    assert (r.selection.mean_delta, r.report.mean_delta) == (pytest.approx(-0.5), pytest.approx(-0.5))
+    assert r.report_only["winogrande"].delta == pytest.approx(-0.75)
+    assert r.report_only["winogrande"].n_items == 40
