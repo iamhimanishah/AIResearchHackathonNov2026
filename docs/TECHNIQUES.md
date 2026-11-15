@@ -113,7 +113,8 @@ Sanity results will be added to this file from result rows only, never typed in.
 A snapshot, written by a script that reads the row files and typed by nobody. Sources:
 `results/rows.plumbing.jsonl`, `results/rows.sanity.jsonl`, `results/rows.phase0.remeasured.jsonl`,
 `results/rows.phase0.jsonl`, `results/rows.reference.remeasured.jsonl`, `results/rows.explore.jsonl`
-and the LoRA arms of `results/agent/rows.jsonl`, as of 14 November.
+and the LoRA arms of `results/agent/rows.jsonl` and `results/agent/explore-peter/rows.jsonl`, as of
+15 November.
 The analysis behind `make reproduce-figures` is the authority; this table is for orientation.
 
 ### Sanity runs: does each technique run on the real model?
@@ -164,8 +165,10 @@ What the full runs say so far, with replay alone and re-warm alone at one seed e
 
 These runs are outside the pre-registered screen and claims families. Their specs are in
 `configs/bench/specs/explore/` and carry `explore:` in `notes`. Their rows are in
-`results/rows.explore.jsonl`, which the reported-rows list does not read. The table sets them
-beside the control arms and the two LoRA arms of the claims family. It is printed by
+`results/rows.explore.jsonl`, which the reported-rows list does not read. The LoRA arms at two
+seeds were run by the research agent (instance `peter`) and are in
+`results/agent/explore-peter/rows.jsonl`. The table sets them all beside the control arms and
+the two LoRA arms of the claims family. It is printed by
 `scripts/techniques_table.py`. Columns are as in the table above; the code column is code
 perplexity at the end of the stream, after legal training, over the base model's.
 
@@ -178,9 +181,13 @@ perplexity at the end of the stream, after legal training, over the base model's
 | reference arm (lr_rewarm + replay), lr 0.0001 | 3 | -3.13 (0.85) | -3.37 (0.38) | 0.744 | 1.482 | 1.120 | `rows.phase0.jsonl`, `rows.reference.remeasured.jsonl` |
 | lr_rewarm, warmup only (constant schedule), lr 0.0001 | 3 | -6.53 (1.11) | -6.23 (0.72) | 0.790 | 1.471 | 1.407 | `rows.explore.jsonl` |
 | LoRA rank 8, lr 0.001 | 3 | -1.30 (1.05) | -1.00 (0.66) | 0.797 | 1.062 | 1.032 | `agent/rows.jsonl` |
-| LoRA rank 8, lr 0.0001 | 1 | +1.10 | +0.60 | 0.860 | 1.010 | 0.993 | `rows.explore.jsonl` |
+| LoRA rank 8, lr 0.000565685 | 2 | -0.20 (0.57) | +0.35 (0.35) | 0.806 | 1.026 | 1.008 | `agent/explore-peter/rows.jsonl` |
+| LoRA rank 8, lr 0.0001 | 3 | +0.70 (0.36) | +0.90 (0.26) | 0.860 | 1.012 | 0.993 | `rows.explore.jsonl` |
+| LoRA rank 64, lr 0.0003 | 2 | -0.95 (0.64) | -0.50 (0.42) | 0.772 | 1.041 | 1.028 | `agent/explore-peter/rows.jsonl` |
+| LoRA rank 64, lr 0.0001 | 3 | +0.77 (0.38) | +0.60 (0.26) | 0.806 | 1.011 | 1.002 | `agent/explore-peter/rows.jsonl`, `rows.explore.jsonl` |
 | LoRA rank 256, lr 0.001 | 3 | -19.00 (1.00) | -17.77 (1.12) | 0.944 | 4.779 | 2.444 | `agent/rows.jsonl` |
 | LoRA rank 256, lr 0.0002 | 1 | -1.50 | -2.30 | 0.757 | 1.096 | 1.083 | `rows.explore.jsonl` |
+| LoRA rank 256, lr 0.00015 | 2 | -0.90 (0.14) | -0.70 (0.28) | 0.760 | 1.057 | 1.052 | `agent/explore-peter/rows.jsonl` |
 | LoRA rank 256, lr 0.0001 | 3 | -0.27 (0.81) | -0.13 (1.04) | 0.767 | 1.032 | 1.028 | `rows.explore.jsonl` |
 
 What they say. All of it is exploratory, and an arm with one seed is a lead, not a finding.
@@ -202,9 +209,19 @@ What they say. All of it is exploratory, and an arm with one seed is a lead, not
   1e-4 has no learning-rate confound. Against the strongest control, no mitigation at 3e-5, it
   is within seed noise on the report half and learns legal a little less well. It loses much
   less code perplexity and somewhat less general perplexity.
-- **At a matched learning rate, the higher rank learns more, on one seed.** At 1e-4, rank 8
-  learns much less of legal than rank 256. Rank 8 at its default 1e-3 learns more than rank 8
-  at 1e-4 and still less than rank 256 at 1e-4, so the gap is not only the size of the step.
+- **At a matched learning rate, the higher rank learns more, on three seeds each.** At 1e-4,
+  legal perplexity improves from rank 8 to rank 64 to rank 256, the three seeds of each rank
+  agree closely, and none of the three forgets much. The confirmatory analysis
+  (`results/analysis/grid_analysis.md`, claim 5) marks "higher rank learns more" as opposite;
+  its rank-256 arm ran at the default 1e-3 and diverged, so that verdict is about the learning
+  rate.
+- **Step size explains part of the rank gap, not all of it.** Rank 64 at 3e-4 comes close to
+  rank 256 at 1e-4 on legal perplexity. Rank 8 does not: neither at its default 1e-3 nor at
+  the rate that matches rank 256 on `lr` x sqrt(`rank`). These are the research agent's arms,
+  two seeds each.
+- **At rank 256, forgetting rises with the learning rate well before training fails.** From
+  1e-4 through 1.5e-4 to 2e-4, retention falls step by step while legal perplexity improves
+  only slightly.
 - **"Learns the new domain" here means legal.** For code, perplexity is a damage guard and not
   a measure of learning (`analysis/PREREG.md`, A15): training on code does not improve it in
   these arms.
