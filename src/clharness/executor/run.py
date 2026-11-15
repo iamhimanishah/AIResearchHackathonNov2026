@@ -109,8 +109,9 @@ def _train_and_measure(spec: RunSpec, gpu_type: str | None, output_dir: str | No
     cfg = config_from_spec(spec, output_dir)
     technique_hooks = build_hooks(cfg.techniques)
     run_dir = (REPO_ROOT / cfg.train.output_dir / cfg.name).resolve()
-    if run_dir.exists():  # a retry or a rerun: never mix two attempts' files
-        shutil.rmtree(run_dir)
+    if run_dir.exists():  # a retry or a rerun: never mix two attempts' files, never destroy one
+        previous = run_dir.with_name(f"{run_dir.name}.prev-{int(time.time())}")
+        shutil.move(str(run_dir), str(previous))
     eval_manifest = read_manifest(REPO_ROOT / "manifests" / f"eval-{cfg.eval.suite}.json")
 
     t0 = time.time()

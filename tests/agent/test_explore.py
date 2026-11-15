@@ -163,7 +163,7 @@ def test_a_full_cycle_launches_resolves_and_logs(tmp_path, have):
     assert log.verify().ok
     states = [d.state for d in log.entries()]
     assert states[0] == "explore/gate" and states[-1] == "explore/read"
-    assert json.loads((tmp_path / "explore" / "rows.jsonl").read_text().splitlines()[0])["spec"]["notes"].startswith("exploratory:")
+    assert json.loads((tmp_path / "explore" / "rows.jsonl").read_text().splitlines()[0])["spec"]["notes"].startswith(ex.NOTE_PREFIX)
 
 
 def test_a_second_cycle_does_not_repeat_a_recorded_hypothesis(tmp_path, have):
@@ -225,3 +225,44 @@ def test_control_names_from_the_scout_map_onto_the_arm_table():
     assert ex._control_name("no_mitigation-lr3e-05") == "no-mitigation@lr3e-05"
     assert ex._control_name("lr_rewarm+replay") == "lr_rewarm+replay"
     assert ex._control_name("no-mitigation@lr3e-05") == "no-mitigation@lr3e-05"
+
+
+# -- review fixes --------------------------------------------------------------------------------
+
+
+def test_gate_refuses_a_freeze_that_leaves_nothing_to_train(tmp_path, have):
+    arms = ex.read_arms([have])
+    specs, why = ex.gate_one(ex.ProposedHypothesis.model_validate(_hyp(
+        techniques=[{"name": "freeze", "params": {"bottom_layers": 13, "top_layers": 13}}], lr=None,
+        control="no-mitigation")), "h001", arms, set())
+    assert specs == [] and "no layer would be left" in why
+
+
+def test_a_failed_test_run_closes_its_hypothesis_as_inconclusive(tmp_path, have):
+    class Failing(FakeModal):
+        def result(self, call_id):
+            self.polls[call_id] += 1
+            if self.polls[call_id] < 2:
+                return None
+            spec = self.calls.pop(call_id)
+            return a1.row_to_line(a1.ResultRow(spec=spec, spec_hash=spec.spec_hash(), git_sha=SHA,
+                                               status="failed", reason="ValueError: nothing to train", backend="modal"))
+
+    out = tmp_path / "explore"
+    hyps = ex.cycle(out, [have], backend=Failing(lambda s: (0, 0)), git_sha=SHA, go=True,
+                    sleep=lambda s: None, say=lambda s: None, max_hypotheses=1)
+    assert [h.status for h in hyps] == ["inconclusive"] and "did not finish" in hyps[0].reason
+    again = ex.cycle(out, [have], resolve_only=True, say=lambda s: None)
+    assert [h.status for h in again] == ["inconclusive"]
+
+
+def test_the_total_cap_holds_across_cycles(tmp_path, have):
+    out = tmp_path / "explore"
+    backend = FakeModal(lambda spec: (-1.0, 0.75))
+    kw = dict(backend=backend, git_sha=SHA, go=True, sleep=lambda s: None, say=lambda s: None)
+    two_runs = 2 * ex.USD_PER_RUN
+    first = ex.cycle(out, [have], max_hypotheses=1, total_cap_usd=two_runs + 0.01, **kw)
+    assert sum(bool(h.test_spec_hashes) for h in first) == 1
+    second = ex.cycle(out, [have], max_hypotheses=2, total_cap_usd=two_runs + 0.01, **kw)
+    assert sum(bool(h.test_spec_hashes) for h in second) == 1  # nothing more fits under the total
+    assert any("left under the caps" in h.reason for h in second if h.status == "rejected")

@@ -38,7 +38,7 @@ WORK = "/vol"
 # CLH_MODAL_GPU=none defines the app with no GPU function resources, so the data build can run
 # on a workspace that is not yet allowed to request GPUs.
 DEFAULT_GPU = os.environ.get("CLH_MODAL_GPU", "H100")
-RUN_TIMEOUT_S = 75 * 60
+RUN_TIMEOUT_S = 50 * 60  # a bench run takes 17 to 27 minutes; a hung one is cut off here
 
 app = modal.App("clharness")
 data_vol = modal.Volume.from_name("clh-data", create_if_missing=True)
@@ -52,7 +52,8 @@ def _local_code_version(repo: Path) -> str:
     try:
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=repo).strip()
         dirty = subprocess.check_output(
-            ["git", "status", "--porcelain", "--", "src", "configs", "manifests"], text=True, cwd=repo
+            ["git", "status", "--porcelain", "--", "src", "configs", "manifests", "uv.lock", "pyproject.toml"],
+            text=True, cwd=repo
         ).strip()
         return f"{sha}-dirty" if dirty else sha
     except Exception:  # noqa: BLE001
@@ -138,7 +139,7 @@ def warm_cache() -> str:
     gpu=None if DEFAULT_GPU == "none" else DEFAULT_GPU, timeout=RUN_TIMEOUT_S,
     # Retries cover machine failures only (preemption, lost container). A run that raises
     # returns a `failed` row instead, and a bad result returns an `invalid` row: neither retries.
-    retries=modal.Retries(max_retries=2, backoff_coefficient=1.0, initial_delay=10.0),
+    retries=modal.Retries(max_retries=1, backoff_coefficient=1.0, initial_delay=10.0),
     **_common,
 )
 def run(spec_json: str, git_sha: str, gpu_type: str = DEFAULT_GPU) -> str:

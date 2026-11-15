@@ -89,7 +89,8 @@ def code_version(repo: Path = REPO_ROOT) -> str:
     """HEAD, or raise if tracked code differs from it (the deployed app could not match)."""
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=repo).strip()
     dirty = subprocess.check_output(
-        ["git", "status", "--porcelain", "--", "src", "configs", "manifests"], text=True, cwd=repo
+        ["git", "status", "--porcelain", "--", "src", "configs", "manifests", "uv.lock", "pyproject.toml"],
+        text=True, cwd=repo
     ).strip()
     if dirty:
         raise Halt("uncommitted changes under src, configs or manifests; commit them and redeploy first")

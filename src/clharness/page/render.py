@@ -102,6 +102,11 @@ def _report(report: dict[str, Any]) -> str:
         rows, numeric={2, 3, 4, 5, 6}, classes=classes)
 
 
+def _safe_url(url: str) -> str:
+    """A link target from the web is only used if it is plain http(s); anything else becomes #."""
+    return url if str(url).lower().startswith(("http://", "https://")) else "#"
+
+
 def _arm(spec: Any) -> str:
     """The arm a run belongs to. An optimizer override is part of the arm: no mitigation at a
     lower learning rate is a control of its own (PREREG rule 4), not the 1e-4 baseline."""
@@ -198,7 +203,7 @@ def _candidates(out: Path) -> str:
         [str(c["rank"]), escape(c["name"]),
          f'<span class="{cls[c["status"]]}">{escape(c["status"])}</span>',
          escape(c["description"]),
-         "<br>".join(f'<a href="{escape(s["url"])}">{escape(s["title"][:80] or s["url"])}</a>'
+         "<br>".join(f'<a href="{escape(_safe_url(s["url"]))}">{escape(s["title"][:80] or s["url"])}</a>'
                      for s in c["sources"]),
          f"<code>{escape(c['file'])}</code>"] for c in queue], numeric={0})
 
