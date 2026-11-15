@@ -571,18 +571,32 @@ def _estimate_encode():
         return (lambda t: [0] * max(1, len(t) // 4)), True
 
 
-def cmd_tinker_run(args) -> int:
-    """Train + eval one C5 arm on Tinker and append a TinkerRow. The budget guard refuses
-    before any API call; --dry-run prints the token/USD estimate and stops earlier still."""
+def cmd_tinker_run(args, load_split=None) -> int:
+    """Train + eval one C5 arm on Tinker and append a TinkerRow. The frozen-data check
+    re-hashes every task's manifest examples before any client exists — even on
+    --dry-run — and the budget guard refuses before any API call."""
     from clharness.tinker import runner
-    from clharness.tinker.data import SMOKE_N_EVAL, SMOKE_N_TRAIN, read_manifest
+    from clharness.tinker.data import (
+        SMOKE_N_EVAL,
+        SMOKE_N_TRAIN,
+        TASK_ORDER,
+        TASKS,
+        read_manifest,
+        verify_task_sha,
+    )
     from clharness.tinker.rows import append_tinker_row, spent_usd
 
     manifest = read_manifest(args.manifest)
     n_train = SMOKE_N_TRAIN if args.smoke else manifest["n_train"]
     n_eval = SMOKE_N_EVAL if args.smoke else manifest["n_eval"]
     examples = runner.load_examples(n_train, n_eval, manifest=manifest,
-                                    manifest_path=args.manifest)
+                                    manifest_path=args.manifest, load_split=load_split)
+    try:
+        for name in TASK_ORDER:
+            verify_task_sha(TASKS[name], manifest, load_split=load_split)
+    except ValueError as e:
+        print(f"data check failed, refusing to run: {e}", file=sys.stderr)
+        return 2
     encode, approximate = _estimate_encode()
     est = runner.estimate_run(arm=args.arm, seed=args.seed, examples=examples, encode=encode,
                               n_train=n_train, n_eval=n_eval, epochs=args.epochs,

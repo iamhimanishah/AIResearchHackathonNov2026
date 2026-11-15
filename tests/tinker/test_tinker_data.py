@@ -105,3 +105,70 @@ def test_load_task_examples_uses_frozen_indices(tmp_path):
     idx = m["tasks"]["sst2"]["train_indices"][0]
     assert ex["train"][0]["sentence"] == f"sst2 sentence row {idx}"
     assert first == "train"
+
+
+def test_verify_task_sha_passes_on_frozen_data_and_names_both_hashes(tmp_path):
+    loader = _fake_load_split(800, 60)
+    m = td.build_manifest(out=tmp_path / "m.json", n_train=100, n_eval=20, load_split=loader)
+    for name in td.TASK_ORDER:
+        td.verify_task_sha(td.TASKS[name], m, load_split=loader)
+
+    def moved(task, split):
+        ds = loader(task, split)
+        if task.name == "sst2" and split == task.train_split:
+            i = m["tasks"]["sst2"]["train_indices"][0]
+            ds.rows[i] = {**ds.rows[i], "sentence": "the review changed"}
+        return ds
+
+    with pytest.raises(ValueError) as e:
+        td.verify_task_sha(td.TASKS["sst2"], m, load_split=moved)
+    ex = td.load_task_examples(td.TASKS["sst2"], m, load_split=moved)
+    got = td._sha_examples(ex["train"], ex["eval"])
+    want = m["tasks"]["sst2"]["sha256"]
+    assert want != got and "sst2" in str(e.value)
+    assert want in str(e.value) and got in str(e.value)
+
+
+def test_tinker_run_checks_the_data_before_creating_a_service(tmp_path, monkeypatch, capsys):
+    """An injected loader that changes one frozen example makes tinker-run refuse:
+    non-zero exit, the task name and both hashes on stderr, no service, no row.
+    --dry-run runs the same check."""
+    from types import SimpleNamespace
+
+    from clharness import cli
+    from clharness.tinker import runner
+    from clharness.tinker.fake import FakeTokenizer
+
+    loader = _fake_load_split(800, 60)
+    mpath = tmp_path / "m.json"
+    m = td.build_manifest(out=mpath, n_train=100, n_eval=20, load_split=loader)
+    calls = []
+    monkeypatch.setattr(runner, "real_service", lambda: calls.append("service"))
+    monkeypatch.setattr(cli, "_estimate_encode",
+                        lambda: calls.append("encode") or (FakeTokenizer().encode, False))
+    args = SimpleNamespace(
+        arm="naive", seed=0, epochs=2, smoke=True, dry_run=False, budget=70.0,
+        rows=str(tmp_path / "rows.jsonl"), items_dir=str(tmp_path / "items"),
+        manifest=str(mpath), model="m", rank=8, lr=1e-4, batch_size=4, max_len=64,
+        replay=200, eval_window=4)
+
+    bad = _fake_load_split(800, 60)  # same data as `loader`, then one example moves
+    def moved(task, split):
+        ds = bad(task, split)
+        if task.name == "mnli" and split == task.train_split:
+            i = m["tasks"]["mnli"]["train_indices"][0]
+            ds.rows[i] = {**ds.rows[i], "premise": "the review changed"}
+        return ds
+
+    assert cli.cmd_tinker_run(args, load_split=moved) == 2
+    assert calls == []  # the check refuses before even the tokenizer is built
+    assert not (tmp_path / "rows.jsonl").exists()
+    err = capsys.readouterr().err
+    assert "mnli" in err and m["tasks"]["mnli"]["sha256"] in err
+    args.dry_run = True
+    assert cli.cmd_tinker_run(args, load_split=moved) == 2  # --dry-run checks too
+    assert calls == []
+    # unchanged data passes the check; dry-run stops at the estimate, still no service
+    assert cli.cmd_tinker_run(args, load_split=loader) == 0
+    assert calls == ["encode"]
+    assert not (tmp_path / "rows.jsonl").exists()

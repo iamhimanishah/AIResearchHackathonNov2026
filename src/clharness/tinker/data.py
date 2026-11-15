@@ -233,5 +233,7 @@ def verify_task_sha(task: TaskDef, manifest: dict[str, Any], load_split=None) ->
     """Re-hash the manifest's selected raw examples; fails loudly if the data moved."""
     entry = manifest["tasks"][task.name]
     got = load_task_examples(task, manifest, load_split=load_split)
-    if _sha_examples(got["train"], got["eval"]) != entry["sha256"]:
-        raise ValueError(f"{task.name}: examples no longer match manifests/tinker-c5.json")
+    sha = _sha_examples(got["train"], got["eval"])
+    if sha != entry["sha256"]:
+        raise ValueError(
+            f"{task.name}: examples sha256 {sha} != manifest sha256 {entry['sha256']}")
