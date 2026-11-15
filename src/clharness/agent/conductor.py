@@ -680,7 +680,9 @@ class Conductor:
                      "claim_cards": [c.model_dump(mode="json") for c in result.claims],
                      "candidates": [{"name": c.name, "description": c.description}
                                     for c in result.candidates],
-                     "rejected": list(result.rejected)},
+                     "rejected": list(result.rejected),
+                     "searches": result.searches,
+                     "search_errors": list(result.search_errors)},
         }
 
     def _write_claim_cards(self, result: ScoutResult) -> None:

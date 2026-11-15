@@ -23,6 +23,9 @@ from .contracts import Source, utc_iso
 from .roles import Clock, SystemClock
 
 MAX_SNIPPET_CHARS = 1500  # per source, after joining highlights; keeps the Scout prompt small
+# Seconds one Exa call may take. The SDK's default is 600 s, so three queries could stall the
+# loop for half an hour (fix plan S1). A timeout is a SearchError like any other failure.
+DEFAULT_TIMEOUT_S = 30.0
 
 
 class SearchError(Exception):
@@ -48,13 +51,15 @@ def _field(item: Any, *names: str) -> Any:
 
 
 class ExaSearch:
-    """`exa.search(query, objective=..., type="auto", contents={"highlights": True})`."""
+    """`exa.search(query, objective=..., type="auto", contents={"highlights": True},
+    timeout=...)`."""
 
     def __init__(self, *, api_key_env: str = "EXA_API_KEY", clock: Clock | None = None,
-                 client: Any = None) -> None:
+                 client: Any = None, timeout: float = DEFAULT_TIMEOUT_S) -> None:
         self._api_key_env = api_key_env
         self._clock = clock or SystemClock()
         self._client = client
+        self.timeout = timeout
 
     def _sdk(self) -> Any:
         if self._client is not None:
@@ -67,13 +72,13 @@ class ExaSearch:
         key = os.environ.get(self._api_key_env)
         if not key:
             raise SearchError(f"environment variable {self._api_key_env} is not set")
-        self._client = Exa(api_key=key)
+        self._client = Exa(api_key=key, timeout=self.timeout)
         return self._client
 
     def search(self, query: str, objective: str) -> tuple[Source, ...]:
         try:
             response = self._sdk().search(query, objective=objective, type="auto",
-                                          contents={"highlights": True})
+                                          contents={"highlights": True}, timeout=self.timeout)
         except SearchError:
             raise
         except Exception as exc:  # any SDK or network failure is a SearchError

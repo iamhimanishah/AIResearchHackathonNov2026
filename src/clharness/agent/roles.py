@@ -195,6 +195,8 @@ class ScoutResult(Frozen):
     sources: tuple[Source, ...] = ()
     skipped_reason: str | None = None  # set when both lists are empty
     meta: CallMeta | None = None
+    searches: int = 0  # web searches attempted (one per query; for the Exa budget count)
+    search_errors: tuple[str, ...] = ()  # one line per query that failed, even if others worked
 
 
 class ReportRequest(Frozen):

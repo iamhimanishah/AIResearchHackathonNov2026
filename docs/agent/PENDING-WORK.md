@@ -183,3 +183,41 @@ factory. Explore is untouched.
 
 **Out of scope.** A lock and reservation lines around check-and-append (two calls at the same
 instant can still each pass the check once); merging the old per-directory ledgers.
+
+**Result.** Commit `0f9686e`. `make test`: 540 passed, 2 skipped, 1 deselected.
+
+## Item 6: Scout S1-S3, a timeout, kept search errors, per-item validation
+
+**Goal.** The Scout's edges stop costing the loop: an Exa call cannot hang for 10 minutes, a
+partial search failure is recorded instead of dropped, and one bad or extra model item rejects
+only itself instead of throwing away the whole paid-for shortlist.
+
+**Acceptance criteria.**
+- S1: `ExaSearch(timeout=30.0)` passes the timeout to `exa.search` (and to the `Exa` client);
+  a timeout from the SDK becomes a `SearchError` naming it.
+- S2: `ScoutResult.search_errors` and `ScoutResult.searches` are set whenever the Scout runs
+  (also when it skips), and the SCOUT decision data carries `searches` and `search_errors`.
+- S3: a draft with 7 claims of which 1 is invalid keeps the first 5 valid ones; the invalid one
+  and the one past the limit are in `rejected` with a reason; the same for candidates.
+  `ScoutDraft.model_json_schema()` is byte-identical to before (sha256 pinned in the test).
+
+**Design.**
+- `search.ExaSearch.__init__(timeout=DEFAULT_TIMEOUT_S=30.0)`; `search(..., timeout=)`.
+- `roles.ScoutResult`: `search_errors: tuple[str, ...] = ()`, `searches: int = 0` (agent-internal,
+  written to the candidates file; not a shared format).
+- `agents.ScoutDraft`: a `model_validator(mode="wrap")` that validates each item alone with
+  `ClaimDraft`/`CandidateDraft`, keeps the first `MAX_SCOUT_ITEMS` valid ones and records the
+  rest in a private attribute (`PrivateAttr`, so no schema change). `LLMScout.scout` puts those
+  first in `rejected`.
+- `Conductor._scout` adds `searches` and `search_errors` to the decision data. The Scout CLI
+  prints the search errors.
+
+**Tests** (`tests/agent/test_scout_fixes.py`).
+- `test_s1_exa_gets_a_timeout_and_a_timeout_is_a_search_error`.
+- `test_s2_partial_search_errors_are_kept_and_logged`.
+- `test_s2_a_skip_still_records_the_search_errors`.
+- `test_s3_one_bad_item_rejects_only_itself_and_the_list_is_cut_to_five`.
+- `test_s3_the_model_facing_schema_is_unchanged`.
+
+**Out of scope.** S4 (resume without paying twice), S5 to S8 (checks that match the explore gate,
+the hand-off by configuration, CLI parity, sources evidence).

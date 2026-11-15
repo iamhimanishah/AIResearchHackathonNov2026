@@ -40,6 +40,7 @@ def summary(result: ScoutResult) -> str:
     for cand in result.candidates:
         lines.append(f"candidate: {cand.name}\n  {cand.description}")
     lines += [f"rejected: {why}" for why in result.rejected]
+    lines += [f"search error: {err}" for err in result.search_errors]
     if not result.claims and not result.candidates:
         lines.append(f"skipped: {result.skipped_reason}")
     used = [s.url for s in result.sources if s.used]

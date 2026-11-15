@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, model_validator
 
 from .cards import CardStore
 from .catalog_real import LR_RANGE, arm_key, claim_arm_spec, lr_in_range
@@ -286,6 +286,41 @@ class ScoutDraft(BaseModel):
     candidates: list[CandidateDraft] = Field(default_factory=list,
                                              max_length=MAX_SCOUT_ITEMS)  # ranked
     skip_reason: str | None = None  # set when both lists are empty
+    # Items dropped while parsing (invalid, or past the limit), one line each. Private, so the
+    # model-facing JSON schema (and every prompt and card hash) is unchanged.
+    _dropped: list[str] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _one_bad_item_rejects_only_itself(cls, data: Any, handler: Any) -> ScoutDraft:
+        """Validate each item on its own: keep the first `MAX_SCOUT_ITEMS` valid ones per list
+        and record the rest, so one bad or sixth item does not lose a paid-for shortlist
+        (fix plan S3)."""
+        if not isinstance(data, dict):
+            return handler(data)
+        data, dropped = dict(data), []
+        for key, model, label in (("claims", ClaimDraft, "claim"),
+                                  ("candidates", CandidateDraft, "candidate")):
+            items = data.get(key)
+            if not isinstance(items, list):
+                continue
+            kept: list[BaseModel] = []
+            for n, raw in enumerate(items, start=1):
+                try:
+                    item = model.model_validate(raw)
+                except ValidationError as exc:
+                    err = exc.errors()[0]
+                    where = ".".join(str(p) for p in err.get("loc", ())) or "item"
+                    dropped.append(f"{label} {n}: invalid: {where}: {err['msg']}"[:200])
+                    continue
+                if len(kept) >= MAX_SCOUT_ITEMS:
+                    dropped.append(f"{label} {n}: beyond the {MAX_SCOUT_ITEMS}-item limit")
+                    continue
+                kept.append(item)
+            data[key] = kept
+        draft = handler(data)
+        draft._dropped = dropped
+        return draft
 
 
 def _arm(items: Sequence[ArmTechnique]) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -397,9 +432,10 @@ class LLMScout:
 
     def scout(self, request: ScoutRequest) -> ScoutResult:
         sources, errors = self.gather()
+        searched = {"searches": len(self.queries), "search_errors": tuple(errors)}
         if not sources:
             reason = "search returned nothing" + (f": {errors[0]}" if errors else "")
-            return ScoutResult(skipped_reason=reason)
+            return ScoutResult(skipped_reason=reason, **searched)
         prompt = build_scout_prompt(
             card=self.cards.card("scout"), skills=self.cards.skills_for("scout", "scout"),
             catalog=request.catalog, findings=request.findings, search_results=sources,
@@ -408,12 +444,12 @@ class LLMScout:
         try:
             draft, meta = run_prompt(self.llm, prompt, ScoutDraft)
         except LLMError as exc:
-            return ScoutResult(sources=sources, skipped_reason=f"model failed: {exc}")
+            return ScoutResult(sources=sources, skipped_reason=f"model failed: {exc}", **searched)
         now = utc_iso(self.clock.now())
         returned = {s.id for s in sources}
         claims: list[ClaimCard] = []
         candidates: list[Candidate] = []
-        rejected: list[str] = []
+        rejected: list[str] = list(draft._dropped)  # invalid or past the limit, while parsing
         for item in draft.claims:
             card, why = check_claim(item, request, returned, self.runnable, now)
             if card is None:
@@ -439,7 +475,7 @@ class LLMScout:
                 f"every item failed a check: {rejected[0]}"
         return ScoutResult(claims=tuple(claims), candidates=tuple(candidates),
                            rejected=tuple(rejected), sources=marked, skipped_reason=skipped,
-                           meta=meta)
+                           meta=meta, **searched)
 
 
 def write_scout_result(result: ScoutResult, out_dir: str | Path) -> Path:
