@@ -257,3 +257,12 @@ def claims_new() -> list[RunSpec]:
     replay-only half)."""
     elsewhere = {x.spec_hash() for x in screen() + phase0()}
     return [x for x in claims_specs() if x.spec_hash() not in elsewhere]
+
+
+def replication_specs(rows, seeds=(1, 2), allow_simulated: bool = False):
+    """The replication set (PREREG 6.3, 6.3b) as run specs, with the ranking it follows from.
+    Implemented in `clharness.analysis.replication`; imported here on call, because that module
+    needs numpy and this one must stay importable with the spec module alone."""
+    from clharness.analysis.replication import replication_specs as _impl
+
+    return _impl(rows, seeds=seeds, allow_simulated=allow_simulated)

@@ -5,7 +5,8 @@ Every rule here is written down in analysis/PREREG.md; section numbers below poi
 What it computes
   * technique effects: least squares on 0/1 technique indicators (+ estimable pairwise
     interactions), so a coefficient is "what switching this on changes" (section 7)
-  * the noise floor sigma_noise: SD of the primary outcome over the no-mitigation seeds (6.1)
+  * the frozen noise floor sigma_noise = 1.15 points (0.4, 6.1); the measured SD over the
+    no-mitigation seeds is reported for comparison
   * promotion: the top configurations on the selection half that pass the acquisition gate (6.3)
   * the paired hierarchical bootstrap between two arms, Holm across the confirmatory family,
     and the three-part "beats the reference arm" rule (5, 7)
@@ -55,6 +56,14 @@ ALPHA = 0.05
 REFERENCE = frozenset({"replay", "lr_rewarm"})
 NO_MITIGATION: frozenset[str] = frozenset()
 Half = str  # "selection" | "report"
+# PREREG 0.4/6.1: sigma_noise is FROZEN at 1.15 points (report half, phase-0). It is never
+# recomputed from the rows at hand — a stale or duplicated noise file must not move the tests.
+SIGMA_NOISE = 1.15 / 100  # mean_delta is a fraction; 1.15 points
+SCREEN_SEED = 0  # design.screen(): the screening grid is seed 0; replication is seeds 1-2
+REAL_BACKENDS = frozenset({"modal", "tinker"})  # rows from local/fake runs never reach the tables
+# two-sided 95% t criticals, df 1..10 (claims read 2-4 paired seeds; bootstrap understates there)
+T_CRIT_975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+              6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -139,10 +148,17 @@ def acquisition_gate(x: Config, ref: Config | None, margins: dict[str, float] | 
         return {d: float(np.mean(v)) for d, v in acc.items()}
 
     mx, mr = means(x), means(ref)
-    domains = {d: {"ratio": mx[d], "reference": mr[d], "limit": margins.get(d, ACQ_GATE) * mr[d],
-                   "passes": mx[d] <= margins.get(d, ACQ_GATE) * mr[d]}
-               for d in sorted(set(mx) & set(mr))}
-    return {"passes": all(v["passes"] for v in domains.values()), "domains": domains}
+    domains = {}
+    for d in sorted(set(mx) | set(mr)):
+        if d not in mx or d not in mr:
+            # a domain the run never measured cannot pass the gate; an absent measurement is not
+            # evidence the run learned it
+            domains[d] = {"ratio": mx.get(d), "reference": mr.get(d), "limit": None, "passes": False}
+            continue
+        limit = margins.get(d, ACQ_GATE) * mr[d]
+        domains[d] = {"ratio": mx[d], "reference": mr[d], "limit": limit, "passes": mx[d] <= limit}
+    return {"passes": all(v["passes"] for v in domains.values()) and bool(domains),
+            "domains": domains}
 
 
 def acquisition_of(row: ResultRow) -> float:
@@ -233,6 +249,10 @@ def fit_effects(
         name = "×".join(sorted(chain[0]))
         cols.append((name, frozenset(chain[0])))
         chain_of[name] = ["×".join(sorted(p)) for p in chain[1:]]
+    if not rows:
+        return {"effects": {}, "dropped": [n for n, _ in cols], "aliases": {}, "n_rows": 0,
+                "df": 0, "residual_sd": None,
+                "se_source": "sigma_noise" if sigma is not None else "residual"}
     present = [frozenset(r.spec.technique_names()) for r in rows]
     y = np.array([outcome(r) for r in rows])
 
@@ -388,17 +408,22 @@ def holm(pvalues: dict[str, float]) -> dict[str, float]:
 
 def decide(x: Config, ref: Config, boot: dict[str, Any], p_adj: float, sigma: float | None,
            lr_control: Config | None = None, lr_boot: dict[str, Any] | None = None,
-           lr_p_adj: float | None = None, margins: dict[str, float] | None = None) -> dict[str, Any]:
+           lr_p_adj: float | None = None, margins: dict[str, float] | None = None,
+           lr_missing: bool = False) -> dict[str, Any]:
     """The rule of PREREG 5. `sigma` is sigma_noise on the same half. Rules 1-3 compare x with
     the reference arm; rule 4 (A13) asks the same significance and size of x against the chosen
-    lower-LR control, and holds trivially when no lower-LR arm passes the acquisition gate."""
+    lower-LR control, and holds trivially only when lower-LR arms exist but none passes the
+    acquisition gate. `lr_missing` says no lower-LR rows exist at all: that is missing evidence,
+    not a trivial hold, so rule 4 fails."""
     acq_x, acq_r = float(x.acquisition().mean()), float(ref.acquisition().mean())
     rule1 = p_adj < ALPHA and (boot["lo"] > 0 or boot["hi"] < 0)
     rule2 = sigma is not None and boot["delta"] > SIZE_GATE_SIGMAS * sigma
     gate = acquisition_gate(x, ref, margins)
     rule3 = gate["passes"]
     enough = boot["n_pairs"] >= MIN_PAIRS
-    if lr_control is None or lr_boot is None:
+    if lr_missing:
+        rule4, lr_info = False, None
+    elif lr_control is None or lr_boot is None:
         rule4, lr_info = True, None
     else:
         rule4 = (lr_p_adj is not None and lr_p_adj < ALPHA and lr_boot["lo"] > 0
@@ -501,6 +526,22 @@ def paired_seed_bootstrap(x: dict[int, float], r: dict[int, float], n_boot: int 
     boot = d[rng.integers(0, len(d), size=(n_boot, len(d)))].mean(axis=1)
     lo, hi = np.percentile(boot, [2.5, 97.5])
     return {"delta": float(d.mean()), "lo": float(lo), "hi": float(hi), "n_pairs": len(pairs)}
+
+
+def paired_seed_t(x: dict[int, float], r: dict[int, float]) -> dict[str, Any]:
+    """Paired t interval on the seed differences (PREREG 6.5 acquisition claims). On 2-4 paired
+    seeds a bootstrap percentile is far too narrow; the t interval is the honest small-sample
+    one. NOTE: this is the interval PREREG 6.5's amendment entry names — it differs from the
+    6.5 text written at the freeze, so the amendment log must record it before claims are read."""
+    pairs = sorted(set(x) & set(r))
+    if not pairs:
+        return {"delta": float("nan"), "lo": float("nan"), "hi": float("nan"), "n_pairs": 0}
+    d = np.array([x[s] - r[s] for s in pairs])
+    m = float(d.mean())
+    if len(d) < 2:
+        return {"delta": m, "lo": m, "hi": m, "n_pairs": len(d)}
+    half = T_CRIT_975.get(len(d) - 1, 1.96) * float(d.std(ddof=1)) / math.sqrt(len(d))
+    return {"delta": m, "lo": m - half, "hi": m + half, "n_pairs": len(d)}
 
 
 def arm_bootstrap(cfg: Config, half: Half, n_boot: int = 10_000, seed: int = 0,
@@ -630,7 +671,7 @@ def claims_table(configs: dict[str, Config], half: Half, lr_control: Config | No
                     continue
                 b = paired_bootstrap(x, r, half, n_boot, seed, items)
             else:
-                b = paired_seed_bootstrap(log_acq(x, outcome[4:]), log_acq(r, outcome[4:]), n_boot, seed)
+                b = paired_seed_t(log_acq(x, outcome[4:]), log_acq(r, outcome[4:]))
             row.update(delta=b["delta"], lo=b["lo"], hi=b["hi"], n_pairs=b["n_pairs"])
             if kind == "magnitude":
                 row["verdict"] = "reported"
@@ -680,12 +721,16 @@ def cost_table(configs: dict[str, Config], base: Config | None, half: Half) -> l
         out.append({
             "config": cfg.label, "retention_gain": gain, "extra_gpu_hours": extra,
             "gain_per_extra_gpu_hour": gain / extra if extra > 1e-9 else None,
+            # the ranking metric (PREREG 9): extra forward tokens are a measured quantity; a
+            # wall-clock difference of noisy short runs is not
+            "gain_per_extra_forward_token": gain / fwd if fwd > 0 else None,
             "extra_forward_tokens": fwd, "update_bytes": int(np.mean(upd)) if upd else None,
             "est_usd": float(np.mean([r.cost.est_usd or 0.0 for r in cfg.rows])),
         })
-    # cheaper-or-equal configurations first (no extra cost), then by gain per extra hour
-    out.sort(key=lambda d: (d["gain_per_extra_gpu_hour"] is not None,
-                            -(d["gain_per_extra_gpu_hour"] if d["gain_per_extra_gpu_hour"] is not None else d["retention_gain"])))
+    # cheaper-or-equal configurations first (no extra cost), then by gain per extra forward token
+    out.sort(key=lambda d: (d["gain_per_extra_forward_token"] is not None,
+                            -(d["gain_per_extra_forward_token"]
+                              if d["gain_per_extra_forward_token"] is not None else d["retention_gain"])))
     return out
 
 
@@ -698,12 +743,49 @@ def _claim_keys() -> set[str]:
     return {spec_key(x) for x in D.claims_specs()}
 
 
+def _row_rank(r: ResultRow) -> tuple[bool, bool]:
+    """Tiebreak between two rows of the same spec: prefer a finished row, then one measured the
+    current way (own-boundary acquisition, pinned item split — the remeasured files), then the
+    later row (a rerun rewrites the same run)."""
+    a = r.acquisition
+    return (r.status == "finished", a is not None and a.mean_own_boundary_ppl_ratio is not None)
+
+
+def dedupe_rows(rows: list[ResultRow]) -> tuple[list[ResultRow], int]:
+    """One row per spec hash: loading an old-split noise file next to the remeasured one must not
+    double a configuration's seeds. Returns the deduplicated rows in input order and the number
+    dropped."""
+    seen: dict[str, int] = {}
+    out: list[ResultRow] = []
+    dropped = 0
+    for r in rows:
+        i = seen.get(r.spec_hash)
+        if i is None:
+            seen[r.spec_hash] = len(out)
+            out.append(r)
+            continue
+        dropped += 1
+        if _row_rank(r) >= _row_rank(out[i]):
+            out[i] = r
+    return out, dropped
+
+
 def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_000, seed: int = 0,
-            items: ItemLoader | None = checkpoint_items) -> dict[str, Any]:
+            items: ItemLoader | None = checkpoint_items, allow_simulated: bool = False) -> dict[str, Any]:
     """Screening-stage analysis on the selection half; with `confirmatory`, also the
-    pre-registered tests on the report half (PREREG 3, 5, 6, 7)."""
-    statuses = {s: sum(r.status == s for r in rows) for s in ("finished", "failed", "invalid")}
+    pre-registered tests on the report half (PREREG 3, 5, 6, 7). Finished rows from non-real
+    backends (local, fake) are excluded unless `allow_simulated` — a simulator's rows must not
+    reach the reported tables. Decisions are re-derived only from the SCREEN_SEED rows: once
+    replication rows exist, re-ranking on all seeds would test a different family than the one
+    the screen promoted."""
+    rows, n_dup = dedupe_rows(rows)
     finished = [r for r in rows if r.status == "finished"]
+    simulated = sorted(r.spec.name for r in finished if r.backend not in REAL_BACKENDS)
+    if not allow_simulated:
+        finished = [r for r in finished if r.backend in REAL_BACKENDS]
+    # "finished" counts the rows that are actually used; excluded simulated rows are counted apart
+    statuses = {"finished": len(finished),
+                **{s: sum(r.status == s for r in rows) for s in ("failed", "invalid")}}
     # selection variants are their own family (PREREG 6.3b), not a seventh factor of the fit
     design_rows = [r for r in finished
                    if selection_of(r.spec) is None and lr_of(r.spec) is None and is_design_spec(r.spec)]
@@ -711,27 +793,40 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     factorial_rows = [r for r in design_rows if frozenset(r.spec.technique_names()) in in_factorial]
     configs = group(finished)
     base, ref = find(configs, NO_MITIGATION), find(configs, REFERENCE)
-    sigma_sel = noise_sd(base, "selection") if base else None
-    margins = acquisition_margins(base)
+
+    # every screen-time decision (family, selection variants, lower-LR control, margins) is
+    # computed on the seed-0 rows only — the rows the screen actually produced (PREREG 6.3)
+    screen_configs = group([r for r in finished if r.spec.seed == SCREEN_SEED])
+    screen_base, screen_ref = find(screen_configs, NO_MITIGATION), find(screen_configs, REFERENCE)
+    margins = acquisition_margins(screen_base)
+
+    # the alias chain that replay x lr_rewarm sits in: each partner pair gets its own column —
+    # the half runs break the aliasing, so the main estimate is the pair's own effect (PREREG 7)
+    rw_pair = ("lr_rewarm", "replay")
+    rw_chain = next((c for c in alias_chains() if rw_pair in c), [rw_pair])
 
     out: dict[str, Any] = {
         "halves_read": ["selection"] + (["report"] if confirmatory else []),
-        "rows": {"total": len(rows), **statuses},
+        "rows": {"total": len(rows), **statuses, "duplicates_dropped": n_dup,
+                 "excluded_backend": len(simulated)},
+        "excluded_backend_rows": simulated,
         "not_finished": [{"name": r.spec.name, "status": r.status, "reason": r.reason}
                          for r in rows if r.status != "finished"],
         "collapse_flags": {r.spec.name: collapse_flags(r) for r in finished if collapse_flags(r)},
         "noise_floor": {"config": base.label if base else None, "n_seeds": len(base.rows) if base else 0,
-                        "sigma_selection": sigma_sel},
+                        "sigma_noise": SIGMA_NOISE,
+                        "sigma_selection_measured": noise_sd(base, "selection") if base else None},
         "reference": ref.label if ref else None,
         "off_design_rows": sorted(r.spec.name for r in finished
                                   if not is_design_spec(r.spec) and spec_key(r.spec) not in _claim_keys()),
-        # PREREG 7: six main effects plus replay x lr_rewarm, which the reference halves make estimable
+        # PREREG 7: six main effects plus replay x lr_rewarm and its alias partners, which the
+        # reference halves make separately estimable; sigma is the frozen phase-0 value
         "effects_retention_selection": fit_effects(
-            design_rows, lambda r: r.retention.selection.mean_delta, sigma=sigma_sel,
-            interactions=[[("lr_rewarm", "replay")]]),
+            design_rows, lambda r: r.retention.selection.mean_delta, sigma=SIGMA_NOISE,
+            interactions=[[p] for p in rw_chain]),
         # exploratory: one contrast per alias chain of the factorial (PREREG 6.2), factorial runs only
         "alias_chains_retention_selection": fit_effects(
-            factorial_rows, lambda r: r.retention.selection.mean_delta, sigma=sigma_sel,
+            factorial_rows, lambda r: r.retention.selection.mean_delta, sigma=SIGMA_NOISE,
             interactions=alias_chains()),
         "acquisition_measure": {
             "own_boundary": sum(r.acquisition.mean_own_boundary_ppl_ratio is not None for r in finished),
@@ -740,9 +835,9 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         "effects_log_acquisition": fit_effects(
             design_rows, lambda r: math.log(acquisition_of(r)), sigma=None),
         "acquisition_margins": margins,
-        "promotion": promote(configs, ref, margins=margins),
-        "selection_screen": promote_selection(configs, ref, margins),
-        "lr_control": choose_lr_control(configs, ref, margins),
+        "promotion": promote(screen_configs, screen_ref, margins=margins),
+        "selection_screen": promote_selection(screen_configs, screen_ref, margins),
+        "lr_control": choose_lr_control(screen_configs, screen_ref, margins),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),
         # per-configuration numbers the figures draw (selection half is decision-legal)
@@ -751,31 +846,33 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
     if not confirmatory:
         return out
 
-    sigma_rep = noise_sd(base, "report") if base else None
-    out["noise_floor"]["sigma_report"] = sigma_rep
+    out["noise_floor"]["sigma_report_measured"] = noise_sd(base, "report") if base else None
     promoted = [d["key"] for d in out["promotion"] if d["promoted"]]
     boots = {configs[k].label: paired_bootstrap(configs[k], ref, "report", n_boot, seed, items) for k in promoted}
     adj = holm({name: b["p"] for name, b in boots.items()})
     lr_ctrl = configs.get(out["lr_control"]["chosen"]) if out["lr_control"]["chosen"] else None
+    lr_missing = not out["lr_control"]["arms"]
     lr_boots = {configs[k].label: paired_bootstrap(configs[k], lr_ctrl, "report", n_boot, seed, items)
                 for k in promoted} if lr_ctrl is not None else {}
     lr_adj = holm({name: b["p"] for name, b in lr_boots.items()}) if lr_boots else {}
     out["confirmatory"] = [
-        decide(configs[k], ref, boots[configs[k].label], adj[configs[k].label], sigma_rep,
-               lr_ctrl, lr_boots.get(configs[k].label), lr_adj.get(configs[k].label), margins)
+        decide(configs[k], ref, boots[configs[k].label], adj[configs[k].label], SIGMA_NOISE,
+               lr_ctrl, lr_boots.get(configs[k].label), lr_adj.get(configs[k].label), margins,
+               lr_missing=lr_missing)
         for k in promoted]
     sel_promoted = [d["key"] for d in out["selection_screen"] if d.get("promoted")]
     sel_boots = {configs[k].label: paired_bootstrap(configs[k], ref, "report", n_boot, seed, items)
                  for k in sel_promoted}
     sel_adj = holm({name: b["p"] for name, b in sel_boots.items()})
     out["confirmatory_selection"] = [
-        decide(configs[k], ref, sel_boots[configs[k].label], sel_adj[configs[k].label], sigma_rep,
+        decide(configs[k], ref, sel_boots[configs[k].label], sel_adj[configs[k].label], SIGMA_NOISE,
                margins=margins)
         for k in sel_promoted]
     out["claims"] = claims_table(configs, "report", lr_ctrl, n_boot, seed, items)
     out["claims_elsewhere"] = D.CLAIMS_ELSEWHERE
-    sanity = paired_bootstrap(ref, base, "report", n_boot, seed, items)
-    out["sanity_reference_vs_no_mitigation"] = {k: sanity[k] for k in ("delta", "lo", "hi", "p", "n_pairs", "mode")}
+    if ref is not None and base is not None:  # absent when the rows hold no controls
+        sanity = paired_bootstrap(ref, base, "report", n_boot, seed, items)
+        out["sanity_reference_vs_no_mitigation"] = {k: sanity[k] for k in ("delta", "lo", "hi", "p", "n_pairs", "mode")}
     out["pareto_report"] = pareto(configs, "report")
     out["cost_report"] = cost_table(configs, base, "report")
     out["configs_report"] = config_summaries(configs, "report", base, n_boot, seed, items)
@@ -833,8 +930,10 @@ def to_markdown(report: dict[str, Any]) -> str:
              f"Rows: {report['rows']}\n"]
     nf = report["noise_floor"]
     lines.append(f"Noise floor: `{nf['config']}` over {nf['n_seeds']} seeds, "
-                 f"σ(selection) = {pts(nf['sigma_selection'])} points"
-                 + (f", σ(report) = {pts(nf.get('sigma_report'))} points" if "sigma_report" in nf else "") + "\n")
+                 f"σ_noise = {pts(nf['sigma_noise'])} points (frozen), "
+                 f"measured σ(selection) = {pts(nf['sigma_selection_measured'])} points"
+                 + (f", measured σ(report) = {pts(nf.get('sigma_report_measured'))} points"
+                    if "sigma_report_measured" in nf else "") + "\n")
     lines.append("## Retention effects (selection half, points)\n")
     lines.append("| Effect | Estimate | 95% CI |\n|---|---|---|")
     for name, e in report["effects_retention_selection"]["effects"].items():

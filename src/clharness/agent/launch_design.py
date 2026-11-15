@@ -3,6 +3,7 @@
     python -m clharness.agent.launch_design                 # dry run: the plan and its cost
     python -m clharness.agent.launch_design --go            # launch, wait, collect rows
     python -m clharness.agent.launch_design --go --only screen
+    python -m clharness.agent.launch_design --go --only replication   # after the screen is in
 
 What it is. A deterministic launcher for the part of the study that the pre-registration fixes in
 advance (`analysis/PREREG.md` sections 6.2 and 6.5; the specs come from
@@ -15,8 +16,13 @@ else, so the Conductor can take over afterwards from the same files:
     resumes: nothing that has a row or is in flight is started twice.
   * `DecisionLog` records the plan, every wave launched and every batch of rows read, hash-chained.
 
-What it is not. It does not choose what to replicate or combine. That is the Conductor's job
-(Planner, Gatekeeper, Analyst), reading `<out>/rows.jsonl` when the screen is in.
+`--only replication` launches the replication set of PREREG 6.3 and 6.3b. The choice is not made
+here either: it is read from `clharness.analysis.replication`, which takes it from the analysis
+code (selection half, seed-0 screen rows, acquisition gate), and the ranking is written into the
+decision log.
+
+What it is not. It does not choose what to combine, and it explores nothing. That is the
+Conductor's job (Planner, Gatekeeper, Analyst), reading `<out>/rows.jsonl`.
 
 Rules it enforces:
   * the working tree must be clean and the deployed app must hold this exact commit (the app
@@ -103,6 +109,9 @@ def launch(
     poll_s: float = 30.0,
     sleep: Callable[[float], None] = time.sleep,
     say: Callable[[str], None] = print,
+    stage: str = "design",
+    plan_reason: str | None = None,
+    plan_data: dict | None = None,
 ) -> dict[str, int]:
     """Run every spec that has no finished row yet. Returns counts by final status."""
     out.mkdir(parents=True, exist_ok=True)
@@ -123,10 +132,10 @@ def launch(
     per_run = executor.estimate_cost(specs[0]) if specs else 0.0
     open_cost = per_run * len([h for h in todo if latest().get(h) is None or latest()[h].status != "finished"])
     log.append(
-        key="design/plan", state="screen/plan", actor="launch_design", ts=now(),
-        reason="The pre-registered screen and published-claims runs (analysis/PREREG.md 6.2, 6.5). "
-               "Nothing is chosen here: the list is clharness.analysis.design.",
-        data={"planned": len(by_hash), "already_finished_elsewhere": len(by_hash) - len(todo),
+        key=f"{stage}/plan", state="screen/plan", actor="launch_design", ts=now(),
+        reason=plan_reason or "The pre-registered screen and published-claims runs (analysis/PREREG.md "
+               "6.2, 6.5). Nothing is chosen here: the list is clharness.analysis.design.",
+        data={**(plan_data or {}), "planned": len(by_hash), "already_finished_elsewhere": len(by_hash) - len(todo),
               "to_run": len(todo), "estimated_usd": round(open_cost, 2), "cap_usd": cap_usd,
               "git_sha": git_sha, "spec_hashes": sorted(todo)},
     )
@@ -161,7 +170,7 @@ def launch(
             executor.submit([by_hash[h] for h in batch])
             spent_estimate += per_run * len(batch)
             log.append(
-                key=f"design/launch#{wave}", state="screen/launch", actor="launch_design", ts=now(),
+                key=f"{stage}/launch#{wave}", state="screen/launch", actor="launch_design", ts=now(),
                 reason=f"Wave {wave}: {len(batch)} runs, keeping at most {concurrency} in flight.",
                 data={"spec_hashes": batch, "names": [by_hash[h].name for h in batch],
                       "estimated_usd_so_far": round(spent_estimate, 2)},
@@ -171,7 +180,7 @@ def launch(
         if landed:
             fresh = {h: r for h, r in latest().items() if h in {x.spec_hash for x in landed}}
             log.append(
-                key=f"design/read#{len(log.entries())}", state="screen/read", actor="launch_design", ts=now(),
+                key=f"{stage}/read#{len(log.entries())}", state="screen/read", actor="launch_design", ts=now(),
                 reason=f"{len(fresh)} rows landed.",
                 input_row_hashes=[a1_row_hash(r) for r in fresh.values()],
                 data={"rows": [{"name": r.spec.name, "status": r.status, "reason": (r.reason or "")[:200]}
@@ -188,8 +197,8 @@ def launch(
         status = final[h].status if h in final else "missing"
         counts[status] = counts.get(status, 0) + 1
     log.append(
-        key="design/done", state="screen/advance", actor="launch_design", ts=now(),
-        reason="Every planned run has a row. Replication and combination are the Conductor's to plan.",
+        key=f"{stage}/done", state="screen/advance", actor="launch_design", ts=now(),
+        reason="Every planned run of this stage has a row.",
         data={"counts": counts, "rows": str(rows_path)},
     )
     return counts
@@ -198,7 +207,7 @@ def launch(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--go", action="store_true", help="launch; without it, print the plan only")
-    parser.add_argument("--only", choices=["all", "screen", "claims"], default="all")
+    parser.add_argument("--only", choices=["all", "screen", "claims", "replication"], default="all")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results" / "agent")
     parser.add_argument("--have", nargs="*", default=[str(REPO_ROOT / p) for p in DEFAULT_HAVE],
                         help="row files whose finished specs are not run again")
@@ -207,8 +216,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gpu", default="H100")
     args = parser.parse_args(argv)
 
-    specs = planned_specs(args.only)
     have = [*args.have, args.out / "rows.jsonl"]
+    stage, plan_reason, plan_data = "design", None, None
+    if args.only == "replication":
+        from ..analysis.replication import replication_specs
+
+        rows = [r for p in have if Path(p).exists() for r in a1.read_rows(p)]
+        plan = replication_specs(rows)
+        specs = plan["specs"]
+        stage, plan_reason = "replication", plan["rule"]
+        plan_data = {"promoted": plan["promoted"], "promoted_selection": plan["promoted_selection"],
+                     "ranking": plan["ranking"], "selection": plan["selection"]}
+        print(f"promoted: {plan['promoted']}\nselection variants: {plan['promoted_selection']}")
+        if not plan["promoted"] and not plan["promoted_selection"]:
+            print("nothing is promoted yet: the screen's seed-0 rows are not in, or none passes the gate")
+            return 0
+    else:
+        specs = planned_specs(args.only)
     done = finished_hashes(have)
     todo = [s for s in specs if s.spec_hash() not in done]
     per_run = MINUTES_PER_RUN / 60 * 3.95
@@ -224,7 +248,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         counts = launch(specs, args.out, ModalFunctionBackend(), code_version(), have=args.have,
-                        concurrency=args.concurrency, cap_usd=args.cap_usd, gpu=args.gpu)
+                        concurrency=args.concurrency, cap_usd=args.cap_usd, gpu=args.gpu,
+                        stage=stage, plan_reason=plan_reason, plan_data=plan_data)
     except Halt as stop:
         print(f"HALTED: {stop}", file=sys.stderr)
         return 2

@@ -12,12 +12,12 @@ from clharness.fake import fake_rows
 
 @pytest.fixture(scope="module")
 def confirmatory():
-    return A.analyze(fake_rows(seed=0), confirmatory=True, n_boot=300)
+    return A.analyze(fake_rows(seed=0), confirmatory=True, n_boot=300, allow_simulated=True)
 
 
 @pytest.fixture(scope="module")
 def screening():
-    return A.analyze(fake_rows(seed=0), confirmatory=False, n_boot=150)
+    return A.analyze(fake_rows(seed=0), confirmatory=False, n_boot=150, allow_simulated=True)
 
 
 def _check_svg(path, marks: bool = True):
