@@ -166,6 +166,68 @@ Items 2 and 3 are small. Item 4 is the one that makes this a research agent.
 
 ### Member B (peter)
 
+Answers from peter's agent, 14 November, for the two questions in section 9. Peter has not
+reviewed the ranges line by line; treat them as the technique owner's starting point.
+
+**Where the hard limits come from.** `clharness.techniques.available()` returns every technique's
+name and the JSON Schema of its parameters, with types, allowed values and bounds. The catalog
+can be built from that call, so it cannot drift from the plugins. The simplest gate check for
+"is this spec runnable" is to call `config_from_spec(spec)` and `build_hooks(spec.techniques)`:
+both raise `ValueError` with the reason, before any GPU is used.
+
+**Ranges that make sense on the frozen bench** (153 optimizer steps per domain, 26 layers). The
+schema allows more than this; outside these ranges a run works but is unlikely to mean much.
+
+| Technique | Parameter | Range for the agent | Why |
+|---|---|---|---|
+| `replay` | `share` | 0.01 to 0.5 | The literature scan has 50% slowing adaptation |
+| | `source` | `general`, or a domain earlier in the stream | Replay is off while the source itself is being trained |
+| | `select` | `random`, `loss`, `act_nov` | `random` is the control |
+| | `pool` | 2 to 8, with `share` x `pool` at most 1 | Scoring costs `share` x `pool` forward-only passes |
+| | `keep` | `high`, `low` | Both directions are open questions |
+| | `layer` | 0 to 25 (`act_nov` only) | |
+| | `buffer_seqs` | unset, or 1,000 to 50,000 | A tiny buffer is memorised |
+| `lr_rewarm` | `rewarm_steps` | 1 to 40 | Must stay well under the 153 steps of a domain |
+| | `min_lr_ratio` | 0 to 1 | 1 with `schedule: constant` is warmup only |
+| | `schedule` | `cosine`, `linear`, `constant` | |
+| `wavg` | `alpha` | 0.05 to 0.75 | 0 does nothing; 1 returns the base model |
+| | `mode` | `boundary`, `final`, `ema` | |
+| | `ema_decay` | 0.9 to 0.995 | At 0.999 the average is still about 86% base after one domain |
+| `freeze` | `bottom_layers`, `top_layers` | sum at most 25 | The plugin refuses a model with nothing left to train |
+| | `embeddings` | true, false | Tied to the output head in Gemma |
+| `lora` | `rank` | 4 to 256 | 256 is being checked for memory now; nothing above it has run |
+| | `targets` | `attn`, `attn_mlp` | |
+| | `lr` | 1e-4 to 3e-3, or null for the bench rate | This sets the learning rate of the whole run |
+| `distill` | `weight` | 0.1 to 10 | |
+| | `temperature` | 0.5 to 2 | |
+| | `top_k` | 32 to 1024 | Below about 25 hurt in the literature; null (full vocabulary) has not run on a GPU |
+| | `rows` | `all`, `new`, `replay` | `replay` needs `replay` in the same run |
+
+**Combinations to refuse.**
+
+- `distill` with `rows: replay` and no `replay` in the spec. The plugin fails at run start; the
+  gate should refuse it earlier.
+- Two techniques that set the same config field to different values. `apply_config_overrides`
+  already raises for this. Today only `lora` sets the learning rate and only `lr_rewarm` sets
+  the schedule, so those two can run together.
+- `wavg` with `alpha: 1` in `boundary` mode: it resets to the base model after every domain.
+- Any spec whose forward-only tokens would exceed its gradient tokens (for example `replay`
+  with `share` x `pool` above 1, or scored selection together with `distill` on all rows at a
+  large pool). Not wrong, but it stops being a matched-compute comparison.
+
+**Combinations to allow but label.**
+
+- Anything with `lora` at a learning rate other than the bench's: it differs from its controls
+  in learning rate as well as in the technique. The lower-LR controls matter most here.
+- `lora` with `wavg`: the average is taken over the adapter factors, which is not the same as
+  averaging the weight change.
+- `freeze` with `lora`: adapters go only into the layers left trainable, so the pair is
+  "adapters in the unfrozen half", not two independent effects.
+
+Combinations of the six screened techniques all train on the tiny model
+(`tests/test_screen_combos.py`). Only single techniques, and replay with distil-on-replay, have
+run on a GPU so far.
+
 ### Member C (himani)
 
 ### Member D (brendan)
