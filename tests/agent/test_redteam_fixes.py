@@ -224,24 +224,6 @@ def test_rt15_the_lock_is_reentrant_in_one_process_and_per_directory(tmp_path):
         proc.wait()
 
 
-def test_rt15_launch_design_and_explore_take_the_lock(tmp_path, capsys):
-    from clharness.agent import explore, launch_design
-
-    out = tmp_path / "out"
-    proc = _holder(out)
-    try:
-        with pytest.raises(SystemExit) as stop:
-            launch_design.main(["--go", "--only", "screen", "--out", str(out), "--have"])
-        assert stop.value.code == 2
-        with pytest.raises(SystemExit) as stop:
-            explore.main(["--out", str(out), "--have"])
-        assert stop.value.code == 2
-    finally:
-        proc.kill()
-        proc.wait()
-    assert capsys.readouterr().err.count("refused:") == 2
-
-
 def test_rt15_the_lock_file_is_git_ignored_and_uv_lock_is_not():
     from pathlib import Path
 

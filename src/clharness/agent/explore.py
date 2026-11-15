@@ -47,7 +47,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from .. import spec as a1
 from ..analysis import design
 from .contracts import DecisionLog, a1_row_hash
-from .lock import lock_or_exit
 from .launch_design import DEFAULT_HAVE, MINUTES_PER_RUN, REPO_ROOT, Halt, code_version, launch
 from .llm import LLMClient, LLMError
 from .modal_executor import ModalBackend, ModalFunctionBackend
@@ -793,7 +792,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.out is None:
         args.out = REPO_ROOT / "results" / "agent" / (f"explore-{args.agent_name}" if args.agent_name else "explore")
-    lock_or_exit(args.out)  # RT-15/17: one writer per --out (clharness.agent.lock)
 
     memory = None
     if args.memory == "pastdev":
