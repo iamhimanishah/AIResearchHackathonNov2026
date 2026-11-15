@@ -139,6 +139,8 @@ def _cycle(phase: Phase) -> dict[State, list[Transition]]:
     following = {Phase.SCREEN: Phase.REPLICATE, Phase.REPLICATE: Phase.COMBINE}.get(phase)
     skip = ([_edge(st(Step.PLAN, following), "the deterministic plan has nothing new to run")]
             if following else [])
+    if phase is Phase.REPLICATE:
+        skip.append(_edge(SCOUT, "nothing new to run in replicate and scout is enabled"))
     gate, launch = st(Step.GATE, phase), st(Step.LAUNCH, phase)
     wait, read, advance = st(Step.WAIT, phase), st(Step.READ, phase), st(Step.ADVANCE, phase)
     return {

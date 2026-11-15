@@ -2,9 +2,12 @@
 
 The Planner and Analyst may be model-backed or deterministic. SCOUT runs only when a Scout is
 configured (after replicate, once): it searches the web with Exa and returns a ranked shortlist
-(docs/agent/SCOUT-HANDOFF.md). Claim cards that pass the code checks are tested by the loop
-itself, in combine, as exploratory specs (`notes: "explore:<card id>"`) paid from an explore
-share of the compute cap reserved up front; FREEZE never picks an exploratory row. Candidates
+(docs/agent/SCOUT-HANDOFF.md). Claim cards that pass the code checks are tested on exactly one
+path. With no `explore_inbox` the loop tests them itself, in combine, as exploratory specs
+(`notes: "explore:<card id>"`) paid from an explore share of the compute cap reserved up front
+(and given back when the Scout finds nothing to test). With an `explore_inbox` the cards are
+written there for the explore step (`explore.py`) and this loop plans, gates and reserves
+nothing for them, so no claim is paid for twice. FREEZE never picks an exploratory row. Candidates
 (techniques that need new plugin code) go to the review queue for a person and the loop never
 waits for them. Every source is logged in the decision. REPORT opens the
 report half through a `FreezeToken` and writes the deterministic numbers (`report.json`); the
@@ -25,7 +28,7 @@ A process killed between any two of these redoes the step on restart and ends in
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -57,6 +60,7 @@ from .contracts import (
     load_rows,
     mint_freeze_token,
     passes_acquisition_floor,
+    read_jsonl,
     selection_views,
     spec_hash,
     technique_names,
@@ -104,7 +108,8 @@ class Conductor:
         analyst: Any = None, memory: Any = None, max_gate_rejections: int = 2,
         bench: str = "fast", scout: Any = None, explore_share: float = 0.15,
         design_arms: dict[str, int] | None = None, explore_inbox: str | Path | None = None,
-        lr_range: tuple[float, float] | None = LR_RANGE,
+        lr_range: tuple[float, float] | None = LR_RANGE, launches: bool = True,
+        exploratory_configs: Collection[str] = (),
     ) -> None:
         self.out_dir = Path(out_dir)
         self.rows_path = Path(rows_path)
@@ -116,10 +121,19 @@ class Conductor:
         self.candidates_dir = self.out_dir / "candidates"
         # Share of the compute cap reserved for claim tests (SCOUT-HANDOFF 3.5). 15% is the
         # handoff's default: himani has not answered the budget question in section 9.
-        self.explore_share = explore_share if scout is not None else 0.0
         self.design_arms = dict(design_arms or {})
         self.explore_inbox = Path(explore_inbox) if explore_inbox else None
+        # One path per claim: tested here in combine, or handed to the explore step's inbox.
+        self.claims_in_combine = scout is not None and self.explore_inbox is None
+        self.explore_share = explore_share if self.claims_in_combine else 0.0
         self.lr_range = lr_range
+        # False = read-only: accepted specs are logged as proposals (`proposed_specs.jsonl`) and
+        # nothing is submitted, waited for or retried. Launches then go through launch_design.
+        self.launches = launches
+        self.proposals_path = self.out_dir / "proposed_specs.jsonl"
+        # Config hashes of arms that are exploratory by design (real mode: the published-claims
+        # arms outside the screen). FREEZE never picks one, whatever its name or notes say.
+        self.exploratory_configs = frozenset(exploratory_configs)
         self.max_gate_rejections = max_gate_rejections
         self.bench = bench
         self.prereg, self.catalog, self.stream = prereg, catalog, tuple(stream)
@@ -149,9 +163,12 @@ class Conductor:
 
     # ---- driving ---------------------------------------------------------------------------
 
-    def run(self, max_transitions: int | None = None) -> LoopState:
+    def run(self, max_transitions: int | None = None,
+            stop_before: State | None = None) -> LoopState:
+        """`stop_before`: leave the loop standing in that state without running it (real mode
+        stops before REPORT, so the report half of real rows is not opened by accident)."""
         count = 0
-        while self.s.state not in (DONE, HALTED):
+        while self.s.state not in (DONE, HALTED, stop_before):
             if max_transitions is not None and count >= max_transitions:
                 break
             self.step()
@@ -239,8 +256,13 @@ class Conductor:
         return spent + committed
 
     def _explore_left(self, rows: Sequence[ResultRow] | None = None) -> float:
-        """What claim tests may still spend: the explore share of the cap minus what they used."""
+        """What claim tests may still spend: the explore share of the cap minus what they used.
+
+        Zero once SCOUT is logged with no card to test: the share goes back to the other phases.
+        """
         if self.explore_share <= 0:
+            return 0.0
+        if self._logged(SCOUT) is not None and not self._claim_cards():
             return 0.0
         used = self._explore_used(self._rows() if rows is None else rows)
         return max(0.0, self.compute_cap_usd * self.explore_share - used)
@@ -318,10 +340,11 @@ class Conductor:
         return tuple(self.prereg.replicate_seeds[:2])
 
     def _claim_cards(self) -> tuple[ClaimCard, ...]:
-        """Plannable claim cards, read back from the logged SCOUT decision (the log is the truth,
-        so a resumed loop plans from the same cards)."""
+        """Claim cards this loop tests in combine, read back from the logged SCOUT decision (the
+        log is the truth, so a resumed loop plans from the same cards). Empty when the cards go
+        to the explore inbox instead."""
         done = self._logged(SCOUT)
-        if done is None:
+        if done is None or not self.claims_in_combine:
             return ()
         cards = (ClaimCard.model_validate(c) for c in done.data.get("claim_cards", []))
         return tuple(c for c in cards if c.plannable)
@@ -375,7 +398,7 @@ class Conductor:
         request = GateRequest(
             phase=phase, prereg=self.prereg, catalog=self.catalog, budget=self._budget(),
             stream=self.stream, rows=selection_views(latest),
-            pending_spec_hashes=tuple(self.s.pending_spec_hashes),
+            pending_spec_hashes=tuple(self.s.pending_spec_hashes) + self._proposed(),
             estimated_usd={spec_hash(p.spec): self._estimate(p.spec) for p in proposal.specs},
             bench=self.bench, retry_exhausted=self._retry_exhausted(),
             lr_range=self.lr_range,
@@ -416,11 +439,51 @@ class Conductor:
         if all(d.rule == "duplicate" for d in verdict.dropped):
             following = next_phase(phase)
             decision["reason"] = "nothing new to run in this phase: every spec already has a row"
+            if phase is Phase.REPLICATE and self.scout is not None and not self.s.scout_done:
+                return SCOUT, decision
             return (st(Step.PLAN, following) if following else FREEZE), decision
+        if any(d.rule == "budget" for d in verdict.dropped):
+            # the money left does not cover this phase's plan: freeze what has finished
+            decision["reason"] = ("the deterministic plan does not fit the budget left: "
+                                  "freeze the finished rows")
+            return FREEZE, decision
         decision["reason"] = "the deterministic plan was rejected: this is a bug, a human must look"
         return HALTED, decision
 
+    def _proposed(self) -> tuple[str, ...]:
+        """Spec hashes already logged as proposals (read-only mode): not proposed twice."""
+        if self.launches:
+            return ()
+        return tuple(sorted(r["spec_hash"] for r in read_jsonl(self.proposals_path).records))
+
+    def _propose_only(self, phase: Phase) -> Outcome:
+        """Read-only LAUNCH: write the accepted specs to `proposed_specs.jsonl`, submit nothing.
+
+        The file is rewritten whole and keyed by spec hash, so a redone step leaves one copy.
+        """
+        specs = accepted_specs(self.s.proposal, self.s.verdict)
+        have_row = {r.spec_hash for r in self._rows()}
+        known = {rec["spec_hash"]: rec for rec in read_jsonl(self.proposals_path).records}
+        new = [s for s in specs if spec_hash(s) not in have_row]
+        for spec in new:
+            known.setdefault(spec_hash(spec), {
+                "spec_hash": spec_hash(spec), "phase": phase.value, "name": spec.name,
+                "exploratory": is_explore(spec), "est_usd": self._estimate(spec),
+                "spec": spec.model_dump(mode="json")})
+        atomic_write_text(self.proposals_path, "".join(
+            json.dumps(known[k], sort_keys=True) + "\n" for k in sorted(known)))
+        return st(Step.WAIT, phase), {
+            "choice": {"submitted": 0, "proposed": len(new),
+                       "already_have_row": len(specs) - len(new)},
+            "reason": "read-only: accepted specs are logged as proposals, nothing is launched "
+                      "(launches go through launch_design)",
+            "data": {"proposed_specs": [s.name for s in new],
+                     "proposals_path": str(self.proposals_path)},
+        }
+
     def _launch(self, phase: Phase) -> Outcome:
+        if not self.launches:
+            return self._propose_only(phase)
         specs = accepted_specs(self.s.proposal, self.s.verdict)
         report = self.operator.launch(specs, pending=self.s.pending_spec_hashes)
         pending_usd = dict(self.s.extra.get("pending_usd", {}))
@@ -439,6 +502,14 @@ class Conductor:
 
     def _wait(self, phase: Phase) -> Outcome:
         specs = accepted_specs(self.s.proposal, self.s.verdict)
+        if not self.launches:  # nothing was launched, so there is nothing to wait for
+            wanted = {spec_hash(s) for s in specs}
+            rows = [r for r in self._latest() if r.spec_hash in wanted]
+            return st(Step.READ, phase), {
+                "choice": {"have_row": len(rows), "proposed_not_run": len(wanted) - len(rows)},
+                "reason": "read-only: no run was launched, so no wait",
+                "input_row_hashes": [r.row_hash for r in rows],
+            }
         deadline = self.clock.now() + timedelta(minutes=self.phase_timeout_minutes)
         if self.deadline:
             deadline = min(deadline, self.deadline)
@@ -496,7 +567,7 @@ class Conductor:
         stop = self._out_of_room()
         if stop:
             return FREEZE, {"choice": "freeze", "reason": stop, "input_row_hashes": hashes}
-        if not done:
+        if not done and self.launches:
             repeats = self.s.phase_repeats.get(phase.value, 0)
             if repeats >= 1:
                 return HALTED, {"choice": "halt", "input_row_hashes": hashes,
@@ -523,7 +594,8 @@ class Conductor:
     def _scout(self) -> Outcome:
         """Search the web (Exa) and keep a ranked shortlist; log every source.
 
-        Claim cards that pass the code checks are planned in combine as exploratory specs.
+        Claim cards that pass the code checks are planned in combine as exploratory specs, or
+        written to the explore inbox when one is configured (never both).
         Candidates go to the review queue (`candidates/<ts>.json`) for a person; the loop does
         not wait. Any failure is a skip; the loop never stops here. A step already logged (kill
         after logging) is not searched again.
@@ -553,7 +625,8 @@ class Conductor:
         planned = [c for c in result.claims if c.plannable]
         repeats = [c for c in result.claims if c.duplicate_of is not None]
         if result.claims or result.candidates:
-            reason = (f"{len(planned)} claim card(s) to test in combine, {len(repeats)} repeat a "
+            where = "to test in combine" if self.claims_in_combine else "sent to the explore inbox"
+            reason = (f"{len(planned)} claim card(s) {where}, {len(repeats)} repeat a "
                       f"PREREG claim; {len(result.candidates)} candidate(s) for human review; "
                       f"{len(result.rejected)} item(s) failed a check")
         else:
@@ -562,6 +635,7 @@ class Conductor:
             "choice": {"claims": [c.id for c in planned],
                        "duplicates": {c.id: c.duplicate_of for c in repeats},
                        "candidates": [c.name for c in result.candidates],
+                       "claims_tested_by": "combine" if self.claims_in_combine else "explore_inbox",
                        "sources": len(sources),
                        "used_sources": [s["url"] for s in sources if s["used"]]},
             "reason": reason,
@@ -608,11 +682,14 @@ class Conductor:
 
     # ---- the end ---------------------------------------------------------------------------
 
+    def _exploratory(self, spec: RunSpec) -> bool:
+        return is_explore(spec) or config_hash(spec) in self.exploratory_configs
+
     def _freeze(self) -> Outcome:
         """Pick the best replicated arm on the SELECTION half and fix the set."""
         arms: dict[str, list[ResultRow]] = {}
         for row in self._latest():
-            if usable(row, self.prereg) and not is_explore(row.spec):  # claim tests never win
+            if usable(row, self.prereg) and not self._exploratory(row.spec):  # never the winner
                 arms.setdefault(config_hash(row.spec), []).append(row)
         need = len(self.prereg.replicate_seeds)
         controls = {e.name for e in self.catalog.controls()}

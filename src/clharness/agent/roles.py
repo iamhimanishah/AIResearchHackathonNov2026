@@ -362,7 +362,8 @@ def _valid_treatments(request: PlanRequest) -> list[SelectionRow]:
     for row in request.rows:
         if not usable(row, request.prereg) or not row.spec.techniques:
             continue
-        if row.spec.notes.startswith("explore:"):  # claim tests never seed the next phase
+        if row.spec.notes.startswith("explore:") or row.spec.name.startswith("explore-"):
+            # exploratory rows (claim tests, hand-launched explore-* runs) never seed a phase
             continue
         if set(technique_names(row.spec)) <= controls or row.acquisition_mean is None:
             continue
@@ -380,7 +381,7 @@ class StubPlanner:
     replicated treatments plus the controls, at the replicate seeds.
     """
 
-    def __init__(self, top_k: int = 2) -> None:
+    def __init__(self, top_k: int = 3) -> None:  # PREREG 6.3 promotes the top 3
         self.top_k = top_k
 
     def plan(self, request: PlanRequest) -> tuple[Proposal, CallMeta]:

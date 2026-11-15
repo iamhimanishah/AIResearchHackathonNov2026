@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..analysis import design
+from . import explore as _explore
 from .contracts import (
     Catalog,
     CatalogEntry,
@@ -28,28 +29,18 @@ from .contracts import (
     arm_label,
     build_spec,
     canonical_json,
+    config_hash,
 )
 
-# What the agent may vary: (low, high) inclusive for numbers, a tuple of choices otherwise.
-# From docs/research-agent.md, Comments / Member B (peter, 14 November). The same table is in
-# justin's explore.py; keep them in step.
-RANGES: dict[str, dict[str, tuple[Any, ...]]] = {
-    "replay": {"share": (0.01, 0.5), "source": ("general", "code"),
-               "select": ("random", "loss", "act_nov"), "pool": (2, 8), "keep": ("high", "low"),
-               "layer": (0, 25)},
-    "lr_rewarm": {"rewarm_steps": (1, 40), "min_lr_ratio": (0.0, 1.0),
-                  "schedule": ("cosine", "linear", "constant")},
-    "wavg": {"alpha": (0.05, 0.75), "mode": ("boundary", "final", "ema"),
-             "ema_decay": (0.9, 0.995)},
-    "freeze": {"bottom_layers": (0, 25), "top_layers": (0, 25), "embeddings": (True, False)},
-    "lora": {"rank": (4, 256), "targets": ("attn", "attn_mlp"), "lr": (1e-4, 3e-3)},
-    "distill": {"weight": (0.1, 10.0), "temperature": (0.5, 2.0), "top_k": (32, 1024),
-                "rows": ("all", "new", "replay")},
-}
+# What the agent may vary: (low, high) inclusive for numbers, a tuple of choices otherwise. From
+# docs/research-agent.md, Comments / Member B (peter, 14 November). One table for the whole
+# agent: it lives in `explore.py` and is imported here.
+RANGES: dict[str, dict[str, tuple[Any, ...]]] = _explore.RANGES
 # The run learning rate a claim test may set (`optim.lr`), and only on an exploratory spec.
 # Spans the PREREG's lower-LR controls (A13) up to the bench rate.
-LR_RANGE: tuple[float, float] = (1e-5, 1e-4)
+LR_RANGE: tuple[float, float] = _explore.LR_RANGE
 EXPLORE_NOTE = "explore:"  # prefix of `RunSpec.notes` on every exploratory claim-test spec
+EXPLORE_NAME = "explore-"  # prefix of `RunSpec.name` on every exploratory run, whoever made it
 
 DESCRIPTIONS = {
     "replay": "Mix a share of earlier or general text into every batch; can select by a signal.",
@@ -98,9 +89,42 @@ def real_catalog() -> Catalog:
     return Catalog(entries=tuple(entries))
 
 
-def combination_problems(techniques: Mapping[str, Mapping[str, Any]]) -> list[str]:
+LORA_LR_CAP = 1e-3  # the highest LoRA learning rate that has run (3e-3 never has)
+LORA_PLUGIN_LR = 1e-3  # the lora plugin's default `lr`, used when a spec does not set one
+
+
+def lora_lr_limit(rank: float) -> float:
+    """The highest learning rate LoRA may use at `rank`: 1e-3 x sqrt(8 / rank), never above 1e-3.
+
+    The technique owner's joint bound (peter, agentchat, 14 November): with alpha = 2 x rank the
+    per-step weight change grows roughly with lr x sqrt(rank). Rank 8 at 1e-3 is stable on three
+    seeds; rank 256 at 1e-3 diverged on three. 1e-3 at rank 8, 3.5e-4 at 64, 1.8e-4 at 256."""
+    return min(LORA_LR_CAP, 1e-3 * (8.0 / float(rank)) ** 0.5)
+
+
+def lora_problem(params: Mapping[str, Any], run_lr: float | None = None) -> str | None:
+    """Why a lora configuration is refused, or None. The learning rate checked is the one the
+    run would use: the plugin's `lr` (default 1e-3, it overrides the run's), or, when `lr` is
+    set to None, the run's own (`run_lr`, else the bench rate)."""
+    rank = params.get("rank", design.PARAMS.get("lora", {}).get("rank", 8))
+    lr = params.get("lr", LORA_PLUGIN_LR)
+    if lr is None:
+        lr = run_lr if run_lr is not None else design.BENCH_LR
+    numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (rank, lr))
+    if not numbers or rank <= 0:
+        return None  # not a number: the plugin's own validation reports it
+    limit = lora_lr_limit(rank)
+    if lr > limit * (1 + 1e-9):
+        return (f"lora lr {lr:g} at rank {rank:g} is above the limit {limit:.3g} "
+                "(lr <= 1e-3 x sqrt(8 / rank), and never above 1e-3)")
+    return None
+
+
+def combination_problems(techniques: Mapping[str, Mapping[str, Any]],
+                         lr: float | None = None) -> list[str]:
     """Combinations the technique owner asked the gate to refuse (Member B, "Combinations to
-    refuse"). Parameters not given take the design default."""
+    refuse", and the LoRA rank and learning-rate bound). Parameters not given take the design
+    default. `lr` is the run's `optim.lr`, if the spec sets one."""
     def p(name: str, key: str, fallback: Any = None) -> Any:
         return techniques[name].get(key, design.PARAMS.get(name, {}).get(key, fallback))
 
@@ -115,6 +139,8 @@ def combination_problems(techniques: Mapping[str, Mapping[str, Any]]) -> list[st
         out.append("replay share x pool is above 1: forward-only tokens would pass gradient tokens")
     if "wavg" in techniques and p("wavg", "alpha", 0.25) >= 1 and p("wavg", "mode", "boundary") == "boundary":
         out.append("wavg alpha=1 in boundary mode resets to the base model after every domain")
+    if "lora" in techniques and (why := lora_problem(techniques["lora"], lr)):
+        out.append(why)
     return out
 
 
@@ -131,7 +157,7 @@ def bench_problems(spec: RunSpec) -> list[str]:
         text = " ".join(line.strip() for line in str(exc).splitlines()
                         if line.strip() and "errors.pydantic.dev" not in line)
         return [text[:300]]
-    return combination_problems(techniques)
+    return combination_problems(techniques, spec.optim.get("lr"))
 
 
 def full_params(techniques: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -176,6 +202,17 @@ def design_claim_arms() -> dict[str, int]:
     return out
 
 
+def design_exploratory_configs() -> frozenset[str]:
+    """Config hashes (seed left out) of the published-claims arms that are not screen arms.
+
+    `launch_design` runs them under their design names (`replay-25`, `lora-r256`, `freeze-top`)
+    with no explore marker. PREREG 6.5 calls them exploratory, so FREEZE must never pick one. An
+    arm that is also a screen arm (`replay-5` is the replay-only half) stays confirmatory."""
+    screen = {config_hash(s) for s in design.screen()}
+    claims = {config_hash(design.claim_spec(name, 0)) for name in design.CLAIM_ARMS}
+    return frozenset(claims - screen)
+
+
 def claim_arm_spec(techniques: Mapping[str, Mapping[str, Any]], lr: float | None, seed: int,
                    stream_: Sequence[StreamDomain], notes: str) -> RunSpec:
     """The spec of one arm of a claim card at one seed. A run LR other than the bench's goes in
@@ -200,12 +237,14 @@ def claim_specs(card: ClaimCard, seeds: Sequence[int],
 
 
 def is_explore(spec: RunSpec) -> bool:
-    return spec.notes.startswith(EXPLORE_NOTE)
+    """Exploratory: a claim test (`notes: "explore:<claim id>"`) or any run named `explore-*`
+    (the team's naming rule for hand-launched exploratory runs). FREEZE never picks one."""
+    return spec.notes.startswith(EXPLORE_NOTE) or spec.name.startswith(EXPLORE_NAME)
 
 
 def explore_claim_id(spec: RunSpec) -> str | None:
     """The claim id an exploratory spec tests (`notes: "explore:<claim id>[:control]"`)."""
-    if not is_explore(spec):
+    if not spec.notes.startswith(EXPLORE_NOTE):
         return None
     return spec.notes[len(EXPLORE_NOTE):].split(":")[0] or None
 
