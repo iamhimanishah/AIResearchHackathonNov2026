@@ -260,8 +260,12 @@ Facts every card relies on (from `docs/baselines.md` and the code):
   prints the cost estimate.
 
 ### A7 · Tinker backend
-- **Status: cut** on Saturday afternoon by Member A, to protect the critical path. Nothing was
-  built. The second task sequence (C5) has no backend unless someone else builds one.
+- **Status: moved to himani** on Saturday evening. Member A cut it on Saturday afternoon to
+  protect the critical path, before anything was built.
+  - Devin builds it from `analysis/handoff-devin-c5-tinker.md`; himani reviews it and runs every
+    Tinker job. Nothing is taken from Member A's time.
+  - It writes its own C5 row format to `results/tinker/`. The shared result row is built for the
+    protected multiple-choice evals, not for SST-2, MNLI and AG News.
 - **Goal:** the second task sequence (C5) produces the same result-row format.
 - **Where:** `src/clharness/executor/tinker_backend.py`. Devin can scaffold it.
 - **Steps:**
@@ -549,7 +553,7 @@ Gradient tokens must match the no-mitigation run. When a technique spends extra 
 - **Open questions:** which one figure opens the pitch? Recommended: (1). It shows "forgets
   less without learning less" in a single image.
 
-### C5 · Second task sequence on Tinker (time-boxed, first to cut)
+### C5 · Second task sequence on Tinker (reinstated Saturday evening; not on the cut list)
 - **Goal:** check that the top result generalizes to a published sequence and another model.
 - **Where:** A7's backend, with specs in `configs/tinker/`.
 - **Steps:**
