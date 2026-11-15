@@ -150,3 +150,36 @@ person to read. `loop.main` wraps everything after argument parsing in `single_w
 
 **Out of scope.** `--resume` and the `~r{n}` decision-key suffix; the rows-file lock inside
 `launch()` (the `--out` lock in `launch_design.main` covers the same rows file).
+
+**Result.** Commit `ee152d3`. `make test`: 536 passed, 2 skipped, 1 deselected. Touched justin's
+`launch_design.py` and `explore.py`: one `lock_or_exit(args.out)` line and its import in each.
+
+## Item 5: RT-32, one model-spend ledger for the loop and the Scout CLI
+
+**Goal.** `loop.py` and `scout.py` build their `BudgetedLLM` on one ledger,
+`cfg.path("llm_calls")`, and the guard re-reads that ledger before every call, so two entry
+points cannot each spend the whole model cap. (justin: explore keeps its own $10 cap and its own
+log, `results/agent/explore/llm_calls.jsonl`, tonight; it is not routed through this ledger.)
+
+**Acceptance criteria.**
+- Two guards on one ledger share the cap: after one spends, a guard built earlier is refused
+  when its call would pass the cap.
+- `llm.budgeted_llm(cfg, agents)` writes to `cfg.path("llm_calls")`; a config whose `root` is
+  relative resolves against the repository, not the working directory.
+- `loop.main --llm openai` and `scout.main` build their guard through `budgeted_llm` (no
+  `log_path=args.out/...`); a static test checks neither passes `log_path=`.
+- The existing planner-budget tests pass.
+
+**Design.** `llm.budgeted_llm(cfg, agents, inner=None)` builds `OpenAIClient` (or the injected
+client) inside `BudgetedLLM` on `ledger_path(cfg)`. `BudgetedLLM._check_cap` refreshes
+`spent_usd` from the ledger before the estimate. `loop._main_locked` and `scout.main` call the
+factory. Explore is untouched.
+
+**Tests** (`tests/agent/test_redteam_fixes.py`).
+- `test_rt32_two_guards_on_one_ledger_share_the_cap`.
+- `test_rt32_the_factory_writes_to_the_config_ledger`.
+- `test_rt32_loop_and_scout_build_their_guard_on_the_shared_ledger`.
+- `test_rt32_no_entry_point_but_explore_passes_its_own_ledger` (static).
+
+**Out of scope.** A lock and reservation lines around check-and-append (two calls at the same
+instant can still each pass the check once); merging the old per-directory ledgers.

@@ -44,7 +44,7 @@ from .config import AgentConfig, load_agent_config
 from .contracts import Prereg, PreregError, load_prereg, read_jsonl
 from .explore import INBOX_NAME
 from .gatekeeper import Gatekeeper
-from .llm import BudgetedLLM, LLMClient, OpenAIClient
+from .llm import LLMClient, budgeted_llm
 from .lock import AlreadyRunning, single_writer
 from .operator import Operator
 from .roles import Clock, FakeClock, Scout, StubAnalyst, StubPlanner, SystemClock
@@ -181,12 +181,9 @@ def _main_locked(args: argparse.Namespace, cfg: AgentConfig | None) -> int:
     llm = None
     if args.llm == "openai":
         agents = ("planner", "analyst") + (("scout",) if args.scout == "exa" else ())
-        models = cfg.require_models(agents)
-        llm = BudgetedLLM(
-            OpenAIClient(models, max_output_tokens=cfg.llm_max_output_tokens),
-            cap_usd=cfg.model_budget_usd, log_path=args.out / "llm_calls.jsonl",
-            prices=cfg.prices, max_output_tokens=cfg.llm_max_output_tokens,
-        )
+        llm = budgeted_llm(cfg, agents)  # the one shared model ledger (RT-32)
+        print(f"model ledger {llm.log_path}: spent ${llm.cap_usd - llm.remaining_usd:.2f} "
+              f"of ${llm.cap_usd:.2f}")
     if args.executor == "real":
         return _main_real(args, llm)
     scout = LLMScout(llm, ExaSearch()) if args.scout == "exa" and llm else None

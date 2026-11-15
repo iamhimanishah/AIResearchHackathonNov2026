@@ -247,3 +247,73 @@ def test_rt15_the_lock_file_is_git_ignored_and_uv_lock_is_not():
 
     text = (Path(__file__).resolve().parents[2] / ".gitignore").read_text().splitlines()
     assert "results/**/.agent.lock" in text and "*.lock" not in text
+
+
+# ---- RT-32: one model-spend ledger for the loop and the Scout CLI -----------------------------
+
+
+def test_rt32_two_guards_on_one_ledger_share_the_cap(tmp_path):
+    from pydantic import BaseModel
+
+    from clharness.agent import llm
+    from clharness.agent.config import config_for_tests
+
+    class Answer(BaseModel):
+        choice: str
+
+    cfg = config_for_tests(tmp_path, model_budget_usd=0.012, llm_max_output_tokens=1000)
+    one = llm.budgeted_llm(cfg, ("planner",), inner=llm.FakeLLM().queue("planner", {"choice": "a"}))
+    two = llm.budgeted_llm(cfg, ("scout",), inner=llm.FakeLLM().queue("scout", {"choice": "b"}))
+    assert one.log_path == two.log_path == cfg.path("llm_calls")
+    one.complete("planner", "s", "u", Answer)  # worst case $0.004, actual a few millionths
+    for _ in range(2):  # another entry point spends close to the cap on the same ledger
+        c.append_jsonl(cfg.path("llm_calls"), {"agent": "planner", "cost_usd": 0.004})
+    with pytest.raises(llm.BudgetExceeded):
+        two.complete("scout", "s", "u", Answer)  # built before those spends, still refused
+    assert two.remaining_usd < 0.004
+
+
+def test_rt32_the_factory_writes_to_the_config_ledger(tmp_path):
+    from clharness.agent import llm
+    from clharness.agent.config import config_for_tests, load_agent_config
+    from clharness.agent.loop import REPO_ROOT
+
+    cfg = config_for_tests(tmp_path)
+    assert llm.ledger_path(cfg) == tmp_path.resolve() / "results" / "agent" / "llm_calls.jsonl"
+    repo_cfg = load_agent_config(REPO_ROOT / "configs" / "agent.yaml")
+    assert repo_cfg.root == "."
+    assert llm.ledger_path(repo_cfg) == REPO_ROOT / "results" / "agent" / "llm_calls.jsonl"
+
+
+def test_rt32_loop_and_scout_build_their_guard_on_the_shared_ledger(tmp_path, monkeypatch):
+    from clharness.agent import loop
+    from clharness.agent import scout as scout_cli
+    from clharness.agent.loop import REPO_ROOT
+
+    config = REPO_ROOT / "configs" / "agent.yaml"
+    seen = []
+
+    def fake_factory(cfg, agents, inner=None):
+        seen.append(tuple(agents))
+        raise RuntimeError("stop before any call")
+
+    monkeypatch.setattr(loop, "budgeted_llm", fake_factory)
+    monkeypatch.setattr(scout_cli, "budgeted_llm", fake_factory)
+    with pytest.raises(RuntimeError, match="stop"):
+        loop.main(["--executor", "sim", "--out", str(tmp_path / "a"), "--llm", "openai",
+                   "--config", str(config)])
+    with pytest.raises(RuntimeError, match="stop"):
+        scout_cli.main(["--out", str(tmp_path / "b"), "--config", str(config)])
+    assert seen == [("planner", "analyst"), ("scout",)]
+    assert not (tmp_path / "a" / "llm_calls.jsonl").exists()
+
+
+def test_rt32_no_entry_point_but_explore_passes_its_own_ledger():
+    from pathlib import Path
+
+    from clharness.agent import loop
+
+    src = Path(loop.__file__).parent
+    for name in ("loop.py", "scout.py"):
+        text = (src / name).read_text()
+        assert "log_path=" not in text and "budgeted_llm(" in text, name

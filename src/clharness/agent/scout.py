@@ -19,7 +19,7 @@ from .agents import LLMScout, write_scout_result
 from .catalog_real import bench_problems, design_claim_arms, real_catalog
 from .catalog_real import stream as bench_stream
 from .config import load_agent_config
-from .llm import BudgetedLLM, OpenAIClient
+from .llm import budgeted_llm
 from .roles import ScoutRequest, ScoutResult
 from .search import ExaSearch
 
@@ -70,12 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.config is None:
         parser.error("a model call needs --config (or use --search-only)")
     cfg = load_agent_config(args.config)
-    models = cfg.require_models(("scout",))
-    llm = BudgetedLLM(
-        OpenAIClient(models, max_output_tokens=cfg.llm_max_output_tokens),
-        cap_usd=cfg.model_budget_usd, log_path=args.out / "llm_calls.jsonl",
-        prices=cfg.prices, max_output_tokens=cfg.llm_max_output_tokens,
-    )
+    llm = budgeted_llm(cfg, ("scout",))  # the loop's model ledger, shared (RT-32)
+    print(f"model ledger {llm.log_path}: spent ${llm.cap_usd - llm.remaining_usd:.2f} "
+          f"of ${llm.cap_usd:.2f}")
     result = LLMScout(llm, search, runnable=bench_problems).scout(real_request())
     path = write_scout_result(result, args.out)
     print(summary(result))

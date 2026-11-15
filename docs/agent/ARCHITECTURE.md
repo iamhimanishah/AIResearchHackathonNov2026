@@ -125,7 +125,7 @@ changing context (rows, findings), then the output schema.
 | `results/rows.jsonl` | Executor (workstream 2) | everyone | Result rows: the truth |
 | `results/agent/state.json` | Conductor | Conductor, Page | Current state, counters, budgets spent |
 | `results/agent/decisions.jsonl` | Conductor | Page, Reporter | Append-only, hash-chained decision log |
-| `results/agent/llm_calls.jsonl` | LLM client | Page, audits | Per call: agent, prompt hash, model, tokens, cost |
+| `results/agent/llm_calls.jsonl` | LLM client (`llm.budgeted_llm`: the loop and the Scout CLI share it, re-read before every call; explore keeps its own `explore/llm_calls.jsonl` and cap for now) | Page, audits | Per call: agent, prompt hash, model, tokens, cost |
 | `results/agent/memory/*.jsonl` | Memory | Planner, Analyst, Reporter, Page | `tried`, `failures`, `findings`, `lessons` |
 | `results/agent/sources.jsonl` | Scout | Page | Search queries, results, what was used |
 | `results/agent/report.{md,json}` | Reporter | Page | Final report |
