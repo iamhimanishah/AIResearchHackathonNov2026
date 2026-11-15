@@ -48,6 +48,12 @@ What we found:
   less and learns less, but rank 256 learned the legal text less than rank 8, the opposite of
   the claim), and three did not (replay alone at 5% or 25%, distillation on replay tokens,
   freezing the top half instead of the bottom).
+- On a second, published task sequence (LoRA fine-tuning of Qwen3-8B on SST-2, then MNLI, then
+  AG News, on Tinker; exploratory), plain sequential training barely forgets: 1.8 points (95%
+  CI 1.0 to 2.9). Replaying 200 examples of each earlier task did not reduce it: 3.2 points
+  (95% CI 1.5 to 5.4). So replay alone did not help here either. With so little to recover,
+  the pre-registered "gap closed" (−1.4, 95% CI −5.5 to +0.5) is unstable and is not a
+  finding on its own.
 - TO CHECK (justin): overnight the research agent proposed five follow-up hypotheses from the
   results. Code refused one, confirmed one (a learning rate of 1e-5 forgets 1.8 points less than
   3e-5 but learns the legal text less, as the agent predicted), and found three inconclusive at
@@ -75,6 +81,7 @@ So that nothing in it is typed from memory. Check each against its file before s
 | Screen | 14 technique combinations; 2 pass the acquisition gate | `results/analysis/grid_analysis.md`, "Promotion" |
 | Best configuration vs reference arm, report half | +2.13 points (95% CI +0.80 to +3.43), Holm p = 0.006, 3 seeds; vs the 3e-5 control +0.07 (−1.07 to +1.23) | `results/analysis/grid_analysis.md`, "Confirmatory tests" |
 | Published claims | 6 tested: 2 reproduced, 1 in part, 3 not; claim 4 not tested (no Reptile plugin) | `results/analysis/grid_analysis.md`, "Published claims" |
+| Second task sequence (C5, Tinker, exploratory) | Qwen3-8B, LoRA rank 32, SST-2 → MNLI → AG News, 3 seeds per arm. Average forgetting: naive 1.8 points (95% CI 1.0 to 2.9), replay-200 3.2 (1.5 to 5.4), joint 0.0. Final average accuracy: 0.896 / 0.882 / 0.908. Gap closed by replay-200 −1.40 (−5.48 to +0.48), with the section 10 warning: joint − naive = 0.012 < 0.03. $8.57 estimated for the 9 runs (`est_usd`; a first attempt that stalled in a network outage is not counted). The top-2 technique arms were dropped before any C5 result (amendment 7) | `results/tinker/analysis.md`, `results/tinker/rows.jsonl`; rebuild with `clh tinker-analyze` |
 | Research agent overnight | 5 hypotheses: 1 refused by the code gate, 1 confirmed (lr 1e-5: +1.80 points vs 3e-5 on the selection half, threshold 1.19; legal ratio 0.777 vs 0.754), 3 inconclusive; 9 runs at 2 seeds; exploratory | `results/agent/explore-justin/hypotheses.jsonl`, `rows.jsonl` (as of commit 4c2039f; TO CHECK with justin for later cycles) |
 
 The pre-registered win rule cannot be met on this bench: a technique would have to beat the
@@ -88,7 +95,7 @@ differences and intervals, never as "no technique helps".
 |---|---|
 | Research rigour | Frozen bench; noise floor from 5 seeds; pre-registration with a logged amendment history; a published reference arm and lower-learning-rate controls; selection and report halves of the eval items kept apart; three rounds of independent review with the fixes in git |
 | Novelty | All techniques under one protocol at matched compute; a table of published claims tested for reproduction; the finding that learning rate dominates and that the published recipe is partly a learning-rate cut |
-| Results | The control table above; the confirmatory table (best configuration +2.1 points over the published recipe, level with the lower-learning-rate control); the claims table (2 of 6 reproduced, 1 in part). Live results page |
+| Results | The control table above; the confirmatory table (best configuration +2.1 points over the published recipe, level with the lower-learning-rate control); the claims table (2 of 6 reproduced, 1 in part); the second task sequence on Tinker (replay-200 did not reduce forgetting). Live results page |
 | Autonomy and self-improvement | The launcher runs the pre-registered grid unattended and resumably; the explore loop proposes hypotheses from results, a code gate accepts or refuses them, and verdicts feed the next cycle. Be exact: tonight's screen was launched by a deterministic launcher on a person's go, and the Conductor reads real data but launches nothing. Overnight the explore loop proposed 5 hypotheses; the code gate refused 1, and 4 ran at 2 seeds each: 1 confirmed, 3 inconclusive, one of them a technique the agent wrote (TO CHECK: justin, for later cycles) |
 | Interpretability and reproducibility | Hash-chained decision log; every row carries its spec, commit and cost; failed and invalid runs are rows too; `make reproduce`; this honest limits list |
 

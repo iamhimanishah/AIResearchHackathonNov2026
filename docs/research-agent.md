@@ -109,6 +109,33 @@ advance) with its own skill file.
 - A table of hypotheses on the results page: question, origin, prediction, verdict, evidence.
 - The claims table from `published-claims.md`, filled by the agent instead of by hand.
 
+### 5.5 Doubt (`--skeptic`, added Sunday morning)
+
+The first overnight run of the explore loop built about thirty hypotheses on two-seed results it
+never checked, and called results "confirmed" whose test arm had simply learned legal less. With
+`--skeptic` (off by default) the loop doubts its own results in three ways. Two are fixed rules;
+one is a second model call.
+
+- **Stricter verdict.** A prediction that held but whose test arm learns legal worse than its
+  control by more than the 5% margin is `confirmed_with_cost`, not `confirmed`.
+- **Replication rule.** A confirmed result has standing only once its test arm and its control
+  each have rows at seeds 0 to 3. Each cycle the loop plans the missing runs itself (at most
+  `--replication-runs`, default 4; plain confirmations first, then by effect over threshold),
+  re-resolves the result over every paired seed by the same fixed rule, and marks it
+  `replicated` or `not_replicated`. The gate refuses a new hypothesis whose control is the test
+  arm of a result without standing. Rows at seeds 2 and 3 that someone else ran count if their
+  file is passed in `--have`.
+- **Skeptic step.** Once per cycle the model is asked, as the skeptic, for the cheapest
+  explanation of up to four confirmed results that is not the claimed mechanism, and for the
+  one run that would show it, with a prediction of the outcome if that cheap explanation is
+  true. Up to `--skeptic-runs` of those checks (default 1) pass the same gate and run ahead of
+  the proposer's hypotheses. A check that comes out as predicted marks its target `challenged`.
+
+The proposer sees the tags `[unreplicated]`, `[replicated]`, `[challenged]` and the two new
+statuses in its list of prior results, and is told not to build on anything but replicated,
+unchallenged results. Everything is in the decision log (`explore/doubt#N`). All of it is
+exploratory, like the rest of the explore loop.
+
 ## 6. Measuring it against a plain agent
 
 The architecture already has a simulator with planted effects. Use it to answer section 3 with
