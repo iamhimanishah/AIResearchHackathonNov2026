@@ -1,0 +1,118 @@
+{
+ "arms": {
+  "joint": {
+   "est_usd_total": 2.7303,
+   "final_avg_acc": {
+    "hi": 0.9093333333333334,
+    "lo": 0.9073333333333333,
+    "mean": 0.9081111111111112,
+    "per_seed": [
+     0.9093333333333334,
+     0.9073333333333333,
+     0.9076666666666666
+    ]
+   },
+   "forgetting": {
+    "hi": 0.0,
+    "lo": 0.0,
+    "mean": 0.0,
+    "per_seed": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "n_rows": 3,
+   "seeds": [
+    0,
+    1,
+    2
+   ]
+  },
+  "naive": {
+   "est_usd_total": 2.9454,
+   "final_avg_acc": {
+    "hi": 0.899,
+    "lo": 0.894,
+    "mean": 0.8956666666666667,
+    "per_seed": [
+     0.8940000000000001,
+     0.899,
+     0.894
+    ]
+   },
+   "forgetting": {
+    "hi": 0.028666675090789795,
+    "lo": 0.009777777828276157,
+    "mean": 0.018222222222222226,
+    "per_seed": [
+     0.013333333333333345,
+     0.013999999999999976,
+     0.02733333333333336
+    ]
+   },
+   "n_rows": 3,
+   "seeds": [
+    0,
+    1,
+    2
+   ]
+  },
+  "replay-200": {
+   "est_usd_total": 2.8929,
+   "final_avg_acc": {
+    "hi": 0.9016666666666667,
+    "lo": 0.864,
+    "mean": 0.8824444444444445,
+    "per_seed": [
+     0.9016666666666667,
+     0.8816666666666667,
+     0.864
+    ]
+   },
+   "forgetting": {
+    "hi": 0.05411110818386078,
+    "lo": 0.014999985694885254,
+    "mean": 0.03244444444444442,
+    "per_seed": [
+     0.014666666666666642,
+     0.02733333333333332,
+     0.05533333333333331
+    ]
+   },
+   "gap_closed": {
+    "hi": 0.484132124742759,
+    "lo": -5.476768484643277,
+    "mean": -1.4027820656188754
+   },
+   "n_rows": 3,
+   "seeds": [
+    0,
+    1,
+    2
+   ]
+  }
+ },
+ "denominator": {
+  "joint_minus_naive": 0.01244444444444448,
+  "seeds": [
+   0,
+   1,
+   2
+  ],
+  "unstable": true
+ },
+ "generated_at": "2026-11-15T08:54:23+00:00",
+ "n_boot": 10000,
+ "rows": "/Users/himani/Library/Application Support/Claude/scratch-workspaces/350df3f0-1be7-4067-9f83-7f05d656401a/747d1507-d3b9-472b-9eca-a7e108da369e/scratch-2026-11-14-6d20ab/AIResearchHackathonNov2026/results/tinker/rows.jsonl",
+ "seed": 0,
+ "smoke_rows_skipped": 1,
+ "tasks": [
+  "sst2",
+  "mnli",
+  "ag_news"
+ ],
+ "warnings": [
+  "unstable denominator: joint - naive = 0.012 < 0.03; read gap closed with care (analysis/PREREG.md section 10)"
+ ]
+}

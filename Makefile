@@ -53,6 +53,8 @@ reproduce-figures:             ## tables, analysis report and results page from 
 	$(UV) run clh validate-row $(REPORTED_ROWS)
 	$(UV) run clh grid-analysis $(REPORTED_ROWS) $(CONFIRMATORY) --out $(REPRO_OUT)
 	$(UV) run clh figures $(REPRO_OUT)/grid_analysis.json --out results/figures
+	$(UV) run clh tinker-analyze   # C5, the second task sequence: results/tinker/analysis.md
+	$(UV) run clh tinker-figures
 	$(UV) run python -m clharness.page --dir results/agent --write results/page.html
 	@echo "analysis written to $(REPRO_OUT), figures to results/figures, page to results/page.html"
 
