@@ -36,7 +36,7 @@ def _at_seed(spec: RunSpec, seed: int) -> RunSpec:
 
 
 def replication_specs(rows: Iterable[ResultRow], seeds: Sequence[int] = REPLICATION_SEEDS,
-                      allow_simulated: bool = False) -> dict[str, Any]:
+                      allow_simulated: bool = False, frozen: bool = True) -> dict[str, Any]:
     """The runs still to launch for replication, with the rankings they follow from.
 
     `rows`: every result row at hand (screen, controls, anything already replicated). Rows of
@@ -44,7 +44,9 @@ def replication_specs(rows: Iterable[ResultRow], seeds: Sequence[int] = REPLICAT
     replication runs have landed returns only what is missing, and the ranking does not move.
     """
     rows, _ = A.dedupe_rows(list(rows))  # real-backend rows win ties (A._row_rank, red-team RT-08)
-    report = A.analyze(rows, confirmatory=False, n_boot=200, allow_simulated=allow_simulated)
+    # `frozen`: the margins frozen in PREREG 0.4 (real rows); False derives them (fake rows)
+    report = A.analyze(rows, confirmatory=False, n_boot=200, allow_simulated=allow_simulated,
+                       frozen=frozen)
     if report["screen_reference"] is None:
         # without the seed-0 reference arm the gate cannot be applied, and the ranking would
         # pick configurations that fail it: refuse rather than launch paid runs (red-team RT-01)

@@ -103,3 +103,21 @@ def test_empty_analysis_still_writes_parseable_svgs(tmp_path):
                            "alias_chains_retention_selection": {"effects": {}},
                            "configs_selection": []}, tmp_path):
         _check_svg(p, marks=False)
+
+
+def test_cost_chart_plots_the_paired_gain_against_forward_tokens():
+    """RT-26: the dot is the paired delta vs no-mitigation (the same estimator as its bar), the
+    x axis is extra forward tokens; a configuration with no paired seed falls back to the
+    unpaired gain and gets no bar."""
+    cost_rows = [
+        {"config": "paired", "retention_gain": 0.05, "extra_gpu_hours": 9.0, "extra_forward_tokens": 20e6},
+        {"config": "unpaired", "retention_gain": -0.01, "extra_gpu_hours": 9.0, "extra_forward_tokens": 0.0},
+    ]
+    configs = [{"config": "paired", "vs_base": {"delta": 0.02, "lo": 0.01, "hi": 0.03, "n_pairs": 3}},
+               {"config": "unpaired", "vs_base": None}]
+    svg = F.cost({"cost_selection": cost_rows, "configs_selection": configs}, "selection", "t")
+    root = ET.fromstring(svg)
+    tips = [t.text for t in root.iter() if t.tag.split("}")[-1] == "title"]
+    assert "paired: +2.0 pts for 20M extra forward tokens" in tips  # paired delta, not +5.0
+    assert "unpaired: -1.0 pts for 0M extra forward tokens" in tips  # fallback
+    assert "extra forward tokens" in svg and "GPU-h" not in svg

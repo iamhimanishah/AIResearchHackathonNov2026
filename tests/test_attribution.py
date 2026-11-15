@@ -449,12 +449,13 @@ def test_rt01_replication_refuses_without_a_reference(rows):
 
 
 def test_rt05_items_path_is_read_from_the_repo_root(tmp_path, monkeypatch):
+    from clharness.config import REPO_ROOT
     from clharness.spec import ResultRow
 
-    path = A._REPO_ROOT / "results" / "rows.reference.remeasured.jsonl"
+    path = REPO_ROOT / "results" / "rows.reference.remeasured.jsonl"
     row = ResultRow.model_validate_json(path.read_text().splitlines()[0])
     assert row.items_path and not row.items_path.startswith("/")
-    if not (A._REPO_ROOT / row.items_path).exists():
+    if not (REPO_ROOT / row.items_path).exists():
         pytest.skip("item files not in this checkout")
     monkeypatch.chdir(tmp_path)  # anywhere but the repo root
     got = A.checkpoint_items(row, "arc_easy", "selection")
@@ -534,3 +535,20 @@ def test_rt27_markdown_without_no_mitigation_rows(rows):
     out = A.analyze(no_base, confirmatory=True, n_boot=100, allow_simulated=True, frozen=False)
     assert "sanity_reference_vs_no_mitigation" not in out
     assert "not computed" in A.to_markdown(out)
+
+
+def test_rt24_a_frozen_control_that_fails_the_gate_stays_but_warns(rows):
+    """Frozen means frozen: on the fake rows 3e-5 is planted to fail the gate, so the frozen
+    control is still the comparator and the report says it fails."""
+    out = A.analyze(rows, n_boot=100, allow_simulated=True)
+    assert out["lr_control"]["chosen_label"] == "no-mitigation-lr3e-05"
+    assert any("fails the acquisition gate" in w for w in out["warnings"])
+    derived = A.analyze(rows, n_boot=100, allow_simulated=True, frozen=False)
+    assert not any("fails the acquisition gate" in w for w in derived["warnings"])
+
+
+def test_markdown_renders_an_older_confirmatory_json(confirmatory):
+    """A confirmatory JSON written before bootstrap_mode existed still renders."""
+    old = dict(confirmatory)
+    old["confirmatory"] = [{k: v for k, v in d.items() if k != "bootstrap_mode"} for d in old["confirmatory"]]
+    assert "| ? |" in A.to_markdown(old)

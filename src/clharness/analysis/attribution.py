@@ -73,8 +73,6 @@ FROZEN_MARGINS = {"code": ACQ_GATE, "legal": ACQ_GATE}
 FROZEN_LR_CONTROL = 3e-5
 TOKEN_TOLERANCE = 0.01  # PREREG 8: gradient tokens within 1% of spec.gradient_tokens()
 MAJORITY_RATE = {"pubmedqa_pqal": 0.58}  # PREREG 8: printed next to PubMedQA scores
-# src/clharness/analysis/attribution.py -> repo root; items_path in a row is repo-relative
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -327,9 +325,11 @@ def checkpoint_items(row: ResultRow, task: str, half: Half) -> tuple[np.ndarray,
     bootstrap mode does not depend on where the analysis is run from (red-team RT-05)."""
     if not row.items_path:
         return None
+    from clharness.config import REPO_ROOT  # lazy: keeps this module's import cost at numpy + spec
+
     path = Path(row.items_path)
     if not path.is_absolute():
-        path = _REPO_ROOT / path
+        path = REPO_ROOT / path
     ckpts = sorted(path.glob("ckpt_*"))
     if (len(ckpts) < 2 or not (ckpts[0] / f"items_{task}.npy").exists()
             or not (ckpts[-1] / f"items_{task}.npy").exists()):
@@ -509,6 +509,8 @@ def choose_lr_control(configs: dict[str, Config], ref: Config | None,
     derived = max(eligible, key=lambda a: a["selection_primary"], default=None)
     chosen = derived
     if frozen_lr is not None:
+        # frozen means frozen: the arm stays the comparator even if it fails the gate on these
+        # rows, and `analyze` warns when it does (passes_acquisition_gate is in `arms`)
         chosen = next((a for a in arms if math.isclose(a["lr"], frozen_lr)), None)
     return {"arms": sorted(arms, key=lambda a: -a["lr"]), "chosen": chosen["key"] if chosen else None,
             "chosen_label": chosen["config"] if chosen else None,
@@ -943,13 +945,17 @@ def analyze(rows: list[ResultRow], confirmatory: bool = False, n_boot: int = 10_
         "selection_screen": promote_selection(screen_configs, screen_ref, margins),
         # L is judged on the 3-seed lower-LR arms against the full reference arm, as PREREG 0.4
         # froze it; with `frozen` the frozen LR is the control (red-team RT-24)
-        "lr_control": choose_lr_control(configs, ref, margins,
-                                        frozen_lr=FROZEN_LR_CONTROL if frozen else None),
+        "lr_control": (lc := choose_lr_control(configs, ref, margins,
+                                               frozen_lr=FROZEN_LR_CONTROL if frozen else None)),
         "pareto_selection": pareto(configs, "selection"),
         "cost_selection": cost_table(configs, base, "selection"),
         # per-configuration numbers the figures draw (selection half is decision-legal)
         "configs_selection": config_summaries(configs, "selection", base, n_boot, seed, items),
     }
+    chosen_arm = next((a for a in lc["arms"] if a["key"] == lc["chosen"]), None)
+    if frozen and chosen_arm is not None and not chosen_arm["passes_acquisition_gate"]:
+        warnings.append(f"the frozen rule-4 control {chosen_arm['config']} fails the acquisition "
+                        "gate on these rows; it is still the comparator (PREREG 0.4)")
     if not confirmatory:
         return out
 
@@ -1094,7 +1100,7 @@ def to_markdown(report: dict[str, Any]) -> str:
             vs = d.get("vs_lr_control")
             lr_cell = f"{pct(vs['delta'])} ({pct(vs['ci'][0])} to {pct(vs['ci'][1])})" if vs else "n/a"
             lines.append(f"| {d['config']} | {seeds} | {pct(d['delta'])} | {pct(d['ci'][0])} to {pct(d['ci'][1])} | "
-                         f"{d['p_holm']:.3f} | {d['bootstrap_mode']} | {'yes' if d['rule2_large_enough'] else 'no'} | "
+                         f"{d['p_holm']:.3f} | {d.get('bootstrap_mode', '?')} | {'yes' if d['rule2_large_enough'] else 'no'} | "
                          f"{'pass' if d['rule3_learns_enough'] else 'fail'} | {lr_cell} | "
                          f"{'yes' if d['rule4_beats_lr_control'] else 'no'} | **{'yes' if d['beats_reference'] else 'no'}** |")
         if report.get("confirmatory_selection"):

@@ -445,7 +445,11 @@ def cmd_plan_replication(args) -> int:
     from clharness.spec import read_rows
 
     rows = [r for path in args.files for r in read_rows(path)]
-    plan = replication_specs(rows, allow_simulated=args.allow_simulated)
+    try:
+        plan = replication_specs(rows, allow_simulated=args.allow_simulated)
+    except ValueError as e:  # e.g. no seed-0 reference row: refuse cleanly, plan nothing
+        print(f"REFUSED {e}", file=sys.stderr)
+        return 1
     specs = plan["specs"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
