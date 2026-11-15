@@ -103,6 +103,7 @@ def launch(
     poll_s: float = 30.0,
     sleep: Callable[[float], None] = time.sleep,
     say: Callable[[str], None] = print,
+    tag: str = "design",
 ) -> dict[str, int]:
     """Run every spec that has no finished row yet. Returns counts by final status."""
     out.mkdir(parents=True, exist_ok=True)
@@ -123,9 +124,10 @@ def launch(
     per_run = executor.estimate_cost(specs[0]) if specs else 0.0
     open_cost = per_run * len([h for h in todo if latest().get(h) is None or latest()[h].status != "finished"])
     log.append(
-        key="design/plan", state="screen/plan", actor="launch_design", ts=now(),
-        reason="The pre-registered screen and published-claims runs (analysis/PREREG.md 6.2, 6.5). "
-               "Nothing is chosen here: the list is clharness.analysis.design.",
+        key=f"{tag}/plan", state="screen/plan", actor="launch_design", ts=now(),
+        reason=("The pre-registered screen and published-claims runs (analysis/PREREG.md 6.2, 6.5). "
+                "Nothing is chosen here: the list is clharness.analysis.design.") if tag == "design"
+        else f"Runs accepted by the gate for {tag}.",
         data={"planned": len(by_hash), "already_finished_elsewhere": len(by_hash) - len(todo),
               "to_run": len(todo), "estimated_usd": round(open_cost, 2), "cap_usd": cap_usd,
               "git_sha": git_sha, "spec_hashes": sorted(todo)},
@@ -161,7 +163,7 @@ def launch(
             executor.submit([by_hash[h] for h in batch])
             spent_estimate += per_run * len(batch)
             log.append(
-                key=f"design/launch#{wave}", state="screen/launch", actor="launch_design", ts=now(),
+                key=f"{tag}/launch#{wave}", state="screen/launch", actor="launch_design", ts=now(),
                 reason=f"Wave {wave}: {len(batch)} runs, keeping at most {concurrency} in flight.",
                 data={"spec_hashes": batch, "names": [by_hash[h].name for h in batch],
                       "estimated_usd_so_far": round(spent_estimate, 2)},
@@ -171,7 +173,7 @@ def launch(
         if landed:
             fresh = {h: r for h, r in latest().items() if h in {x.spec_hash for x in landed}}
             log.append(
-                key=f"design/read#{len(log.entries())}", state="screen/read", actor="launch_design", ts=now(),
+                key=f"{tag}/read#{len(log.entries())}", state="screen/read", actor="launch_design", ts=now(),
                 reason=f"{len(fresh)} rows landed.",
                 input_row_hashes=[a1_row_hash(r) for r in fresh.values()],
                 data={"rows": [{"name": r.spec.name, "status": r.status, "reason": (r.reason or "")[:200]}
@@ -188,7 +190,7 @@ def launch(
         status = final[h].status if h in final else "missing"
         counts[status] = counts.get(status, 0) + 1
     log.append(
-        key="design/done", state="screen/advance", actor="launch_design", ts=now(),
+        key=f"{tag}/done", state="screen/advance", actor="launch_design", ts=now(),
         reason="Every planned run has a row. Replication and combination are the Conductor's to plan.",
         data={"counts": counts, "rows": str(rows_path)},
     )
