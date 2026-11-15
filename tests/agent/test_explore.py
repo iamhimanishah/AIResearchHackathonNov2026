@@ -489,3 +489,32 @@ def test_the_model_chooses_the_next_search_and_it_runs_once(tmp_path, have):
     assert "explore/next_search" in keys and "explore/search" in keys
     entry = next(d for d in log.entries() if d.key.startswith("explore/search"))
     assert entry.data["urls"] == ["https://arxiv.org/abs/2608.17530"]
+
+
+def test_find_similar_runs_on_the_paper_a_hypothesis_came_from(tmp_path, have):
+    paper = "https://arxiv.org/abs/2608.17530"
+    props = [_hyp(claim="from a paper", origin="literature", source=f"When to Review ({paper})"),
+             _hyp(claim="no paper", techniques=[{"name": "replay", "params": {"share": 0.25}}])]
+    search = FakeSearch({f"similar:{paper}": (_src(3), _src(4))})
+    backend = FakeModal(lambda spec: (0.6, 0.76))
+    out, _ = _cycle(tmp_path, have, llm=FakeLLM().queue("explorer", {"hypotheses": props}),
+                    backend=backend, go=True, similar=search.find_similar)
+    by_claim = {h.claim: h for h in out}
+    assert [c.url for c in by_claim["from a paper"].similar] == [_src(3).url, _src(4).url]
+    assert by_claim["no paper"].similar == []
+    assert [c for c in search.calls if c[1] == "find_similar"] == [(paper, "find_similar")]
+    log = DecisionLog(tmp_path / "explore" / "decisions.jsonl")
+    assert log.verify().ok
+    entry = next(d for d in log.entries() if d.key.startswith("explore/similar"))
+    assert entry.data["similar"][0]["pages"][0]["url"] == _src(3).url
+
+
+def test_the_next_cycle_sees_what_exa_said_about_prior_work(tmp_path, have):
+    search = FakeSearch()
+    backend = FakeModal(lambda spec: (0.6, 0.76))
+    _cycle(tmp_path, have, llm=FakeLLM().queue("explorer", {"hypotheses": [_hyp(claim="once")]}),
+           backend=backend, go=True, prior_work=search.answer)
+    second = FakeLLM().queue("explorer", {"hypotheses": []})
+    _cycle(tmp_path, have, llm=second)
+    prompt = second.prompts("explorer")[0]
+    assert '[Exa prior work, 0 citations: "fake answer: tested once, mixed results"]' in prompt

@@ -121,6 +121,23 @@ class ExaSearch:
         return (text if isinstance(text, str) else json.dumps(text))[:2000], tuple(cites)
 
 
+    def find_similar(self, url: str, n: int = 5) -> tuple[Source, ...]:
+        """`exa.find_similar(url)`: pages like a paper, from other sites. The explore loop uses it
+        on the paper a hypothesis came from, to show the agent the method's neighbours."""
+        try:
+            response = self._sdk().find_similar(url, num_results=n, exclude_source_domain=True,
+                                                timeout=self.timeout)
+        except SearchError:
+            raise
+        except Exception as exc:  # any SDK or network failure is a SearchError
+            raise SearchError(f"{type(exc).__name__}: {exc}") from exc
+        now = utc_iso(self._clock.now())
+        return tuple(
+            Source(id=source_id(url, u), query=f"similar:{url}", url=u,
+                   title=str(_field(item, "title") or "")[:300], snippet="",
+                   published=_field(item, "published_date", "publishedDate"), retrieved_at=now)
+            for item in (_field(response, "results") or ()) if (u := _field(item, "url")))
+
 class FakeSearch:
     """Returns scripted sources per query; records every (query, objective) it was asked."""
 
@@ -142,3 +159,10 @@ class FakeSearch:
         if self.fail:
             raise SearchError("fake search failure")
         return "fake answer: tested once, mixed results", tuple(self.results.get(question, ()))
+
+    def find_similar(self, url: str, n: int = 5) -> tuple[Source, ...]:
+        """Scripted: `results["similar:" + url]`."""
+        self.calls.append((url, "find_similar"))
+        if self.fail:
+            raise SearchError("fake search failure")
+        return tuple(self.results.get(f"similar:{url}", ()))[:n]
