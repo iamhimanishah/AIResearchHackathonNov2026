@@ -317,3 +317,41 @@ def test_rt32_no_entry_point_but_explore_passes_its_own_ledger():
     for name in ("loop.py", "scout.py"):
         text = (src / name).read_text()
         assert "log_path=" not in text and "budgeted_llm(" in text, name
+
+
+# ---- RT-40 and part of RT-37: local files ignored, every key listed ---------------------------
+
+ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+
+
+def test_rt40_local_files_are_ignored_and_team_files_are_not():
+    import subprocess
+
+    def ignored(path: str) -> bool:
+        """Ignored by the repository's .gitignore (a machine's own .git/info/exclude is not
+        the repository's business)."""
+        done = subprocess.run(["git", "check-ignore", "-v", "--no-index", path], cwd=ROOT,
+                              check=False, capture_output=True, text=True)
+        return done.returncode == 0 and done.stdout.startswith(".gitignore:")
+
+    for path in (".agents/x", ".worktrees/x", "skills-lock.json", "CLAUDE.local.md",
+                 "src/clharness/page/static/gemini-raw/a.png", "results/agent/.agent.lock"):
+        assert ignored(path), path
+    for path in (".claude/CLAUDE.md", "uv.lock", "pyproject.toml", ".env.example"):
+        assert not ignored(path), path
+
+
+def test_rt37_env_example_lists_every_key_the_code_reads():
+    import re
+
+    text = (ROOT / ".env.example").read_text()
+    listed = {line.split("=")[0].strip() for line in text.splitlines()
+              if "=" in line and not line.startswith("#")}
+    read = set()
+    for path in (ROOT / "src").rglob("*.py"):
+        read |= set(re.findall(r"\"([A-Z]+_API_KEY|HF_TOKEN)\"", path.read_text()))
+    assert {"OPENAI_API_KEY", "PAST_API_KEY", "EXA_API_KEY", "HF_TOKEN"} <= read <= listed
+    for key in ("OPENAI_API_KEY", "PAST_API_KEY"):
+        [line] = [x for x in text.splitlines() if x.startswith(key + "=")]
+        assert line.split("#", 1)[1].strip()  # a one-line comment
+    assert "openai" not in (ROOT / "pyproject.toml").read_text().lower()

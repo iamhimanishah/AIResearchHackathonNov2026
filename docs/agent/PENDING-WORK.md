@@ -268,3 +268,86 @@ writes its own claim cards there so the "scout" label is really written by the S
 - `test_s9_memory_flag_on_both_entry_points`.
 
 **Out of scope.** The Scout CLI writes no inbox (S6), so it recalls but does not write cards.
+
+**Result.** Commit `fd103f7`. `make test`: 551 passed, 2 skipped, 1 deselected.
+
+## Item 8: RT-40 and part of RT-37, ignore local files and list every key
+
+**Goal.** Local agent and editor files cannot be committed by accident, and `.env.example`
+lists every key the code reads, so a fresh checkout knows what to set. No dependency change.
+
+**Acceptance criteria.**
+- `.gitignore` ignores `.agents/`, `.worktrees/`, `skills-lock.json`, `CLAUDE.local.md` and
+  `src/clharness/page/static/gemini-raw/` (`git check-ignore` agrees), and still does not ignore
+  `.claude/` (the team rules live there) or `uv.lock`.
+- `.env.example` has `OPENAI_API_KEY=` and `PAST_API_KEY=`, each with a one-line comment, and
+  lists every `*_API_KEY` / `HF_TOKEN` name the source reads.
+- `pyproject.toml` and `uv.lock` are unchanged (openai stays out; `uv run --with openai`).
+
+**Design.** Append to both files; no code change.
+
+**Tests** (`tests/agent/test_redteam_fixes.py`).
+- `test_rt40_local_files_are_ignored_and_team_files_are_not` (runs `git check-ignore`).
+- `test_rt37_env_example_lists_every_key_the_code_reads` (scans `src/` for the key names).
+
+**Out of scope.** The `llm` extra and the start-up `ready()` check (a new dependency needs
+brendan's OK).
+
+**Result.** The last commit of this branch (it also carries this file's final sections).
+`make test`: 553 passed, 2 skipped, 1 deselected. `pyproject.toml` and `uv.lock` unchanged.
+
+## For justin
+
+1. **Touched, in `ee152d3`:** `launch_design.main` and `explore.main` each gained
+   `from .lock import lock_or_exit` and one call, `lock_or_exit(args.out)`: in `launch_design`
+   after the dry-run return and before `launch()`, in `explore` right after argument parsing.
+   Nothing else in either file. A second process on the same `--out` now exits 2 with `refused:`.
+2. **Remove explore's claim-card write once `fd103f7` is on main.** `explore.py:600-603`
+   (`for card_id, card in cards: memory.write_claim_card(card_id, card)`) is now done by the
+   Scout itself, with the same id and text (`LLMScout.remember_cards`, which calls
+   `PastMemory.write_claim_card` on the line `read_inbox` returns). Until it is removed, explore's
+   write replaces the Scout's with identical content, so nothing is duplicated.
+3. **Shared model ledger, when you want it (not tonight, per your note).** Replace the
+   `BudgetedLLM(...)` at `explore.py:804-806` with
+   `BudgetedLLM(OpenAIClient(models, ...), cap_usd=..., log_path=ledger_path(cfg), ...)` using
+   `from .llm import ledger_path`; `budgeted_llm(cfg, agents)` itself cannot be used because
+   "explorer" is not a model slot in the config.
+4. **Quote the hypotheses list in the prompt (fix plan S10).** `explore.build_prompt`
+   (`explore.py:270-276`) puts `seen` (claim text that paraphrases web text) into the prompt
+   unquoted; wrap it: `wrap_untrusted(seen, "hypotheses")` from `.context`. Same for the
+   `--search` sources in `_search_sources`: `wrap_untrusted(render_sources(...), "search")`.
+
+## For himani
+
+1. **`configs/agent/thresholds.yaml` is a DRAFT for you to confirm.** Every value is transcribed
+   from PREREG.md with its section. Three to look at:
+   - `noise_sd: 0.0115` is the frozen report-half sigma (PREREG 0.4). Every decision the agent
+     makes before FREEZE is on the selection half, whose SD is 0.59 points (0.0059). Which one
+     should the agent's `decision_threshold` use?
+   - `acquisition_floor_delta: 0.05` is one margin on the mean perplexity ratio; PREREG 0.2 gates
+     code and legal separately. The agent's FREEZE and planner use the single margin.
+   - `replicate_seeds: [0, 1, 2]` (3 paired seeds; replication adds seeds 1 and 2).
+2. **Collapse is invalid for the agent, flagged for PREREG.** `contracts.usable` keeps a row
+   with any `answer_share` above 0.90 out of FREEZE and planning, while PREREG 8 / A9 say "flag,
+   don't invalidate". Not changed tonight; say which you want.
+3. **PREREG cells trimmed for budget.** In real mode the replicate proposal is exactly
+   `replication_specs(rows)["specs"]`, but the gate still applies the compute cap. With the $80
+   of `configs/agent.yaml` it keeps 4 of the 10 on the committed rows (replicate treatments may
+   spend 70% of what is left). The proposals are logged either way; launches go through
+   `launch_design`, which is not affected.
+
+## For brendan (judgment calls to check)
+
+- Real mode's **screen** phase still uses the fallback planner, which proposes catalog-default
+  single-technique specs (`screen-*`, not `design.screen()`): on the committed rows it logs 4
+  such proposals. The same treatment as replicate (propose `design.screen()`) would fix it;
+  not done because it was not asked.
+- The replicate gate keeps 4 of 10 pre-registered specs at the $80 cap (see "For himani" 3).
+- Two `test_real_mode.py` assertions and one `test_scout.py` expectation changed to the new
+  behaviour (see items 1 and 6); no check was dropped.
+- `--memory pastdev` without `PAST_API_KEY` prints a notice and runs with an empty memory,
+  where explore stops with an error.
+- A past.dev statement with no recorded writer is withheld from the Scout.
+- `launch_design` takes the lock only with `--go`, so a dry run still prints while a grid runs.
+- Nothing is pushed. After brendan's OK: `git pull --rebase origin main`, `make test`, push,
+  then `agentchat touched justin` naming `ee152d3` (lock lines) and the write to remove.
