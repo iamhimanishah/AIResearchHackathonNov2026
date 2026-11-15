@@ -14,6 +14,11 @@
   clh export-schema [--out DIR]             JSON Schemas of the run spec and result row
   clh run SPEC... [--modal] [--out F]       run specs, append one result row each
   clh fetch-items FILE...                   per-item files of finished runs, from Modal to results/items/
+  clh tinker-manifest                       draw the frozen C5 subsample into manifests/tinker-c5.json
+  clh tinker-run --arm A --seed N [--smoke] [--dry-run]
+                                            one C5 arm on Tinker; --smoke is 50/50 per task
+  clh tinker-analyze                        C5 metrics: final acc, gap closed, forgetting (+ CIs)
+  clh tinker-figures                        the C5 R[stage, task] heatmap SVG
 """
 
 from __future__ import annotations
@@ -537,6 +542,115 @@ def cmd_fetch_items(args) -> int:
     return 1 if missing else 0
 
 
+def cmd_tinker_manifest(args) -> int:
+    """Draw the frozen C5 subsample. Downloads the three HF datasets (once, cached)."""
+    from clharness.tinker import data as tdata
+
+    manifest = tdata.build_manifest(out=args.out, seed=args.seed,
+                                    n_train=args.n_train, n_eval=args.n_eval)
+    for name, e in manifest["tasks"].items():
+        print(f"{name}: {len(e['train_indices'])} train + {len(e['eval_items'])} eval "
+              f"sha256={e['sha256'][:16]}")
+    print(f"wrote {args.out} (template_sha256 {manifest['template_sha256'][:16]})")
+    return 0
+
+
+def _estimate_encode():
+    """Tokenizer for the dry-run estimate without a ServiceClient: the model's own HF
+    tokenizer if downloadable (same Qwen2Tokenizer Tinker uses), else a crude 1-token-per-
+    4-chars heuristic — which the estimate then flags as approximate."""
+    try:
+        from transformers import AutoTokenizer
+
+        from clharness.tinker.runner import MODEL_ID
+        tok = AutoTokenizer.from_pretrained(MODEL_ID)
+        return (lambda t: tok.encode(t, add_special_tokens=False)), False
+    except Exception as e:  # noqa: BLE001 - offline dry-run is still useful, just approximate
+        print(f"note: could not load the {MODEL_ID} tokenizer ({type(e).__name__}); "
+              "the estimate uses len(text)//4", file=sys.stderr)
+        return (lambda t: [0] * max(1, len(t) // 4)), True
+
+
+def cmd_tinker_run(args, load_split=None) -> int:
+    """Train + eval one C5 arm on Tinker and append a TinkerRow. The frozen-data check
+    re-hashes every task's manifest examples before any client exists — even on
+    --dry-run — and the budget guard refuses before any API call."""
+    from clharness.tinker import runner
+    from clharness.tinker.data import (
+        SMOKE_N_EVAL,
+        SMOKE_N_TRAIN,
+        TASK_ORDER,
+        TASKS,
+        read_manifest,
+        verify_task_sha,
+    )
+    from clharness.tinker.rows import append_tinker_row, spent_usd
+
+    manifest = read_manifest(args.manifest)
+    n_train = SMOKE_N_TRAIN if args.smoke else manifest["n_train"]
+    n_eval = SMOKE_N_EVAL if args.smoke else manifest["n_eval"]
+    examples = runner.load_examples(n_train, n_eval, manifest=manifest,
+                                    manifest_path=args.manifest, load_split=load_split)
+    try:
+        for name in TASK_ORDER:
+            verify_task_sha(TASKS[name], manifest, load_split=load_split)
+    except ValueError as e:
+        print(f"data check failed, refusing to run: {e}", file=sys.stderr)
+        return 2
+    encode, approximate = _estimate_encode()
+    est = runner.estimate_run(arm=args.arm, seed=args.seed, examples=examples, encode=encode,
+                              n_train=n_train, n_eval=n_eval, epochs=args.epochs,
+                              batch_size=args.batch_size, max_len=args.max_len,
+                              replay_per_task=args.replay)
+    spent = spent_usd(args.rows)
+    tok = est["tokens"]
+    print(f"estimate{' (approximate)' if approximate else ''}: "
+          f"train={tok['train']:,} prefill={tok['prefill']:,} sample={tok['sample']:,} tokens, "
+          f"${est['est_usd']:.2f}; spent so far ${spent:.2f} of ${args.budget:.0f} cap")
+    if args.dry_run:
+        return 0
+    refusal = runner.check_budget(est["est_usd"], args.rows, cap=args.budget)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 2
+    service, types = runner.real_service()
+    row = runner.run_arm(
+        arm=args.arm, seed=args.seed, n_train=n_train, n_eval=n_eval, examples=examples,
+        service=service, types=types, epochs=args.epochs, batch_size=args.batch_size,
+        max_len=args.max_len, lr=args.lr, lora_rank=args.rank, model=args.model,
+        replay_per_task=args.replay, smoke=args.smoke, manifest_path=args.manifest,
+        items_dir=args.items_dir, eval_window=args.eval_window)
+    append_tinker_row(args.rows, row)
+    print(f"{row.status} {row.arm} s{row.seed} "
+          f"est=${row.est_usd if row.est_usd is not None else 0:.2f} {row.reason or ''}")
+    return 0 if row.status == "finished" else 1
+
+
+def cmd_tinker_analyze(args) -> int:
+    from clharness.tinker import analysis as tanalysis
+
+    out = tanalysis.analyze(rows_path=args.rows, out_dir=args.out,
+                            n_boot=args.n_boot, seed=args.seed)
+    for arm, e in sorted(out["arms"].items()):
+        gap = e.get("gap_closed")
+        print(f"{arm}: final={e['final_avg_acc']['mean']:.3f} "
+              f"forgetting={e['forgetting']['mean']:.3f}"
+              + (f" gap_closed={gap['mean']:.3f} [{gap['lo']:.3f},{gap['hi']:.3f}]"
+                 if gap else ""))
+    for w in out["warnings"]:
+        print(f"warning: {w}")
+    print(f"wrote {args.out}/analysis.json and analysis.md")
+    return 0
+
+
+def cmd_tinker_figures(args) -> int:
+    from clharness.tinker import analysis as tanalysis
+
+    path = tanalysis.write_heatmap(rows_path=args.rows, out=args.out)
+    print(f"wrote {path}")
+    return 0
+
+
 def cmd_export_schema(args) -> int:
     from clharness.spec import json_schemas
 
@@ -600,6 +714,49 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("export-schema", help="write the run-spec and result-row JSON Schemas")
     p.add_argument("--out", default=str(REPO_ROOT / "configs" / "schema"))
     p.set_defaults(fn=cmd_export_schema)
+    p = sub.add_parser("tinker-manifest", help="draw the frozen C5 subsample into "
+                       "manifests/tinker-c5.json (downloads the three HF datasets)")
+    p.add_argument("--out", default=str(REPO_ROOT / "manifests" / "tinker-c5.json"))
+    p.add_argument("--seed", type=int, default=20261114)
+    p.add_argument("--n-train", type=int, default=5000)
+    p.add_argument("--n-eval", type=int, default=1000)
+    p.set_defaults(fn=cmd_tinker_manifest)
+    p = sub.add_parser("tinker-run", help="one C5 arm at one seed on Tinker "
+                       "(needs `uv sync --extra tinker` and TINKER_API_KEY)")
+    from clharness.tinker import runner as _tr
+
+    p.add_argument("--arm", required=True, choices=["naive", "replay-200", "joint"])
+    p.add_argument("--seed", type=int, required=True)
+    p.add_argument("--epochs", type=int, default=_tr.EPOCHS)
+    p.add_argument("--smoke", action="store_true", help="50 train / 50 eval per task")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the token and USD estimate and exit")
+    p.add_argument("--budget", type=float, default=_tr.BUDGET_USD, help="C5 USD cap")
+    p.add_argument("--rows", default=str(REPO_ROOT / "results" / "tinker" / "rows.jsonl"))
+    p.add_argument("--items-dir", default=str(REPO_ROOT / "results" / "tinker" / "items"))
+    p.add_argument("--manifest", default=str(REPO_ROOT / "manifests" / "tinker-c5.json"))
+    p.add_argument("--model", default=_tr.MODEL_ID)
+    p.add_argument("--rank", type=int, default=_tr.LORA_RANK)
+    p.add_argument("--lr", type=float, default=_tr.LEARNING_RATE)
+    p.add_argument("--batch-size", type=int, default=_tr.BATCH_SIZE)
+    p.add_argument("--max-len", type=int, default=_tr.MAX_LEN)
+    p.add_argument("--replay", type=int, default=_tr.REPLAY_PER_TASK,
+                   help="replay buffer per earlier task (replay-200)")
+    p.add_argument("--eval-window", type=int, default=_tr.EVAL_WINDOW,
+                   help="eval items scored concurrently per window")
+    p.set_defaults(fn=cmd_tinker_run)
+    p = sub.add_parser("tinker-analyze", help="C5 metrics + paired bootstrap over the "
+                       "TinkerRows; writes results/tinker/analysis.{json,md}")
+    p.add_argument("--rows", default=str(REPO_ROOT / "results" / "tinker" / "rows.jsonl"))
+    p.add_argument("--out", default=str(REPO_ROOT / "results" / "tinker"))
+    p.add_argument("--n-boot", type=int, default=10_000)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_tinker_analyze)
+    p = sub.add_parser("tinker-figures", help="the C5 R[stage, task] heatmap SVG")
+    p.add_argument("--rows", default=str(REPO_ROOT / "results" / "tinker" / "rows.jsonl"))
+    p.add_argument("--out", default=str(REPO_ROOT / "results" / "figures"
+                                        / "tinker_r_heatmap.svg"))
+    p.set_defaults(fn=cmd_tinker_figures)
     p = sub.add_parser("build-data")
     p.add_argument("--set", default="smoke", help="smoke | real")
     p.add_argument("--domain", action="append", help="real set: build only these domains (repeatable)")
